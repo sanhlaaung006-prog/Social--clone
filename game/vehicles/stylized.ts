@@ -210,20 +210,6 @@ export function taperedSlabGeometry(opts: {
   return geo;
 }
 
-/**
- * Plan-view taper: narrow a geometry in X by a z-dependent factor, so an
- * extruded side profile can gain a tapered hood/bed instead of van walls.
- */
-function taperInPlan(geo: THREE.BufferGeometry, factorAt: (z: number) => number): THREE.BufferGeometry {
-  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) * factorAt(pos.getZ(i)));
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-  return geo;
-}
-
 /** Horizontal cylinder along Z (barrels, axles, pedestals use rotations). */
 function barrelGeometry(radiusTop: number, radiusBottom: number, length: number, segments = 8) {
   const geo = new THREE.CylinderGeometry(radiusTop, radiusBottom, length, segments, 1);
@@ -266,22 +252,16 @@ export function buildStylizedTank(): THREE.Group {
   const root = new THREE.Group();
   root.name = "Stylized MBT";
 
-  // Track belts: faceted cylinders running fore-aft (axis along Z) on
-  // each hull side — never across the width.
+  // Track belts: faceted octagonal prisms across the hull sides.
   const trackLen = 5.7;
   for (const side of [-1, 1]) {
-    const belt = mesh(root, barrelGeometry(0.72, 0.72, trackLen, 10), mats.rubber, "track-belt");
+    mesh(root, crossCylinderGeometry(0.74, trackLen, 8), mats.rubber, "track-belt");
+    const belt = root.children[root.children.length - 1];
     belt.position.set(side * 1.42, 0.78, 0);
-    // Road wheels: discs on transverse axles, pushed outward so their
-    // faces read against the belt instead of hiding inside it.
-    for (const z of [-1.7, 0, 1.7]) {
-      const wheel = mesh(root, crossCylinderGeometry(0.42, 0.34, 10), mats.darkMetal, "road-wheel");
-      wheel.position.set(side * 1.98, 0.6, z);
-    }
-    // Drive sprocket aft and idler forward, crowning the belt ends.
-    for (const z of [-2.55, 2.55]) {
-      const endWheel = mesh(root, crossCylinderGeometry(0.52, 0.3, 10), mats.darkMetal, "end-wheel");
-      endWheel.position.set(side * 2.02, 0.78, z);
+    // Road wheels (three per side) peeking out of the belt.
+    for (const z of [-1.9, 0, 1.9]) {
+      const wheel = mesh(root, crossCylinderGeometry(0.44, 0.55, 10), mats.darkMetal, "road-wheel");
+      wheel.position.set(side * 1.42, 0.62, z);
     }
   }
 
@@ -353,51 +333,28 @@ export function buildStylizedTechnical(): THREE.Group {
   const root = new THREE.Group();
   root.name = "Stylized Technical";
 
-  // Chassis + cabin as one extruded side profile. The nose is raked back
-  // from a lower lip (no vertical box front) and the hood is narrowed in
-  // plan view below — pickup proportions, not a slab-sided van.
+  // Chassis + cabin as one extruded side profile (sloped hood and raked
+  // windshield are part of the shape — no stacked boxes).
   const profile: Array<[number, number]> = [
     [-2.95, 0.62], // rear bottom
-    [3.02, 0.66], // front lower lip
-    [2.82, 1.14], // raked nose
+    [2.95, 0.62], // front bottom
+    [2.95, 1.18], // nose top
     [1.55, 1.5], // hood cowl
     [1.32, 2.28], // windshield top
     [-0.45, 2.28], // cabin roof rear
     [-0.45, 1.55], // cabin back
     [-2.95, 1.55], // bed wall top
   ];
-  const chassisGeo = taperInPlan(extrudedProfileGeometry(profile, 2.35), (z) => {
-    // Full width up to the cabin; taper the hood to 80% at the nose.
-    if (z <= 1.35) return 1;
-    const t = Math.min(1, (z - 1.35) / 1.7);
-    const s = t * t * (3 - 2 * t); // smoothstep
-    return 1 - 0.2 * s;
-  });
-  mesh(root, chassisGeo, mats.chassis, "extruded-chassis");
+  mesh(root, extrudedProfileGeometry(profile, 2.35), mats.chassis, "extruded-chassis");
 
-  // Wheels: four faceted drums with dark hubs, each crowned by a rounded
-  // half-torus wheel arch so the side view reads curved, not slab-sided.
-  const fenderGeo = new THREE.TorusGeometry(0.66, 0.1, 6, 10, Math.PI);
-  fenderGeo.rotateY(Math.PI / 2); // ring plane -> ZY, arc sweeps rear to front
+  // Wheels: four faceted drums with dark hubs.
   for (const z of [-1.85, 1.85]) {
     for (const side of [-1, 1]) {
       const wheel = mesh(root, crossCylinderGeometry(0.56, 0.42, 10), mats.rubber, "wheel");
       wheel.position.set(side * 1.12, 0.58, z);
       const hub = mesh(root, crossCylinderGeometry(0.24, 0.46, 8), mats.darkMetal, "wheel-hub");
       hub.position.set(side * 1.12, 0.58, z);
-      const fender = mesh(root, fenderGeo, mats.camo, "wheel-arch");
-      fender.position.set(side * 1.16, 0.58, z);
     }
-  }
-
-  // Tube bumper across the nose, cylindrical headlight pods and side steps.
-  const bumper = mesh(root, crossCylinderGeometry(0.13, 2.0, 8), mats.darkMetal, "front-bumper");
-  bumper.position.set(0, 0.74, 3.0);
-  for (const side of [-1, 1]) {
-    const lamp = mesh(root, barrelGeometry(0.13, 0.13, 0.12, 8), mats.glass, "headlight");
-    lamp.position.set(side * 0.72, 1.12, 2.86);
-    const step = mesh(root, barrelGeometry(0.07, 0.07, 2.3, 6), mats.darkMetal, "side-step");
-    step.position.set(side * 1.28, 0.42, 0.1);
   }
 
   // Windshield glass following the raked cabin slope.

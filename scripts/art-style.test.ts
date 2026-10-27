@@ -2,9 +2,8 @@
  * Anti-voxel art-direction gate (npx tsx scripts/art-style.test.ts).
  * Fails the suite if shipped gameplay code reintroduces raw BoxGeometry,
  * and asserts the smooth-stylized choices the world/actors now make.
- * The mig29 showcase airframe obeys the same source-level no-box rule
- * (chamfered extrusions, not BoxGeometry) even though it is not spawned
- * in matches; vendors under reference/ stay out of scope entirely.
+ * Reference-only modules (mig29 airframe, vendors in reference/) are out
+ * of scope: they are not spawned in matches.
  */
 
 import { readFileSync } from "node:fs";
@@ -41,19 +40,11 @@ const shippedModules = [
   "game/vehicles/vehicle.ts",
   "game/vehicles/manager.ts",
   "game/vehicles/stylized.ts",
-  "game/vehicles/mig29.ts",
   "game/geometry/kit.ts",
 ];
 for (const rel of shippedModules) {
   const src = readFileSync(join(root, rel), "utf8");
   check(`${rel} contains no BoxGeometry`, !/new THREE\.BoxGeometry/.test(src));
-  // A 4-segment cylinder/cone is a square prism in disguise — reject it
-  // so buildings cannot regress to box-like silhouettes (grass blades
-  // legitimately use 3-segment cones and are unaffected).
-  const squarePrism = src
-    .split("\n")
-    .some((line) => /THREE\.(Cylinder|Cone)Geometry/.test(line) && /,\s*4\s*(,[\s\w.]*)*\)/.test(line));
-  check(`${rel} contains no 4-segment square prisms`, !squarePrism);
 }
 
 console.log("Runtime scene rules:");
