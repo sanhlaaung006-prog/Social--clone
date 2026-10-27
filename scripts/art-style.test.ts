@@ -2,8 +2,9 @@
  * Anti-voxel art-direction gate (npx tsx scripts/art-style.test.ts).
  * Fails the suite if shipped gameplay code reintroduces raw BoxGeometry,
  * and asserts the smooth-stylized choices the world/actors now make.
- * Reference-only modules (mig29 airframe, vendors in reference/) are out
- * of scope: they are not spawned in matches.
+ * The mig29 showcase airframe obeys the same source-level no-box rule
+ * (chamfered extrusions, not BoxGeometry) even though it is not spawned
+ * in matches; vendors under reference/ stay out of scope entirely.
  */
 
 import { readFileSync } from "node:fs";
@@ -40,6 +41,7 @@ const shippedModules = [
   "game/vehicles/vehicle.ts",
   "game/vehicles/manager.ts",
   "game/vehicles/stylized.ts",
+  "game/vehicles/mig29.ts",
   "game/geometry/kit.ts",
 ];
 for (const rel of shippedModules) {

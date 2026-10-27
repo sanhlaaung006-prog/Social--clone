@@ -256,6 +256,36 @@ function plateGeometry(points, thickness = .1) {
   return geometry;
 }
 
+/**
+ * Chamfered replacement for THREE.BoxGeometry: a centered rectangular
+ * prism with beveled edges via a single-segment extrude. Same outer
+ * bounding dimensions as a box, but no cheap razor-sharp cube faces.
+ */
+function chamferedBoxGeometry(width, height, depth) {
+  const minDim = Math.min(width, height, depth);
+  const b = Math.max(minDim * 0.16, 0.0008);
+  const shape = new THREE.Shape();
+  const hw = Math.max((width - 2 * b) / 2, width * 0.25);
+  const hh = Math.max((height - 2 * b) / 2, height * 0.25);
+  shape.moveTo(-hw, -hh);
+  shape.lineTo(hw, -hh);
+  shape.lineTo(hw, hh);
+  shape.lineTo(-hw, hh);
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(depth - 2 * b, depth * 0.5),
+    steps: 1,
+    bevelEnabled: true,
+    bevelThickness: b,
+    bevelSize: b,
+    bevelSegments: 1,
+    curveSegments: 1
+  });
+  geometry.translate(0, 0, -depth / 2);
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 function addTube(parent, points, radius, material, closed = false) {
   const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
   const geometry = new THREE.TubeGeometry(curve, 28, radius, 5, closed);
@@ -327,7 +357,7 @@ function createMissile(mats, length = 2.6, radius = .115) {
 
   for (let i = 0; i < 4; i++) {
     const a = i / 4 * TAU + Math.PI / 4;
-    const fin = meshOf(new THREE.BoxGeometry(radius * 2.5, .012, length * .17), mats.missileBand);
+    const fin = meshOf(chamferedBoxGeometry(radius * 2.5, .012, length * .17), mats.missileBand);
     fin.position.set(Math.cos(a) * radius * 1.55, Math.sin(a) * radius * 1.55, -length * .34);
     fin.rotation.z = a;
     group.add(fin);
@@ -381,7 +411,7 @@ function makeGearAssembly(mats, type = 'main') {
   brace.position.set(isMain ? -.2 : .2, -strutLength * .64, 0);
   group.add(brace);
 
-  const door = meshOf(new THREE.BoxGeometry(isMain ? .28 : .2, .42, .035), mats.hullDark);
+  const door = meshOf(chamferedBoxGeometry(isMain ? .28 : .2, .42, .035), mats.hullDark);
   door.position.set(isMain ? -.16 : .11, -strutsSafeY(strutLength), .1);
   group.add(door);
 
@@ -427,7 +457,7 @@ function buildMiG29(mats) {
   pitot.rotation.x = Math.PI / 2;
   pitot.position.z = 5.97;
   frontHull.add(pitot);
-  const pitotVane = meshOf(new THREE.BoxGeometry(.015, .18, .026), mats.metal);
+  const pitotVane = meshOf(chamferedBoxGeometry(.015, .18, .026), mats.metal);
   pitotVane.position.set(0, .005, 6.22);
   frontHull.add(pitotVane);
 
@@ -445,13 +475,13 @@ function buildMiG29(mats) {
   cannon.rotation.x = Math.PI / 2;
   cannon.position.set(-.31, -.20, 3.15);
   frontHull.add(cannon);
-  const cannonVent = meshOf(new THREE.BoxGeometry(.20, .055, .46), mats.darkMetal);
+  const cannonVent = meshOf(chamferedBoxGeometry(.20, .055, .46), mats.darkMetal);
   cannonVent.position.set(-.38, -.24, 2.66);
   frontHull.add(cannonVent);
 
   // Small dielectric panels around the nose.
   for (let i = 0; i < 3; i++) {
-    const panel = meshOf(new THREE.BoxGeometry(.07, .045, .24), mats.hullDark);
+    const panel = meshOf(chamferedBoxGeometry(.07, .045, .24), mats.hullDark);
     panel.position.set(-.29 - i * .085, -.19 + i * .07, 4.05 + i * .13);
     panel.rotation.x = -.3;
     frontHull.add(panel);
@@ -492,14 +522,14 @@ function buildMiG29(mats) {
   aftHull.add(seamBand);
 
   for (let side = -1; side <= 1; side += 2) {
-    const bellyPanel = meshOf(new THREE.BoxGeometry(.42, .025, 1.35), mats.hullDark);
+    const bellyPanel = meshOf(chamferedBoxGeometry(.42, .025, 1.35), mats.hullDark);
     bellyPanel.position.set(side * .38, -.51, -.9);
     bellyPanel.rotation.x = .05;
     aftHull.add(bellyPanel);
   }
 
   // Dorsal airbrake, raised slightly for silhouette detail.
-  const airbrake = meshOf(new THREE.BoxGeometry(.48, .035, .9), mats.hullDark);
+  const airbrake = meshOf(chamferedBoxGeometry(.48, .035, .9), mats.hullDark);
   airbrake.position.set(0, .43, -2.0);
   airbrake.rotation.x = -.12;
   aftHull.add(airbrake);
@@ -519,12 +549,12 @@ function buildMiG29(mats) {
     throat.position.set(side * .82, -.18, 1.652);
     aftHull.add(throat);
 
-    const splitter = meshOf(new THREE.BoxGeometry(.035, .44, .68), mats.hullLight);
+    const splitter = meshOf(chamferedBoxGeometry(.035, .44, .68), mats.hullLight);
     splitter.position.set(side * 1.1, -.14, 1.22);
     splitter.rotation.y = side * -.12;
     aftHull.add(splitter);
 
-    const lip = meshOf(new THREE.BoxGeometry(.11, .54, .06), mats.metal);
+    const lip = meshOf(chamferedBoxGeometry(.11, .54, .06), mats.metal);
     lip.position.set(side * .99, -.16, 1.61);
     lip.rotation.z = side * .13;
     aftHull.add(lip);
@@ -541,7 +571,7 @@ function buildMiG29(mats) {
 
   // Panel-line ribbons along the upper fuselage.
   for (let i = 0; i < 3; i++) {
-    const ribbon = meshOf(new THREE.BoxGeometry(.018, .008, 1.35 - i * .19), mats.hullDark);
+    const ribbon = meshOf(chamferedBoxGeometry(.018, .008, 1.35 - i * .19), mats.hullDark);
     ribbon.position.set((i - 1) * .24, .472 - i * .012, -.4 - i * .24);
     aftHull.add(ribbon);
   }
@@ -590,7 +620,7 @@ function buildMiG29(mats) {
     // Pylons, kept clear of the main landing-gear bay.
     const pylonPositions = [[1.62, -.55], [2.42, -.4], [3.02, -.29]];
     pylonPositions.forEach(([x, z]) => {
-      const pylon = meshOf(new THREE.BoxGeometry(.11, .24, .48), mats.hullLight);
+      const pylon = meshOf(chamferedBoxGeometry(.11, .24, .48), mats.hullLight);
       pylon.position.set(sign * x, -.2, z);
       pylon.rotation.z = sign * -.03;
       group.add(pylon);
@@ -634,7 +664,7 @@ function buildMiG29(mats) {
     const rudder = meshOf(verticalPlateGeometry([[-1.10, .03], [-.84, .03], [-.69, 1.54], [-.95, 1.5]], .035), mats.hullDark);
     group.add(rudder);
 
-    const cap = meshOf(new THREE.BoxGeometry(.09, .13, .3), mats.hullDark);
+    const cap = meshOf(chamferedBoxGeometry(.09, .13, .3), mats.hullDark);
     cap.position.set(0, 1.81, -.45);
     group.add(cap);
 
@@ -646,7 +676,7 @@ function buildMiG29(mats) {
       group.add(star);
     }
 
-    const formation = meshOf(new THREE.BoxGeometry(.03, .04, .16), mats.navWhite, false);
+    const formation = meshOf(chamferedBoxGeometry(.03, .04, .16), mats.navWhite, false);
     formation.position.set(0, 1.55, -.9);
     group.add(formation);
 
@@ -717,7 +747,7 @@ function buildMiG29(mats) {
     // Individual nozzle petals.
     for (let i = 0; i < 14; i++) {
       const a = i / 14 * TAU;
-      const petal = meshOf(new THREE.BoxGeometry(.06, .024, .46), mats.metal);
+      const petal = meshOf(chamferedBoxGeometry(.06, .024, .46), mats.metal);
       petal.position.set(Math.cos(a) * .34, Math.sin(a) * .34, -2.16);
       petal.rotation.z = a;
       group.add(petal);
@@ -827,7 +857,7 @@ function buildCockpit(mats) {
   const cockpit = new THREE.Group();
   cockpit.name = 'K-36D cockpit interior';
 
-  const tub = meshOf(new THREE.BoxGeometry(.83, .28, 1.72), mats.cockpit);
+  const tub = meshOf(chamferedBoxGeometry(.83, .28, 1.72), mats.cockpit);
   tub.position.set(0, .31, 1.42);
   cockpit.add(tub);
 
@@ -838,12 +868,12 @@ function buildCockpit(mats) {
   aperture.position.set(0, .498, 1.4);
   cockpit.add(aperture);
 
-  const rim = meshOf(new THREE.BoxGeometry(.94, .055, 1.9), mats.darkMetal);
+  const rim = meshOf(chamferedBoxGeometry(.94, .055, 1.9), mats.darkMetal);
   rim.position.set(0, .45, 1.4);
   cockpit.add(rim);
 
   // Instrument coaming.
-  const coaming = meshOf(new THREE.BoxGeometry(.82, .25, .3), mats.cockpit);
+  const coaming = meshOf(chamferedBoxGeometry(.82, .25, .3), mats.cockpit);
   coaming.position.set(0, .42, 2.08);
   coaming.rotation.x = -.22;
   cockpit.add(coaming);
@@ -855,7 +885,7 @@ function buildCockpit(mats) {
     cockpit.add(screen);
   }
 
-  const hudFrame = meshOf(new THREE.BoxGeometry(.48, .035, .03), mats.darkMetal);
+  const hudFrame = meshOf(chamferedBoxGeometry(.48, .035, .03), mats.darkMetal);
   hudFrame.position.set(0, .59, 1.77);
   hudFrame.rotation.x = -.36;
   cockpit.add(hudFrame);
@@ -865,22 +895,22 @@ function buildCockpit(mats) {
   cockpit.add(hudGlass);
 
   // K-36D ejection seat.
-  const pan = meshOf(new THREE.BoxGeometry(.38, .08, .41), mats.seatPad);
+  const pan = meshOf(chamferedBoxGeometry(.38, .08, .41), mats.seatPad);
   pan.position.set(0, .47, 1.31);
   cockpit.add(pan);
-  const back = meshOf(new THREE.BoxGeometry(.4, .36, .10), mats.seat);
+  const back = meshOf(chamferedBoxGeometry(.4, .36, .10), mats.seat);
   back.position.set(0, .60, 1.10);
   back.rotation.x = -.10;
   cockpit.add(back);
-  const headrest = meshOf(new THREE.BoxGeometry(.36, .15, .12), mats.accent);
+  const headrest = meshOf(chamferedBoxGeometry(.36, .15, .12), mats.accent);
   headrest.position.set(0, .775, 1.06);
   headrest.rotation.x = -.10;
   cockpit.add(headrest);
-  const seatRail = meshOf(new THREE.BoxGeometry(.17, .06, .6), mats.darkMetal);
+  const seatRail = meshOf(chamferedBoxGeometry(.17, .06, .6), mats.darkMetal);
   seatRail.position.set(0, .43, 1.2);
   cockpit.add(seatRail);
   for (let side = -1; side <= 1; side += 2) {
-    const harness = meshOf(new THREE.BoxGeometry(.04, .27, .032), mats.seatPad);
+    const harness = meshOf(chamferedBoxGeometry(.04, .27, .032), mats.seatPad);
     harness.position.set(side * .10, .60, 1.22);
     harness.rotation.x = -.15;
     cockpit.add(harness);
@@ -888,7 +918,7 @@ function buildCockpit(mats) {
 
   // Side consoles and canopy rails.
   for (let side = -1; side <= 1; side += 2) {
-    const console = meshOf(new THREE.BoxGeometry(.14, .12, .7), mats.cockpit);
+    const console = meshOf(chamferedBoxGeometry(.14, .12, .7), mats.cockpit);
     console.position.set(side * .34, .47, 1.52);
     cockpit.add(console);
     const rail = meshOf(new THREE.CylinderGeometry(.016, .016, 1.34, 7), mats.metal);
@@ -902,11 +932,11 @@ function buildCockpit(mats) {
   stick.position.set(0, .57, 1.58);
   stick.rotation.x = -.22;
   cockpit.add(stick);
-  const grip = meshOf(new THREE.BoxGeometry(.07, .13, .08), mats.seat);
+  const grip = meshOf(chamferedBoxGeometry(.07, .13, .08), mats.seat);
   grip.position.set(0, .75, 1.53);
   grip.rotation.x = -.22;
   cockpit.add(grip);
-  const trigger = meshOf(new THREE.BoxGeometry(.018, .024, .018), mats.accent);
+  const trigger = meshOf(chamferedBoxGeometry(.018, .024, .018), mats.accent);
   trigger.position.set(-.038, .77, 1.51);
   cockpit.add(trigger);
 
@@ -952,11 +982,11 @@ function buildCanopy(mats) {
   ];
   addTube(pivot, centerSpine, .012, mats.darkMetal);
 
-  const latch = meshOf(new THREE.BoxGeometry(.13, .07, .08), mats.metal);
+  const latch = meshOf(chamferedBoxGeometry(.13, .07, .08), mats.metal);
   latch.position.set(0, .31, 1.88);
   pivot.add(latch);
 
-  const canopyLock = meshOf(new THREE.BoxGeometry(.1, .1, .08), mats.accent);
+  const canopyLock = meshOf(chamferedBoxGeometry(.1, .1, .08), mats.accent);
   canopyLock.position.set(0, .39, .42);
   pivot.add(canopyLock);
 
