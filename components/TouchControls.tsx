@@ -2,12 +2,20 @@
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { InputState } from "@/game/input";
+import type { HudSnapshot } from "@/game/hud";
 
 /**
  * Mobile controls: left virtual joystick, full-screen look drag on the
- * right, and fire / aim / jump / reload action buttons.
+ * right, and context-aware action buttons (on-foot combat or vehicle
+ * driver/passenger seats).
  */
-export default function TouchControls({ input }: { input: InputState }) {
+export default function TouchControls({
+  input,
+  hud,
+}: {
+  input: InputState;
+  hud: HudSnapshot;
+}) {
   const stickRef = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLDivElement>(null);
   const stickPointer = useRef<number | null>(null);
@@ -43,6 +51,8 @@ export default function TouchControls({ input }: { input: InputState }) {
     input.moveY = 0;
   };
 
+  const inVehicle = hud.inVehicle;
+
   return (
     <div className="touch-layer">
       {/* Right-side look area (sits behind all buttons/joystick) */}
@@ -68,7 +78,7 @@ export default function TouchControls({ input }: { input: InputState }) {
         }}
       />
 
-      {/* Left joystick */}
+      {/* Left joystick (drives vehicles when seated) */}
       <div
         className="joystick"
         ref={stickRef}
@@ -90,64 +100,117 @@ export default function TouchControls({ input }: { input: InputState }) {
         <div className="joystick-knob" ref={knobRef} />
       </div>
 
-      {/* Action buttons */}
-      <div className="action-cluster">
-        <button
-          className={`action-btn fire ${firing ? "held" : ""}`}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            setFiring(true);
-            input.firing = true;
-          }}
-          onPointerUp={() => {
-            setFiring(false);
-            input.firing = false;
-          }}
-          onPointerCancel={() => {
-            setFiring(false);
-            input.firing = false;
-          }}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          Fire
-        </button>
-        <button
-          className={`action-btn ${aiming ? "held" : ""}`}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            setAiming(true);
-            input.aiming = true;
-          }}
-          onPointerUp={() => {
-            setAiming(false);
-            input.aiming = false;
-          }}
-          onPointerCancel={() => {
-            setAiming(false);
-            input.aiming = false;
-          }}
-        >
-          Aim
-        </button>
-        <button
-          className="action-btn"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            input.queueJump();
-          }}
-        >
-          Jump
-        </button>
-        <button
-          className="action-btn"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            input.queueReload();
-          }}
-        >
-          Reload
-        </button>
-      </div>
+      {!inVehicle ? (
+        <div className="action-cluster">
+          {hud.canEnterVehicle && (
+            <button
+              className="action-btn enter"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                input.queueEnter();
+              }}
+            >
+              Enter
+            </button>
+          )}
+          <button
+            className={`action-btn fire ${firing ? "held" : ""}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              setFiring(true);
+              input.firing = true;
+            }}
+            onPointerUp={() => {
+              setFiring(false);
+              input.firing = false;
+            }}
+            onPointerCancel={() => {
+              setFiring(false);
+              input.firing = false;
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            Fire
+          </button>
+          <button
+            className={`action-btn ${aiming ? "held" : ""}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              setAiming(true);
+              input.aiming = true;
+            }}
+            onPointerUp={() => {
+              setAiming(false);
+              input.aiming = false;
+            }}
+            onPointerCancel={() => {
+              setAiming(false);
+              input.aiming = false;
+            }}
+          >
+            Aim
+          </button>
+          <button
+            className="action-btn"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              input.queueJump();
+            }}
+          >
+            Jump
+          </button>
+          <button
+            className="action-btn"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              input.queueReload();
+            }}
+          >
+            Reload
+          </button>
+        </div>
+      ) : (
+        <div className="action-cluster vehicle-cluster">
+          {hud.gunnerActive && (
+            <button
+              className={`action-btn fire ${firing ? "held" : ""}`}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setFiring(true);
+                input.firing = true;
+              }}
+              onPointerUp={() => {
+                setFiring(false);
+                input.firing = false;
+              }}
+              onPointerCancel={() => {
+                setFiring(false);
+                input.firing = false;
+              }}
+            >
+              Gun
+            </button>
+          )}
+          <button
+            className="action-btn"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              input.queueSwapSeat();
+            }}
+          >
+            Swap
+          </button>
+          <button
+            className="action-btn exit"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              input.queueExit();
+            }}
+          >
+            Exit
+          </button>
+        </div>
+      )}
     </div>
   );
 }

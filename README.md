@@ -55,6 +55,10 @@ npm run inspect:tank  # headless inspection of the vendor tank factory model
   physically blocked by cover and terrain
 - Third-person camera with over-the-shoulder aim
 - Full mobile touch controls and desktop pointer-lock controls
+- Drivable vehicles: 2 MBT tanks and 2 armed technicals per match, with
+  driver/passenger seats, seat swap (F), enter (E) and exit (G); the
+  technical's passenger operates the mounted machine gun. Vehicles are
+  physics obstacles that block bullets and push actors out of the way
 - Last fighter standing wins; placement + elimination stats on death
 
 ## Architecture
@@ -88,14 +92,20 @@ game/
     noise.ts / physics.ts   WASM bridges + bit-identical TS fallbacks
 game/vehicles/
   tankForge.ts        Vendored TankForge ESM module (generated, @ts-nocheck)
+  technical.ts        Vendored rebel-technical geometry module (generated)
+  vehicle.ts          Arcade kinematic vehicle: throttle, steering, terrain
+  manager.ts          Spawning, vehicle-vs-vehicle push-out, physics upload
 scripts/
   smoke.ts            Deterministic noise/RNG/zone tests
   physics.test.ts     Collision + raycast tests (mirrors the C algorithms)
   integration.ts      30-second headless simulated match
   screenshot.ts       CPU rasterizer: real scene geometry -> PNG (no GPU)
+  vehicles.test.ts    Driving, steering, vehicle collision and ray tests
   inspect-tank.ts     VM-sandbox vendor runner + extracted-module fidelity
   extract-tank.mjs    Reproducible extractor: vendor HTML -> tankForge.ts
+  extract-technical.mjs  Reproducible extractor: vendor HTML -> technical.ts
   lib/raster.ts       Shared headless triangle rasterizer
+  lib/dom-stub.ts     Headless canvas/DOM stub for texture-building modules
 reference/            Supplied vehicle concepts (armed technical, MBT factory)
 ```
 

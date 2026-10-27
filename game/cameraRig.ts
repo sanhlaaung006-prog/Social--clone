@@ -60,6 +60,38 @@ export class CameraRig {
     }
   }
 
+  /** Third-person follow for vehicles with an independent aim yaw/pitch. */
+  followTarget(
+    dt: number,
+    center: THREE.Vector3,
+    yaw: number,
+    pitch: number,
+    world: World,
+    dist: number,
+    height: number
+  ) {
+    const cp = Math.cos(pitch);
+    const sp = Math.sin(pitch);
+    const desired = new THREE.Vector3(
+      center.x + Math.sin(yaw) * cp * dist + Math.cos(yaw) * 0.6,
+      center.y + height - sp * dist,
+      center.z + Math.cos(yaw) * cp * dist - Math.sin(yaw) * 0.6
+    );
+
+    const ground = world.heightAt(desired.x, desired.z);
+    if (desired.y < ground + 0.9) desired.y = ground + 0.9;
+
+    const k = 1 - Math.exp(-10 * dt);
+    this.camera.position.lerp(desired, k);
+    this.camera.lookAt(
+      center.x - Math.sin(yaw) * 3,
+      center.y + 1.7 + pitch * 1.4,
+      center.z - Math.cos(yaw) * 3
+    );
+    this.camera.fov += (62 - this.camera.fov) * Math.min(1, dt * 8);
+    this.camera.updateProjectionMatrix();
+  }
+
   /** Slow cinematic orbit used behind the main menu. */
   orbit(time: number, center: THREE.Vector3, radius: number) {
     const a = time * 0.12;

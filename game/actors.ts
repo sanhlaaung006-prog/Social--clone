@@ -158,12 +158,14 @@ export abstract class Actor {
 
   protected collideAndMove(dx: number, dz: number) {
     // All capsule collision runs through the C/WASM physics core (or its
-    // bit-identical JS fallback): world bounds + circle obstacle push-out.
-    const [x, z] = this.physics.resolveCircles(
+    // bit-identical JS fallback): world bounds + static obstacles, then the
+    // dynamic vehicle collision radii.
+    let [x, z] = this.physics.resolveCircles(
       this.position.x + dx,
       this.position.z + dz,
       this.radius
     );
+    [x, z] = this.physics.resolveAgainstVehicles(x, z, this.radius);
     this.position.x = x;
     this.position.z = z;
   }

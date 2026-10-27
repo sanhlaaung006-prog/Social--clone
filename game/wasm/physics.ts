@@ -11,21 +11,31 @@ import type { CircleObstacle } from "../world";
 
 export interface RayHit {
   t: number;
-  kind: "terrain" | "cover" | "actor";
+  kind: "terrain" | "cover" | "actor" | "vehicle";
   actorIndex?: number;
+  vehicleIndex?: number;
 }
 
 export interface Physics {
   readonly wasm: boolean;
   setObstacles(obstacles: CircleObstacle[]): void;
+  /** Dynamic vehicle collision radii, refreshed whenever vehicles move. */
+  setVehicles(vehicles: { x: number; z: number; r: number }[]): void;
   resolveCircles(x: number, z: number, radius: number): [number, number];
+  resolveAgainstVehicles(x: number, z: number, radius: number): [number, number];
   rayTerrain(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number;
   rayCover(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number;
+  rayVehicles(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number;
   /** Upload actor hit cylinders (base position, radius, height) for this frame. */
   setActors(actors: { x: number; y: number; z: number; r: number; h: number }[]): void;
   rayActors(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): { index: number; t: number } | null;
-  /** Nearest hit across terrain, cover and actors. */
-  raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): RayHit | null;
+  /** Nearest hit across terrain, cover, vehicles and actors. */
+  raycast(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number,
+    skipVehicle?: number
+  ): RayHit | null;
 }
 
 /* ------------------------------ WASM impl ------------------------------ */
@@ -63,6 +73,8 @@ class WasmPhysics implements Physics {
   private readonly e: PhysExports;
   private obsPtr = 0;
   private obsCount = 0;
+  private vehPtr = 0;
+  private vehCount = 0;
   private cylPtr = 0;
   private cylCapacity = 0;
   private posPtr = 0;
@@ -78,6 +90,24 @@ class WasmPhysics implements Physics {
     this.obsPtr = this.e.phys_make_floats(obstacles.length * 3);
     this.obsCount = obstacles.length;
     obstacles.forEach((o, i) => this.e.phys_set3(this.obsPtr, i, o.x, o.z, o.r));
+  }
+
+  setVehicles(vehicles: { x: number; z: number; r: number }[]) {
+    this.vehPtr = this.e.phys_make_floats(Math.max(1, vehicles.length) * 3);
+    this.vehCount = vehicles.length;
+    vehicles.forEach((v, i) => this.e.phys_set3(this.vehPtr, i, v.x, v.z, v.r));
+  }
+
+  resolveAgainstVehicles(x: number, z: number, radius: number): [number, number] {
+    const f = new Float32Array(this.e.memory.buffer);
+    f[this.posPtr / 4] = x;
+    f[this.posPtr / 4 + 1] = z;
+    this.e.phys_resolve_circles(
+      this.vehPtr, this.vehCount, this.posPtr,
+      radius, CONFIG.world.size / 2 - 2
+    );
+    const f2 = new Float32Array(this.e.memory.buffer);
+    return [f2[this.posPtr / 4], f2[this.posPtr / 4 + 1]];
   }
 
   resolveCircles(x: number, z: number, radius: number): [number, number] {
@@ -107,6 +137,14 @@ class WasmPhysics implements Physics {
     );
   }
 
+  rayVehicles(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
+    return this.e.phys_ray_spheres(
+      this.vehPtr, this.vehCount,
+      origin.x, origin.y, origin.z,
+      dir.x, dir.y, dir.z, maxT
+    );
+  }
+
   setActors(actors: { x: number; y: number; z: number; r: number; h: number }[]) {
     if (actors.length > this.cylCapacity) {
       this.cylPtr = this.e.phys_make_floats(actors.length * 5);
@@ -130,12 +168,21 @@ class WasmPhysics implements Physics {
     return { index: idx, t: f[this.outTPtr / 4] };
   }
 
-  raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): RayHit | null {
+  raycast(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number,
+    skipVehicle = -1
+  ): RayHit | null {
     let best: RayHit | null = null;
     const tt = this.rayTerrain(origin, dir, maxT);
     if (tt >= 0) best = { t: tt, kind: "terrain" };
     const tc = this.rayCover(origin, dir, maxT);
     if (tc >= 0 && (!best || tc < best.t)) best = { t: tc, kind: "cover" };
+    if (skipVehicle < 0) {
+      const tv = this.rayVehicles(origin, dir, maxT);
+      if (tv >= 0 && (!best || tv < best.t)) best = { t: tv, kind: "vehicle" };
+    }
     const ta = this.rayActors(origin, dir, maxT);
     if (ta && (!best || ta.t < best.t)) best = { t: ta.t, kind: "actor", actorIndex: ta.index };
     return best;
@@ -147,10 +194,62 @@ class WasmPhysics implements Physics {
 export class JsPhysics implements Physics {
   readonly wasm = false;
   private obstacles: CircleObstacle[] = [];
+  private vehicles: { x: number; z: number; r: number }[] = [];
   private cylinders: { x: number; y: number; z: number; r: number; h: number }[] = [];
 
   setObstacles(obstacles: CircleObstacle[]) {
     this.obstacles = obstacles;
+  }
+
+  setVehicles(vehicles: { x: number; z: number; r: number }[]) {
+    this.vehicles = vehicles;
+  }
+
+  /** Shared sphere-ray test used for both static cover and vehicles. */
+  private sphereRay(
+    list: { x: number; z: number; r: number }[],
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number,
+    expand: number
+  ): number {
+    let best = maxT;
+    for (const o of list) {
+      const cy = 1.5;
+      const cr = o.r * expand + 0.25;
+      const ex = origin.x - o.x;
+      const ey = origin.y - cy;
+      const ez = origin.z - o.z;
+      const b = ex * dir.x + ey * dir.y + ez * dir.z;
+      const c = ex * ex + ey * ey + ez * ez - cr * cr;
+      const disc = b * b - c;
+      if (disc < 0) continue;
+      const s = Math.sqrt(disc);
+      let t = -b - s;
+      if (t < 0.01) t = -b + s;
+      if (t > 0.01 && t < best) best = t;
+    }
+    return best >= maxT ? -1 : best;
+  }
+
+  resolveAgainstVehicles(x: number, z: number, radius: number): [number, number] {
+    for (const v of this.vehicles) {
+      const dx = x - v.x;
+      const dz = z - v.z;
+      const d2 = dx * dx + dz * dz;
+      const minD = v.r + radius;
+      if (d2 < minD * minD) {
+        const d = Math.sqrt(d2);
+        if (d < 1e-5) {
+          x = v.x + minD;
+          continue;
+        }
+        const push = (minD - d) / d;
+        x += dx * push;
+        z += dz * push;
+      }
+    }
+    return [x, z];
   }
 
   resolveCircles(x: number, z: number, radius: number): [number, number] {
@@ -211,25 +310,11 @@ export class JsPhysics implements Physics {
   static heightFn: (x: number, z: number) => number = () => 0;
 
   rayCover(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
-    let best = maxT;
-    for (const o of this.obstacles) {
-      const cx = o.x;
-      const cy = 1.5;
-      const cz = o.z;
-      const cr = o.r * 1.6 + 0.25;
-      const ex = origin.x - cx;
-      const ey = origin.y - cy;
-      const ez = origin.z - cz;
-      const b = ex * dir.x + ey * dir.y + ez * dir.z;
-      const c = ex * ex + ey * ey + ez * ez - cr * cr;
-      const disc = b * b - c;
-      if (disc < 0) continue;
-      const s = Math.sqrt(disc);
-      let t = -b - s;
-      if (t < 0.01) t = -b + s;
-      if (t > 0.01 && t < best) best = t;
-    }
-    return best >= maxT ? -1 : best;
+    return this.sphereRay(this.obstacles, origin, dir, maxT, 1.6);
+  }
+
+  rayVehicles(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
+    return this.sphereRay(this.vehicles, origin, dir, maxT, 1.6);
   }
 
   setActors(actors: { x: number; y: number; z: number; r: number; h: number }[]) {
@@ -262,12 +347,26 @@ export class JsPhysics implements Physics {
     return hit;
   }
 
-  raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): RayHit | null {
+  raycast(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number,
+    skipVehicle = -1
+  ): RayHit | null {
     let best: RayHit | null = null;
     const tt = this.rayTerrain(origin, dir, maxT);
     if (tt >= 0) best = { t: tt, kind: "terrain" };
     const tc = this.rayCover(origin, dir, maxT);
     if (tc >= 0 && (!best || tc < best.t)) best = { t: tc, kind: "cover" };
+    if (skipVehicle < 0) {
+      const tv = this.rayVehicles(origin, dir, maxT);
+      if (tv >= 0 && (!best || tv < best.t)) best = { t: tv, kind: "vehicle" };
+    } else {
+      // Gunner firing from inside a vehicle: ignore its own collision sphere.
+      const others = this.vehicles.filter((_, i) => i !== skipVehicle);
+      const tv = this.sphereRay(others, origin, dir, maxT, 1.6);
+      if (tv >= 0 && (!best || tv < best.t)) best = { t: tv, kind: "vehicle" };
+    }
     const ta = this.rayActors(origin, dir, maxT);
     if (ta && (!best || ta.t < best.t)) best = { t: ta.t, kind: "actor", actorIndex: ta.index };
     return best;

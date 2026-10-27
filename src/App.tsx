@@ -28,6 +28,12 @@ const INITIAL_HUD: HudSnapshot = {
   player: { x: 0, z: 0, yaw: 0 },
   zone: { x: 0, z: 0, r: 105 },
   blips: [],
+  inVehicle: false,
+  vehicleKind: null,
+  vehicleSeat: null,
+  canEnterVehicle: false,
+  nearbyVehicleLabel: null,
+  gunnerActive: false,
 };
 
 export default function App() {
@@ -71,7 +77,7 @@ export default function App() {
         <>
           <HUD hud={hud} touch={touch} onDeploy={deploy} />
           {touch && hud.status === "playing" && (
-            <TouchControls input={engineRef.current!.input} />
+            <TouchControls input={engineRef.current!.input} hud={hud} />
           )}
         </>
       )}

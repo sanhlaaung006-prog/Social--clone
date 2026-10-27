@@ -66,6 +66,27 @@ export const CONFIG = {
     ammoPerCrate: 60,
     radius: 2.6,
   },
+
+  vehicles: {
+    tankCount: 2,
+    technicalCount: 2,
+    enterRadius: 4.5,
+    maxSpeed: 13.5,
+    reverseSpeed: 6,
+    accel: 10,
+    brake: 16,
+    drag: 1.4,
+    turnRate: 1.8, // rad/s at full speed
+    radiusTank: 2.5,
+    radiusTechnical: 2.2,
+    groundOffset: 0.06,
+    lookSens: 0.0032,
+    cameraDist: 7.6,
+    cameraHeight: 3.6,
+    gunDamage: 18,
+    gunRange: 90,
+    fireInterval: 0.14,
+  },
 } as const;
 
 export interface PhaseSpec {

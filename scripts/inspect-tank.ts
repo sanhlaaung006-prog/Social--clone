@@ -14,6 +14,7 @@ import vm from "node:vm";
 import * as THREE from "three";
 import { gatherTriangles, makeCamera, renderPng } from "./lib/raster";
 import { TankForge as ExtractedForge, TANK_PRESETS } from "../game/vehicles/tankForge";
+import { installDomStub } from "./lib/dom-stub";
 
 const html = readFileSync("reference/myanmar-mbt-tank.html", "utf8");
 const moduleMatch = html.match(/<script type="module">([\s\S]*?)<\/script>/);
@@ -185,26 +186,7 @@ for (const key of keys) {
 
 // The extracted module only touches the DOM when buildTank() creates its
 // canvas textures. Give headless Node a no-op 2D canvas stub for that path.
-if (typeof globalThis.document === "undefined") {
-  const ctx2d = new Proxy(
-    {},
-    {
-      get: (t, prop) => {
-        if (prop in t) return (t as Record<string | symbol, unknown>)[prop];
-        if (prop === "createLinearGradient" || prop === "createRadialGradient")
-          return () => ({ addColorStop: noop });
-        return typeof prop === "string" ? noop : undefined;
-      },
-      set: (t, prop, value) => {
-        (t as Record<string | symbol, unknown>)[prop] = value;
-        return true;
-      },
-    }
-  );
-  (globalThis as unknown as { document: unknown }).document = {
-    createElement: () => ({ width: 256, height: 256, getContext: () => ctx2d }),
-  };
-}
+installDomStub();
 
 console.log("\nExtracted module (game/vehicles/tankForge.ts) vs vendor VM:");
 let fidelityFailures = 0;

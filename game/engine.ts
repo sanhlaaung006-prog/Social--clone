@@ -14,6 +14,8 @@ import { Player, Bot } from "./actors";
 import { CameraRig } from "./cameraRig";
 import { Zone } from "./zone";
 import { TracerPool, MuzzleFlash, PickupManager } from "./combat";
+import { VehicleManager } from "./vehicles/manager";
+import type { Vehicle, Seat } from "./vehicles/vehicle";
 import type { HudSnapshot, KillFeedEntry, MatchStatus, MinimapBlip } from "./hud";
 
 const FOG_HEX = CONFIG.world.fogColor;
@@ -48,6 +50,11 @@ export class Engine {
   private tracers!: TracerPool;
   private flash!: MuzzleFlash;
   private pickups!: PickupManager;
+  private vehicles!: VehicleManager;
+  private activeVehicle: Vehicle | null = null;
+  private activeSeat: Seat | null = null;
+  private gunCooldown = 0;
+  private nearbyVehicle: Vehicle | null = null;
 
   private status: MatchStatus = "menu";
   private rng = new Rng(CONFIG.seed);
@@ -131,6 +138,8 @@ export class Engine {
     }
     // Loot.
     this.pickups = new PickupManager(this.scene, this.world, this.world.obstacles, this.rng);
+    // Vehicles (tanks + armed technicals).
+    this.vehicles = new VehicleManager(this.scene, this.world, this.physics, this.rng);
     // Zone.
     this.zone = new Zone(this.scene);
   }
@@ -146,6 +155,7 @@ export class Engine {
       disposeObject(p.group);
     }
     this.zone.dispose(this.scene);
+    this.vehicles.dispose(this.scene);
   }
 
   /* --------------------------------- match flow -------------------------------- */
@@ -161,6 +171,7 @@ export class Engine {
       this.player.reserve = CONFIG.weapon.reserveAmmo;
       this.player.group.position.copy(this.world.randomSpawn(this.rng));
       this.player.velocity.set(0, 0, 0);
+      this.player.group.visible = true;
       this.spawnMatchEntities();
     }
     this.status = "playing";
@@ -168,6 +179,9 @@ export class Engine {
     this.feed = [];
     this.elapsed = 0;
     this.fireCooldown = 0;
+    this.gunCooldown = 0;
+    this.activeVehicle = null;
+    this.activeSeat = null;
   }
 
   private endMatch(won: boolean) {
@@ -203,15 +217,14 @@ export class Engine {
 
   private updatePlaying(dt: number) {
     this.fireCooldown -= dt;
+    this.gunCooldown -= dt;
 
-    // --- player ---
-    this.player.update(dt, this.input);
+    if (this.activeVehicle) {
+      this.updateInVehicle(dt);
+    } else {
+      this.updateOnFoot(dt);
+    }
     this.input.resetTransient();
-    this.world.updateSunTarget(this.player.position.x, this.player.position.z);
-    this.rig.update(dt, this.player, this.world, this.input.aiming);
-
-    this.handlePlayerShooting();
-    this.handlePickups();
     this.syncActorCylinders();
 
     // --- bots ---
@@ -245,6 +258,132 @@ export class Engine {
     if (this.status === "playing" && this.player.alive && this.bots.every((b) => !b.alive)) {
       this.endMatch(true);
     }
+  }
+
+  /* ------------------------------ vehicle flow ------------------------------- */
+
+  private updateOnFoot(dt: number) {
+    // --- player ---
+    this.player.update(dt, this.input);
+    this.world.updateSunTarget(this.player.position.x, this.player.position.z);
+    this.rig.update(dt, this.player, this.world, this.input.aiming);
+
+    // Vehicles roll/idle and stay synced as physics obstacles.
+    this.vehicles.update(dt, null, this.physics, this.world);
+
+    // Enter prompt + enter action.
+    this.nearbyVehicle = this.vehicles.nearestEnterable(this.player.position);
+    if (this.input.enterQueued && this.nearbyVehicle) {
+      this.enterVehicle(this.nearbyVehicle, "driver");
+    }
+
+    this.handlePlayerShooting();
+    this.handlePickups();
+  }
+
+  private updateInVehicle(dt: number) {
+    const vehicle = this.activeVehicle!;
+
+    // Look input aims the turret/camera independently of the hull.
+    const look = this.input.consumeLook();
+    vehicle.applyLook(look.dx, look.dy, this.input.touch);
+
+    // Seat controls.
+    if (this.input.exitQueued) this.exitVehicle();
+    if (this.input.swapQueued && vehicle.occupied) {
+      const next: Seat = vehicle.occupied === "driver" ? "passenger" : "driver";
+      vehicle.occupied = next;
+      this.activeSeat = next;
+    }
+
+    // Driving (the manager only feeds input to the occupied vehicle).
+    this.vehicles.update(dt, this.input, this.physics, this.world);
+
+    // Keep the hidden player glued to the vehicle for zone/minimap logic.
+    this.player.position.copy(vehicle.position);
+    this.world.updateSunTarget(vehicle.position.x, vehicle.position.z);
+    this.rig.followTarget(
+      dt,
+      vehicle.position,
+      vehicle.aimYaw,
+      vehicle.aimPitch,
+      this.world,
+      CONFIG.vehicles.cameraDist,
+      CONFIG.vehicles.cameraHeight
+    );
+
+    // Technical passenger operates the mounted machine gun.
+    if (vehicle.hasGun && this.activeSeat === "passenger") {
+      this.handleVehicleGun(vehicle);
+    }
+  }
+
+  private enterVehicle(vehicle: Vehicle, seat: Seat) {
+    if (vehicle.occupied) return;
+    vehicle.occupied = seat;
+    this.activeVehicle = vehicle;
+    this.activeSeat = seat;
+    this.player.group.visible = false;
+    this.input.firing = false;
+    this.pushFeed(`You boarded the ${vehicle.label} as ${seat}`);
+  }
+
+  private exitVehicle() {
+    const vehicle = this.activeVehicle;
+    if (!vehicle) return;
+
+    // Place the player beside the hull, clear of its collision radius.
+    const side = new THREE.Vector3(Math.cos(vehicle.yaw), 0, -Math.sin(vehicle.yaw));
+    const px = vehicle.position.x + side.x * (vehicle.radius + 1.2);
+    const pz = vehicle.position.z + side.z * (vehicle.radius + 1.2);
+    this.player.position.set(px, this.world.heightAt(px, pz), pz);
+    this.player.yaw = vehicle.yaw;
+    this.player.velocity.set(0, 0, 0);
+    this.player.group.visible = true;
+
+    vehicle.occupied = null;
+    this.activeVehicle = null;
+    this.activeSeat = null;
+    this.input.firing = false;
+  }
+
+  private handleVehicleGun(vehicle: Vehicle) {
+    if (!this.input.firing || this.gunCooldown > 0) return;
+    this.gunCooldown = CONFIG.vehicles.fireInterval;
+
+    const origin = vehicle.muzzleWorld(new THREE.Vector3());
+    const dir = this.rig.getForward(new THREE.Vector3());
+    const vehicleIndex = this.vehicles.indexOf(vehicle);
+
+    const aliveBots = this.bots.filter((b) => b.alive);
+    this.physics.setActors(
+      aliveBots.map((b) => ({
+        x: b.position.x,
+        y: b.position.y,
+        z: b.position.z,
+        r: b.radius,
+        h: CONFIG.player.height,
+      }))
+    );
+    const hit = this.physics.raycast(origin, dir, CONFIG.vehicles.gunRange, vehicleIndex);
+    const endPoint = hit
+      ? origin.clone().addScaledVector(dir, hit.t)
+      : origin.clone().addScaledVector(dir, CONFIG.vehicles.gunRange);
+
+    if (hit?.kind === "actor" && hit.actorIndex !== undefined) {
+      const target = aliveBots[hit.actorIndex];
+      if (target) {
+        const died = target.applyDamage(CONFIG.vehicles.gunDamage);
+        this.hitMarkerAt = this.elapsed;
+        if (died) {
+          this.kills++;
+          this.pushFeed(`Mounted gun eliminated ${target.callsign}`);
+        }
+      }
+    }
+
+    this.flash.flash(origin);
+    this.tracers.spawn(origin, endPoint, 0xffb347);
   }
 
   /* --------------------------------- shooting --------------------------------- */
@@ -363,6 +502,9 @@ export class Engine {
     for (const p of this.pickups?.pickups ?? []) {
       if (p.active) blips.push({ x: p.group.position.x, z: p.group.position.z, kind: "pickup" });
     }
+    for (const v of this.vehicles?.vehicles ?? []) {
+      blips.push({ x: v.position.x, z: v.position.z, kind: "vehicle" });
+    }
 
     return {
       status: this.status,
@@ -396,6 +538,13 @@ export class Engine {
         r: this.zone?.radius ?? 100,
       },
       blips,
+      inVehicle: this.activeVehicle !== null,
+      vehicleKind: this.activeVehicle?.kind ?? null,
+      vehicleSeat: this.activeSeat,
+      canEnterVehicle: !this.activeVehicle && this.nearbyVehicle !== null,
+      nearbyVehicleLabel: this.nearbyVehicle?.label ?? null,
+      gunnerActive:
+        this.activeVehicle?.hasGun === true && this.activeSeat === "passenger",
     };
   }
 

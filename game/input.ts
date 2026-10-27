@@ -16,6 +16,9 @@ export class InputState {
   sprint = false;
   jumpQueued = false;
   reloadQueued = false;
+  enterQueued = false;
+  exitQueued = false;
+  swapQueued = false;
 
   /** Touch device flag, set by the React layer after media-query detection. */
   touch = false;
@@ -35,9 +38,24 @@ export class InputState {
     this.reloadQueued = true;
   }
 
+  queueEnter() {
+    this.enterQueued = true;
+  }
+
+  queueExit() {
+    this.exitQueued = true;
+  }
+
+  queueSwapSeat() {
+    this.swapQueued = true;
+  }
+
   resetTransient() {
     this.jumpQueued = false;
     this.reloadQueued = false;
+    this.enterQueued = false;
+    this.exitQueued = false;
+    this.swapQueued = false;
   }
 }
 
@@ -66,6 +84,9 @@ export function attachDesktopInput(
       input.queueJump();
     }
     if (e.code === "KeyR") input.queueReload();
+    if (e.code === "KeyE") input.queueEnter();
+    if (e.code === "KeyF") input.queueSwapSeat();
+    if (e.code === "KeyG") input.queueExit();
     recomputeMove();
   };
 

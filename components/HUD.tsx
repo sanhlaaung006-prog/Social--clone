@@ -54,9 +54,10 @@ export default function HUD({
             {touch ? (
               <>
                 <b>Mobile controls</b>
-                <br />• Left stick — move
-                <br />• Drag right side — look
+                <br />• Left stick — move / drive
+                <br />• Drag right side — look / aim turret
                 <br />• Fire / Aim / Jump / Reload buttons
+                <br />• Enter, Swap and Exit buttons appear near vehicles
                 <br />• Stay inside the blue circle. Last one standing wins.
               </>
             ) : (
@@ -65,6 +66,7 @@ export default function HUD({
                 <br />• Click screen to capture mouse
                 <br />• WASD move · Shift sprint · Space jump
                 <br />• Left click fire · Right click aim · R reload
+                <br />• E enter vehicle · F swap seat · G exit
                 <br />• Stay inside the blue circle. Last one standing wins.
               </>
             )}
@@ -137,6 +139,19 @@ export default function HUD({
       </div>
 
       <div className="crosshair" />
+      {hud.canEnterVehicle && (
+        <div className="vehicle-prompt hud-panel">
+          {touch ? "Tap ENTER to board" : `Press E — enter ${hud.nearbyVehicleLabel ?? "vehicle"}`}
+        </div>
+      )}
+      {hud.inVehicle && (
+        <div className="vehicle-status hud-panel">
+          {hud.vehicleKind === "tank" ? "MBT tank" : "Armed technical"} ·{" "}
+          {hud.vehicleSeat === "driver" ? "DRIVER" : "PASSENGER"}
+          {hud.gunnerActive ? " · mounted gun live" : ""}
+          {!touch && " · F swap seat · G exit"}
+        </div>
+      )}
       {showHit && <div className="hitmarker" />}
       {showDamage && <div className="damage-vignette" />}
       {hud.outsideZone && <div className="zone-warning">OUTSIDE SAFE ZONE — {hud.zoneState === "shrinking" ? "MOVE!" : "GET INSIDE"}</div>}

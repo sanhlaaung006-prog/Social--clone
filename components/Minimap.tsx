@@ -36,8 +36,14 @@ export default function Minimap({ hud }: { hud: HudSnapshot }) {
     // Blips.
     for (const b of hud.blips) {
       ctx.beginPath();
-      ctx.arc(toX(b.x), toY(b.z), b.kind === "bot" ? 2.6 : 2, 0, Math.PI * 2);
-      ctx.fillStyle = b.kind === "bot" ? "#ff6f68" : "#ffd166";
+      const r = b.kind === "bot" ? 2.6 : 2.2;
+      ctx.arc(toX(b.x), toY(b.z), r, 0, Math.PI * 2);
+      ctx.fillStyle =
+        b.kind === "bot"
+          ? "#ff6f68"
+          : b.kind === "vehicle"
+            ? "#9fd0ff"
+            : "#ffd166";
       ctx.fill();
     }
 

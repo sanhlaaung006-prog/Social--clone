@@ -223,6 +223,28 @@ body {
   }
 }
 
+.vehicle-prompt {
+  position: absolute;
+  bottom: 26%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.vehicle-status {
+  position: absolute;
+  top: calc(52px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
 .zone-warning {
   position: absolute;
   top: 18%;
@@ -340,6 +362,16 @@ body {
   align-self: center;
   background: rgba(180, 50, 45, 0.6);
   font-size: 14px;
+}
+.action-btn.enter {
+  background: rgba(60, 120, 170, 0.65);
+}
+.action-btn.exit {
+  background: rgba(170, 70, 50, 0.65);
+}
+.vehicle-cluster {
+  grid-template-columns: repeat(2, 74px);
+  grid-template-rows: repeat(2, 74px);
 }
 
 /* -------------------------------- overlays -------------------------------- */
