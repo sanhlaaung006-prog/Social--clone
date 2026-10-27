@@ -266,16 +266,22 @@ export function buildStylizedTank(): THREE.Group {
   const root = new THREE.Group();
   root.name = "Stylized MBT";
 
-  // Track belts: faceted octagonal prisms across the hull sides.
+  // Track belts: faceted cylinders running fore-aft (axis along Z) on
+  // each hull side — never across the width.
   const trackLen = 5.7;
   for (const side of [-1, 1]) {
-    mesh(root, crossCylinderGeometry(0.74, trackLen, 8), mats.rubber, "track-belt");
-    const belt = root.children[root.children.length - 1];
+    const belt = mesh(root, barrelGeometry(0.72, 0.72, trackLen, 10), mats.rubber, "track-belt");
     belt.position.set(side * 1.42, 0.78, 0);
-    // Road wheels (three per side) peeking out of the belt.
-    for (const z of [-1.9, 0, 1.9]) {
-      const wheel = mesh(root, crossCylinderGeometry(0.44, 0.55, 10), mats.darkMetal, "road-wheel");
-      wheel.position.set(side * 1.42, 0.62, z);
+    // Road wheels: discs on transverse axles, pushed outward so their
+    // faces read against the belt instead of hiding inside it.
+    for (const z of [-1.7, 0, 1.7]) {
+      const wheel = mesh(root, crossCylinderGeometry(0.42, 0.34, 10), mats.darkMetal, "road-wheel");
+      wheel.position.set(side * 1.98, 0.6, z);
+    }
+    // Drive sprocket aft and idler forward, crowning the belt ends.
+    for (const z of [-2.55, 2.55]) {
+      const endWheel = mesh(root, crossCylinderGeometry(0.52, 0.3, 10), mats.darkMetal, "end-wheel");
+      endWheel.position.set(side * 2.02, 0.78, z);
     }
   }
 
