@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#091012">
+  <title>Myanmar — Strategic Terrain</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #091012;
+      --panel: rgba(12, 20, 22, 0.82);
+      --panel-strong: rgba(13, 22, 24, 0.94);
+      --line: rgba(190, 211, 207, 0.15);
+      --line-strong: rgba(190, 211, 207, 0.28);
+      --text: #e2e9e5;
+      --muted: #8c9b96;
+      --faint: #5b6a66;
+      --accent: #b8d8ca;
+      --blue: #48a9d6;
+      --amber: #d3b77b;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); }
+    body { font-family: var(--sans); color: var(--text); font-size: 13px; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+
+    #app, #scene, #labels { position: fixed; inset: 0; }
+    #scene { background: radial-gradient(circle at 50% 38%, #142124 0%, #091012 72%); }
+    #scene canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+    #scene canvas.dragging { cursor: grabbing; }
+    #labels { pointer-events: none; overflow: hidden; z-index: 3; }
+
+    .vignette {
+      position: fixed; inset: 0; z-index: 2; pointer-events: none;
+      background: radial-gradient(ellipse at center, transparent 45%, rgba(3, 8, 9, 0.38) 100%);
+    }
+    .grain {
+      position: fixed; inset: 0; z-index: 2; pointer-events: none; opacity: 0.035;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
+    }
+
+    .topbar {
+      position: fixed; z-index: 10; left: 0; right: 0; top: 0; height: 76px;
+      display: flex; align-items: center; justify-content: space-between; padding: 0 26px;
+      border-bottom: 1px solid var(--line); background: linear-gradient(180deg, rgba(8, 14, 16, .92), rgba(8, 14, 16, .52));
+      backdrop-filter: blur(12px);
+    }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 260px; }
+    .brand-mark { width: 34px; height: 40px; color: var(--accent); }
+    .eyebrow { font: 9px/1.3 var(--mono); letter-spacing: .22em; color: var(--muted); text-transform: uppercase; }
+    .brand h1 { margin: 3px 0 0; font-size: 16px; line-height: 1; font-weight: 560; letter-spacing: .17em; }
+    .brand h1 span { color: var(--muted); font-weight: 400; }
+
+    .top-status { display: flex; align-items: center; gap: 18px; font: 10px var(--mono); letter-spacing: .12em; color: var(--muted); }
+    .status-item { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+    .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(184, 216, 202, .08); }
+    .pulse.active { animation: pulse 2.4s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .4; box-shadow: 0 0 0 7px rgba(184, 216, 202, 0); } }
+
+    .top-actions { display: flex; align-items: center; gap: 8px; min-width: 260px; justify-content: flex-end; }
+    .icon-button {
+      height: 36px; min-width: 36px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      background: rgba(255,255,255,.025); border: 1px solid var(--line); border-radius: 3px; cursor: pointer;
+      transition: background .2s, border-color .2s, color .2s;
+    }
+    .icon-button:hover { background: rgba(255,255,255,.07); border-color: var(--line-strong); }
+    .icon-button svg { width: 14px; height: 14px; }
+    .icon-button .button-label { font: 9px var(--mono); letter-spacing: .13em; }
+    #panelToggle { display: none; }
+
+    .panel {
+      position: fixed; z-index: 8; width: 246px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+      backdrop-filter: blur(14px); box-shadow: 0 18px 55px rgba(0,0,0,.16);
+    }
+    .left-panel { left: 24px; top: 98px; }
+    .right-panel { right: 24px; top: 98px; width: 274px; }
+    .panel-section { padding: 17px 18px; border-bottom: 1px solid var(--line); }
+    .panel-section:last-child { border-bottom: 0; }
+    .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+    .section-heading h2 { margin: 0; font: 9px var(--mono); letter-spacing: .18em; color: var(--muted); text-transform: uppercase; }
+    .micro { font: 9px var(--mono); color: var(--faint); letter-spacing: .08em; }
+
+    .view-list { display: grid; gap: 3px; }
+    .view-button {
+      width: 100%; border: 0; background: transparent; padding: 9px 8px; cursor: pointer;
+      display: grid; grid-template-columns: 24px 1fr 12px; align-items: center; text-align: left;
+      color: var(--muted); border-radius: 2px; transition: color .2s, background .2s;
+    }
+    .view-button:hover { color: var(--text); background: rgba(255,255,255,.035); }
+    .view-button.active { color: var(--text); background: rgba(184,216,202,.075); }
+    .view-index { font: 9px var(--mono); color: var(--faint); }
+    .view-name { font-size: 11px; letter-spacing: .04em; }
+    .view-arrow { opacity: 0; transform: translateX(-3px); transition: .2s; color: var(--accent); }
+    .view-button.active .view-arrow, .view-button:hover .view-arrow { opacity: 1; transform: none; }
+
+    .location-card { min-height: 142px; }
+    .location-card h3 { margin: 0 0 5px; font-size: 20px; line-height: 1.15; font-weight: 450; letter-spacing: -.02em; }
+    .location-role { margin: 0 0 15px; color: var(--accent); font: 9px/1.5 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .location-description { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+    .location-coords { display: flex; gap: 13px; margin-top: 13px; font: 9px var(--mono); color: var(--faint); }
+    .city-tabs { display: flex; gap: 5px; margin-top: 14px; }
+    .city-tab {
+      flex: 1; padding: 6px 2px; border: 1px solid var(--line); border-radius: 2px; background: transparent;
+      color: var(--faint); font: 8px var(--mono); letter-spacing: .06em; cursor: pointer; transition: .2s;
+    }
+    .city-tab:hover, .city-tab.active { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.04); }
+
+    .legend { display: grid; gap: 10px; }
+    .legend-row { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
+    .legend-key { display: flex; align-items: center; gap: 9px; }
+    .legend-swatch { width: 18px; height: 2px; background: var(--blue); }
+    .legend-swatch.border { height: 1px; background: #9da9a3; }
+    .legend-swatch.relief { height: 8px; width: 8px; background: #7c8481; transform: rotate(45deg); }
+
+    .lod-badge { padding: 4px 6px; border: 1px solid rgba(184,216,202,.18); color: var(--accent); border-radius: 2px; font: 8px var(--mono); letter-spacing: .08em; }
+    .control { margin-top: 16px; }
+    .control:first-of-type { margin-top: 4px; }
+    .control-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .control-head label { color: var(--muted); font-size: 10px; }
+    .control-value { font: 9px var(--mono); color: var(--text); }
+    input[type="range"] { width: 100%; height: 12px; margin: 0; appearance: none; background: transparent; cursor: pointer; }
+    input[type="range"]::-webkit-slider-runnable-track { height: 2px; background: rgba(190,211,207,.18); }
+    input[type="range"]::-webkit-slider-thumb { appearance: none; width: 8px; height: 8px; margin-top: -3px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(184,216,202,.08); }
+    input[type="range"]::-moz-range-track { height: 2px; background: rgba(190,211,207,.18); }
+    input[type="range"]::-moz-range-thumb { width: 8px; height: 8px; border: 0; border-radius: 50%; background: var(--accent); }
+
+    .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin-top: 14px; padding: 3px; border: 1px solid var(--line); border-radius: 3px; }
+    .segment { border: 0; padding: 6px 2px; background: transparent; color: var(--faint); font: 8px var(--mono); letter-spacing: .08em; cursor: pointer; border-radius: 2px; }
+    .segment.active { background: rgba(184,216,202,.1); color: var(--accent); }
+
+    .toggle-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .toggle { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; cursor: pointer; user-select: none; }
+    .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle-box { width: 12px; height: 12px; border: 1px solid var(--line-strong); border-radius: 2px; display: grid; place-items: center; transition: .2s; }
+    .toggle-box::after { content: ""; width: 4px; height: 4px; background: #0d1718; border-radius: 1px; transform: scale(0); transition: .16s; }
+    .toggle input:checked + .toggle-box { background: var(--accent); border-color: var(--accent); }
+    .toggle input:checked + .toggle-box::after { transform: scale(1); }
+
+    .chunk-map { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; height: 74px; margin-top: 11px; }
+    .chunk-cell { background: rgba(255,255,255,.025); border: 1px solid rgba(190,211,207,.06); transition: background .25s, border-color .25s; }
+    .chunk-cell.loaded { background: rgba(140,155,150,.1); }
+    .chunk-cell.visible { background: rgba(184,216,202,.38); border-color: rgba(184,216,202,.36); }
+    .stream-caption { display: flex; justify-content: space-between; margin-top: 8px; font: 8px var(--mono); color: var(--faint); letter-spacing: .05em; }
+
+    .stats {
+      position: fixed; z-index: 7; left: 24px; bottom: 22px; display: flex; gap: 22px;
+      padding-top: 11px; border-top: 1px solid var(--line); font-family: var(--mono);
+    }
+    .stat-label { display: block; font-size: 8px; letter-spacing: .12em; color: var(--faint); margin-bottom: 4px; }
+    .stat-value { font-size: 11px; color: var(--muted); }
+    .stat-value.good { color: var(--accent); }
+
+    .hint {
+      position: fixed; z-index: 7; bottom: 24px; left: 50%; transform: translateX(-50%);
+      font: 9px var(--mono); letter-spacing: .07em; color: var(--faint); white-space: nowrap;
+    }
+    .hint span { color: var(--muted); }
+
+    .compass { position: fixed; z-index: 7; right: 29px; bottom: 22px; width: 42px; height: 55px; text-align: center; color: var(--muted); }
+    .compass span { font: 8px var(--mono); letter-spacing: .1em; }
+    .compass svg { display: block; width: 42px; height: 42px; margin-top: 2px; transition: transform .1s linear; }
+
+    .map-label { position: absolute; left: 0; top: 0; will-change: transform; transition: opacity .18s; }
+    .city-label {
+      pointer-events: auto; border: 0; background: rgba(8,14,16,.74); color: var(--text); padding: 6px 9px 6px 10px;
+      border-left: 1px solid var(--amber); border-radius: 0 2px 2px 0; cursor: pointer; white-space: nowrap;
+      font: 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; backdrop-filter: blur(6px);
+    }
+    .city-label:hover { background: rgba(25,35,35,.94); color: #fff; }
+    .city-label::after { content: ""; position: absolute; left: -1px; top: 100%; height: 14px; width: 1px; background: linear-gradient(var(--amber), transparent); }
+    .region-label { color: rgba(215,225,219,.5); font: 8px var(--mono); letter-spacing: .22em; white-space: nowrap; text-shadow: 0 1px 4px #071011; }
+    .river-label { color: rgba(87,177,217,.8); font: italic 8px var(--mono); letter-spacing: .12em; white-space: nowrap; text-shadow: 0 1px 4px #071011; }
+    .sea-label { color: rgba(133,157,156,.26); font: 8px var(--mono); letter-spacing: .3em; white-space: nowrap; }
+
+    .toast {
+      position: fixed; z-index: 20; left: 50%; top: 92px; transform: translate(-50%, -8px); opacity: 0;
+      padding: 9px 13px; background: var(--panel-strong); border: 1px solid var(--line-strong); border-radius: 3px;
+      color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; pointer-events: none; transition: opacity .25s, transform .25s;
+    }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    .boot {
+      position: fixed; z-index: 15; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center;
+      pointer-events: none; transition: opacity .6s; color: var(--muted); font: 9px var(--mono); letter-spacing: .18em;
+    }
+    .boot-line { width: 130px; height: 1px; margin-top: 12px; background: rgba(255,255,255,.08); overflow: hidden; }
+    .boot-line::after { content: ""; display: block; width: 45%; height: 100%; background: var(--accent); animation: load 1.2s ease-in-out infinite; }
+    .boot.done { opacity: 0; }
+    @keyframes load { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
+
+    .error-message { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: #091012; color: var(--muted); text-align: center; line-height: 1.7; }
+
+    @media (max-width: 1050px) {
+      .top-status { display: none; }
+      .brand, .top-actions { min-width: 0; }
+      .left-panel { width: 220px; left: 16px; }
+      .right-panel { right: 16px; }
+      .stats { left: 16px; gap: 15px; }
+    }
+    @media (max-width: 760px) {
+      .topbar { height: 64px; padding: 0 14px; }
+      .brand-mark { width: 27px; height: 32px; }
+      .brand h1 { font-size: 13px; }
+      .brand .eyebrow { font-size: 7px; }
+      .icon-button .button-label { display: none; }
+      #panelToggle { display: inline-flex; }
+      .left-panel { left: 12px; right: 12px; top: auto; bottom: 64px; width: auto; }
+      .left-panel .panel-section { padding: 10px; }
+      .left-panel .panel-section:not(:first-child) { display: none; }
+      .left-panel .section-heading { display: none; }
+      .view-list { display: flex; overflow-x: auto; gap: 4px; scrollbar-width: none; }
+      .view-button { flex: 0 0 auto; width: auto; display: flex; gap: 6px; padding: 8px 10px; background: rgba(255,255,255,.025); }
+      .view-arrow { display: none; }
+      .view-index { display: none; }
+      .view-name { font-size: 9px; white-space: nowrap; }
+      .right-panel { display: none; top: 74px; right: 12px; width: min(274px, calc(100vw - 24px)); max-height: calc(100vh - 150px); overflow-y: auto; }
+      .right-panel.open { display: block; animation: panelIn .22s ease-out; }
+      @keyframes panelIn { from { opacity: 0; transform: translateY(-5px); } }
+      .stats { top: 76px; bottom: auto; left: 14px; gap: 14px; padding: 0; border: 0; }
+      .stat:nth-child(3), .stat:nth-child(5) { display: none; }
+      .stat-label { font-size: 7px; }
+      .stat-value { font-size: 9px; }
+      .hint { display: none; }
+      .compass { right: 14px; bottom: 15px; transform: scale(.8); transform-origin: bottom right; }
+      .region-label, .sea-label { display: none; }
+      .city-label { font-size: 8px; padding: 5px 7px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <main id="app">
+    <div id="scene" aria-label="Interactive three-dimensional strategic terrain map of Myanmar"></div>
+    <div id="labels"></div>
+    <div class="vignette"></div>
+    <div class="grain"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 36 42" fill="none" aria-hidden="true">
+          <path d="M17 2 27 8 24 15 31 20 25 24 23 34 17 40 14 29 8 24 11 17 6 11 14 9Z" stroke="currentColor" stroke-width="1"/>
+          <path d="M12 12 23 29M9 22 26 17M15 7 20 35" stroke="currentColor" stroke-opacity=".28" stroke-width=".7"/>
+        </svg>
+        <div>
+          <div class="eyebrow">Strategic atlas / 01</div>
+          <h1>MYANMAR <span>/ TERRAIN</span></h1>
+        </div>
+      </div>
+      <div class="top-status">
+        <div class="status-item"><i class="pulse active" id="orbitPulse"></i><span id="orbitStatus">ORBIT ACTIVE</span></div>
+        <div class="status-item">21.0° N &nbsp; 96.0° E</div>
+        <div class="status-item">VERTICAL EXAGGERATION</div>
+      </div>
+      <div class="top-actions">
+        <button class="icon-button" id="resetButton" title="Reset overview (R)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4v6h6M20 20v-6h-6"/><path d="M5.5 15a7 7 0 0 0 11.7 2.5L20 14M4 10l2.8-3.5A7 7 0 0 1 18.5 9"/></svg>
+          <span class="button-label">RESET</span>
+        </button>
+        <button class="icon-button" id="orbitButton" title="Pause orbit (Space)" aria-pressed="true">
+          <svg id="orbitIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+          <span class="button-label" id="orbitButtonLabel">PAUSE</span>
+        </button>
+        <button class="icon-button" id="panelToggle" title="Terrain controls" aria-label="Open terrain controls">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="#0c1416"/><circle cx="15" cy="17" r="2" fill="#0c1416"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <aside class="panel left-panel">
+      <section class="panel-section">
+        <div class="section-heading"><h2>Operational views</h2><span class="micro">05</span></div>
+        <div class="view-list" id="viewList">
+          <button class="view-button active" data-view="overview"><span class="view-index">01</span><span class="view-name">National overview</span><span class="view-arrow">→</span></button>
+          <button class="view-button" data-view="central"><span class="view-index">02</span><span class="view-name">Central valley</span><span class="view-arrow">→</span></button>
+          <button class="view-button" data-view="rakhine"><span class="view-index">03</span><span class="view-name">Arakan Yoma</span><span class="view-arrow">→</span></button>
+          <button class="view-button" data-view="shan"><span class="view-index">04</span><span class="view-name">Shan highlands</span><span class="view-arrow">→</span></button>
+          <button class="view-button" data-view="delta"><span class="view-index">05</span><span class="view-name">Irrawaddy delta</span><span class="view-arrow">→</span></button>
+        </div>
+      </section>
+      <section class="panel-section location-card">
+        <div class="section-heading"><h2>Selected center</h2><span class="micro" id="selectedIndex">CITY / 02</span></div>
+        <h3 id="locationName">Mandalay</h3>
+        <p class="location-role" id="locationRole">Cultural capital · Dry zone</p>
+        <p class="location-description" id="locationDescription">Upper Myanmar’s principal crossroads, positioned on the Irrawaddy east of the central basin.</p>
+        <div class="location-coords"><span id="locationLat">21.9588° N</span><span id="locationLon">96.0891° E</span></div>
+        <div class="city-tabs">
+          <button class="city-tab" data-city="yangon">YANGON</button>
+          <button class="city-tab active" data-city="mandalay">MANDALAY</button>
+          <button class="city-tab" data-city="naypyidaw">NAYPYIDAW</button>
+        </div>
+      </section>
+      <section class="panel-section">
+        <div class="section-heading"><h2>Map key</h2><span class="micro">MMR</span></div>
+        <div class="legend">
+          <div class="legend-row"><span class="legend-key"><i class="legend-swatch"></i>Primary river</span><span class="micro">02</span></div>
+          <div class="legend-row"><span class="legend-key"><i class="legend-swatch border"></i>National boundary</span><span class="micro">68 PT</span></div>
+          <div class="legend-row"><span class="legend-key"><i class="legend-swatch relief"></i>Displaced relief</span><span class="micro">LOW POLY</span></div>
+        </div>
+      </section>
+    </aside>
+
+    <aside class="panel right-panel" id="controlPanel">
+      <section class="panel-section">
+        <div class="section-heading"><h2>Terrain engine</h2><span class="lod-badge" id="lodBadge">DETAILED</span></div>
+        <div class="control">
+          <div class="control-head"><label for="orbitSpeed">Orbit velocity</label><span class="control-value" id="orbitSpeedValue">0.45×</span></div>
+          <input id="orbitSpeed" type="range" min="0.1" max="1.5" step="0.05" value="0.45">
+        </div>
+        <div class="control">
+          <div class="control-head"><label for="relief">Relief amplitude</label><span class="control-value" id="reliefValue">1.00×</span></div>
+          <input id="relief" type="range" min="0.4" max="2" step="0.05" value="1">
+        </div>
+        <div class="control">
+          <div class="control-head"><label for="viewRadius">Stream radius</label><span class="control-value" id="viewRadiusValue">100%</span></div>
+          <input id="viewRadius" type="range" min="0.65" max="1.4" step="0.05" value="1">
+        </div>
+        <div class="segmented" aria-label="Level of detail mode">
+          <button class="segment active" data-lod="auto">AUTO</button>
+          <button class="segment" data-lod="detail">DETAIL</button>
+          <button class="segment" data-lod="flat">FLAT</button>
+        </div>
+      </section>
+      <section class="panel-section">
+        <div class="section-heading"><h2>Visible layers</h2><span class="micro">LIVE</span></div>
+        <div class="toggle-list">
+          <label class="toggle"><input type="checkbox" data-layer="rivers" checked><span class="toggle-box"></span>Rivers</label>
+          <label class="toggle"><input type="checkbox" data-layer="border" checked><span class="toggle-box"></span>Boundary</label>
+          <label class="toggle"><input type="checkbox" data-layer="cities" checked><span class="toggle-box"></span>City blocks</label>
+          <label class="toggle"><input type="checkbox" data-layer="villages" checked><span class="toggle-box"></span>Villages</label>
+          <label class="toggle"><input type="checkbox" data-layer="trees" checked><span class="toggle-box"></span>Vegetation</label>
+          <label class="toggle"><input type="checkbox" data-layer="labels" checked><span class="toggle-box"></span>Labels</label>
+        </div>
+      </section>
+      <section class="panel-section">
+        <div class="section-heading"><h2>Chunk field</h2><span class="micro" id="chunkCounter">00 / 32</span></div>
+        <div class="chunk-map" id="chunkMap" aria-label="Terrain chunk streaming status"></div>
+        <div class="stream-caption"><span>4 × 8 TILE GRID</span><span id="streamMode">RADIUS CULLING</span></div>
+      </section>
+    </aside>
+
+    <div class="stats">
+      <div class="stat"><span class="stat-label">FRAME RATE</span><span class="stat-value good" id="fpsStat">60 FPS</span></div>
+      <div class="stat"><span class="stat-label">TRIANGLES</span><span class="stat-value" id="triangleStat">— / 50K</span></div>
+      <div class="stat"><span class="stat-label">DRAW CALLS</span><span class="stat-value" id="drawStat">—</span></div>
+      <div class="stat"><span class="stat-label">CHUNKS</span><span class="stat-value" id="chunkStat">00 / 32</span></div>
+      <div class="stat"><span class="stat-label">INSTANCES</span><span class="stat-value" id="instanceStat">—</span></div>
+    </div>
+    <div class="hint"><span>DRAG</span> ORBIT &nbsp;·&nbsp; <span>SCROLL</span> ZOOM &nbsp;·&nbsp; <span>SPACE</span> PAUSE &nbsp;·&nbsp; <span>R</span> RESET</div>
+    <div class="compass"><span>N</span><svg id="compassNeedle" viewBox="0 0 42 42" fill="none" aria-hidden="true"><circle cx="21" cy="21" r="18" stroke="currentColor" stroke-opacity=".2"/><path d="M21 5 25 22 21 19 17 22Z" fill="#b8d8ca"/><path d="M21 37 17 22 21 25 25 22Z" fill="#5b6a66"/></svg></div>
+    <div class="toast" id="toast">OVERVIEW RESTORED</div>
+    <div class="boot" id="boot">ASSEMBLING TERRAIN<div class="boot-line"></div></div>
+  </main>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const smoothstep = (a, b, v) => {
+      const t = clamp((v - a) / (b - a), 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+
+    function mulberry32(seed) {
+      return function() {
+        let t = seed += 0x6D2B79F5;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+    const random = mulberry32(19480104);
+
+    // Natural Earth-derived national outline, embedded for deterministic offline geometry.
+    const COUNTRY = [
+      [99.543309,20.186598],[98.959676,19.752981],[98.253724,19.708203],[97.797783,18.62708],
+      [97.375896,18.445438],[97.859123,17.567946],[98.493761,16.837836],[98.903348,16.177824],
+      [98.537376,15.308497],[98.192074,15.123703],[98.430819,14.622028],[99.097755,13.827503],
+      [99.212012,13.269294],[99.196354,12.804748],[99.587286,11.892763],[99.038121,10.960546],
+      [98.553551,9.93296],[98.457174,10.675266],[98.764546,11.441292],[98.428339,12.032987],
+      [98.509574,13.122378],[98.103604,13.64046],[97.777732,14.837286],[97.597072,16.100568],
+      [97.16454,16.928734],[96.505769,16.427241],[95.369352,15.71439],[94.808405,15.803454],
+      [94.188804,16.037936],[94.533486,17.27724],[94.324817,18.213514],[93.540988,19.366493],
+      [93.663255,19.726962],[93.078278,19.855145],[92.368554,20.670883],[92.303234,21.475485],
+      [92.652257,21.324048],[92.672721,22.041239],[93.166128,22.27846],[93.060294,22.703111],
+      [93.286327,23.043658],[93.325188,24.078556],[94.106742,23.850741],[94.552658,24.675238],
+      [94.603249,25.162495],[95.155153,26.001307],[95.124768,26.573572],[96.419366,27.264589],
+      [97.133999,27.083774],[97.051989,27.699059],[97.402561,27.882536],[97.327114,28.261583],
+      [97.911988,28.335945],[98.246231,27.747221],[98.68269,27.508812],[98.712094,26.743536],
+      [98.671838,25.918703],[97.724609,25.083637],[97.60472,23.897405],[98.660262,24.063286],
+      [98.898749,23.142722],[99.531992,22.949039],[99.240899,22.118314],[99.983489,21.742937],
+      [100.416538,21.558839],[101.150033,21.849984],[101.180005,21.436573],[100.329101,20.786122],
+      [100.115988,20.41785]
+    ];
+
+    const MAP = { lon: 96.5, lat: 19.2, scale: 6, lonScale: 6 * Math.cos(19.2 * Math.PI / 180) };
+    const BOUNDS = { minLon: 92.25, maxLon: 101.22, minLat: 9.88, maxLat: 28.38 };
+    const TILE_COLS = 4, TILE_ROWS = 8, TILE_SEGMENTS = 16;
+    const TRIANGLE_BUDGET = 50000;
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const state = {
+      autoOrbit: !reducedMotion,
+      orbitSpeed: 0.45,
+      relief: 1,
+      viewScale: 1,
+      lodMode: 'auto',
+      detailed: true,
+      interactionHold: 0,
+      layers: { rivers: true, border: true, cities: true, villages: true, trees: true, labels: true }
+    };
+
+    function project(lon, lat, y = 0) {
+      return new THREE.Vector3((lon - MAP.lon) * MAP.lonScale, y, -(lat - MAP.lat) * MAP.scale);
+    }
+    function unproject(x, z) {
+      return [x / MAP.lonScale + MAP.lon, -z / MAP.scale + MAP.lat];
+    }
+    function pointInCountry(lon, lat) {
+      let inside = false;
+      for (let i = 0, j = COUNTRY.length - 1; i < COUNTRY.length; j = i++) {
+        const xi = COUNTRY[i][0], yi = COUNTRY[i][1];
+        const xj = COUNTRY[j][0], yj = COUNTRY[j][1];
+        const intersect = ((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / ((yj - yi) || 1e-9) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function terrainHeight(lon, lat) {
+      const westAxis = 93.40 + 0.155 * (lat - 18);
+      const westMask = smoothstep(17.0, 18.8, lat) * (1 - smoothstep(27.2, 28.4, lat));
+      const coastalPlain = smoothstep(westAxis - .95, westAxis - .35, lon);
+      const arakan = Math.exp(-Math.pow((lon - westAxis) / 0.72, 2)) * westMask * coastalPlain * (5.2 + 1.25 * Math.sin(lat * 1.45));
+      const north = smoothstep(25.4, 28.25, lat) * Math.exp(-Math.pow((lon - 97.25) / 1.5, 2)) * 6.8;
+      const shanMask = smoothstep(96.3, 97.65, lon) * (1 - smoothstep(100.0, 101.15, lon)) * smoothstep(18.1, 19.8, lat) * (1 - smoothstep(24.8, 26.0, lat));
+      const shan = shanMask * (4.0 + 1.1 * Math.sin(lon * 2.7 + lat * 1.2) + .65 * Math.cos(lat * 3.1));
+      const tenasserimAxis = 98.65 + .18 * Math.sin(lat * 1.2);
+      const tenasserim = Math.exp(-Math.pow((lon - tenasserimAxis) / .48, 2)) * (1 - smoothstep(16.8, 18.1, lat)) * smoothstep(9.8, 11.1, lat) * 3.5;
+      const bago = Math.exp(-Math.pow((lon - 96.12) / .38, 2)) * Math.exp(-Math.pow((lat - 18.55) / 1.3, 2)) * 1.65;
+      const valleyAxis = 95.75 - .11 * (lat - 21);
+      const valley = Math.exp(-Math.pow((lon - valleyAxis) / 1.05, 2)) * smoothstep(15.7, 18.0, lat) * (1 - smoothstep(24.4, 25.8, lat));
+      const roughness = (.26 * Math.sin(lon * 7.3 + lat * 3.7) + .18 * Math.cos(lon * 4.1 - lat * 6.2));
+      const highlandNoise = roughness * (1 - valley * .82) * (0.3 + Math.min(1, (arakan + shan + north) / 5));
+      return Math.max(.12, (.38 + arakan + north + shan + tenasserim + bago + highlandNoise - valley * .58) * state.relief);
+    }
+
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    } catch (error) {
+      document.body.innerHTML = '<div class="error-message">This strategic terrain requires WebGL.<br>Please enable hardware acceleration and reload.</div>';
+      throw error;
+    }
+    let maxPixelRatio = Math.min(devicePixelRatio, 1.75);
+    let currentPixelRatio = maxPixelRatio;
+    renderer.setPixelRatio(currentPixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    $('#scene').appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x091012, 0.00225);
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, .1, 700);
+    const hemisphere = new THREE.HemisphereLight(0xdde8e1, 0x182123, 2.15);
+    scene.add(hemisphere);
+    const sun = new THREE.DirectionalLight(0xf4f0df, 3.2);
+    sun.position.set(-55, 95, 40);
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0x7ea5ac, .7);
+    fill.position.set(60, 25, -70);
+    scene.add(fill);
+
+    const world = new THREE.Group();
+    scene.add(world);
+    const terrainGroup = new THREE.Group();
+    world.add(terrainGroup);
+
+    const ocean = new THREE.Mesh(
+      new THREE.PlaneGeometry(430, 430),
+      new THREE.MeshStandardMaterial({ color: 0x0b1618, roughness: 1, metalness: 0 })
+    );
+    ocean.rotation.x = -Math.PI / 2;
+    ocean.position.y = -1.05;
+    world.add(ocean);
+    const seaGrid = new THREE.GridHelper(280, 28, 0x446065, 0x31474a);
+    seaGrid.position.y = -.99;
+    seaGrid.material.transparent = true;
+    seaGrid.material.opacity = .09;
+    seaGrid.material.depthWrite = false;
+    world.add(seaGrid);
+
+    const terrainMaterial = new THREE.MeshStandardMaterial({
+      color: 0x7b817e, roughness: .96, metalness: 0, flatShading: true, side: THREE.DoubleSide
+    });
+
+    // Flat silhouette is the far LOD; it uses the exact same national boundary.
+    const flatShape = new THREE.Shape(COUNTRY.map(([lon, lat]) => {
+      const p = project(lon, lat);
+      return new THREE.Vector2(p.x, p.z);
+    }));
+    const flatGeometry = new THREE.ShapeGeometry(flatShape);
+    flatGeometry.rotateX(Math.PI / 2);
+    const flatTerrain = new THREE.Mesh(flatGeometry, new THREE.MeshStandardMaterial({ color: 0x707773, roughness: 1, side: THREE.DoubleSide }));
+    flatTerrain.position.y = .02;
+    flatTerrain.visible = false;
+    world.add(flatTerrain);
+
+    const tiles = [];
+    const buildQueue = [];
+    let queued = new Set();
+    const chunkElements = [];
+    for (let i = 0; i < TILE_COLS * TILE_ROWS; i++) {
+      const el = document.createElement('div');
+      el.className = 'chunk-cell';
+      $('#chunkMap').appendChild(el);
+      chunkElements.push(el);
+    }
+
+    for (let row = 0; row < TILE_ROWS; row++) {
+      for (let col = 0; col < TILE_COLS; col++) {
+        const minLon = lerp(BOUNDS.minLon, BOUNDS.maxLon, col / TILE_COLS);
+        const maxLon = lerp(BOUNDS.minLon, BOUNDS.maxLon, (col + 1) / TILE_COLS);
+        const minLat = lerp(BOUNDS.minLat, BOUNDS.maxLat, row / TILE_ROWS);
+        const maxLat = lerp(BOUNDS.minLat, BOUNDS.maxLat, (row + 1) / TILE_ROWS);
+        const center = project((minLon + maxLon) / 2, (minLat + maxLat) / 2);
+        const a = project(minLon, minLat), b = project(maxLon, maxLat);
+        const radius = Math.hypot(b.x - a.x, b.z - a.z) * .5;
+        const index = row * TILE_COLS + col;
+        const tile = { index, row, col, minLon, maxLon, minLat, maxLat, center, radius, mesh: null, needed: false, hasLand: false };
+        // Begin conservatively: a boundary may cross a tile without containing its center or corners.
+        // Empty ocean tiles retire themselves after their first construction pass.
+        tile.hasLand = true;
+        tiles.push(tile);
+        chunkElements[index].title = `Tile ${col + 1}.${row + 1}`;
+      }
+    }
+
+    function buildChunk(tile) {
+      const positions = [];
+      const coords = [];
+      const dLon = (tile.maxLon - tile.minLon) / TILE_SEGMENTS;
+      const dLat = (tile.maxLat - tile.minLat) / TILE_SEGMENTS;
+      function vertex(lon, lat) {
+        const p = project(lon, lat, terrainHeight(lon, lat));
+        positions.push(p.x, p.y, p.z);
+        coords.push(lon, lat);
+      }
+      function triangle(a, b, c) {
+        const lon = (a[0] + b[0] + c[0]) / 3;
+        const lat = (a[1] + b[1] + c[1]) / 3;
+        if (!pointInCountry(lon, lat)) return;
+        vertex(a[0], a[1]); vertex(b[0], b[1]); vertex(c[0], c[1]);
+      }
+      for (let y = 0; y < TILE_SEGMENTS; y++) {
+        for (let x = 0; x < TILE_SEGMENTS; x++) {
+          const lon0 = tile.minLon + x * dLon, lon1 = lon0 + dLon;
+          const lat0 = tile.minLat + y * dLat, lat1 = lat0 + dLat;
+          const a = [lon0,lat0], b = [lon1,lat0], c = [lon1,lat1], d = [lon0,lat1];
+          triangle(a, b, c);
+          triangle(a, c, d);
+        }
+      }
+      if (!positions.length) {
+        tile.hasLand = false;
+        return;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geometry, terrainMaterial);
+      mesh.userData.coords = coords;
+      mesh.visible = false;
+      tile.mesh = mesh;
+      terrainGroup.add(mesh);
+    }
+
+    function queueChunk(tile) {
+      if (tile.mesh || queued.has(tile.index) || !tile.hasLand) return;
+      queued.add(tile.index);
+      buildQueue.push(tile);
+    }
+
+    const riverGroup = new THREE.Group();
+    world.add(riverGroup);
+    const IRRAWADDY = [
+      [97.34,25.52],[97.39,25.18],[97.23,24.62],[97.23,24.26],[96.92,23.92],[96.55,23.55],
+      [96.35,23.08],[96.28,22.55],[96.10,21.96],[95.98,21.72],[95.52,21.46],[95.09,21.20],
+      [94.88,20.72],[94.94,20.16],[94.89,19.61],[95.07,19.12],[95.22,18.72],[95.15,18.22],
+      [95.34,17.72],[95.30,17.25],[95.13,16.84],[94.98,16.35],[94.88,15.92]
+    ];
+    const SALWEEN = [
+      [98.64,24.15],[98.45,23.72],[98.11,23.28],[97.91,22.78],[97.63,22.25],[97.42,21.72],
+      [97.22,21.18],[97.12,20.61],[97.37,20.02],[97.76,19.48],[97.91,18.91],[97.67,18.33],
+      [97.51,17.82],[97.60,17.33],[97.64,16.89],[97.61,16.46],[97.42,16.16],[97.18,15.98]
+    ];
+    const riverMaterial = new THREE.LineBasicMaterial({ color: 0x48a9d6, transparent: true, opacity: .96, depthWrite: false });
+    const rivers = [];
+
+    function createRiver(name, points, opacity = 1) {
+      const curvePoints = points.map(([lon, lat]) => project(lon, lat));
+      const curve = new THREE.CatmullRomCurve3(curvePoints, false, 'centripetal', .35);
+      const samples = curve.getPoints(name === 'Irrawaddy' ? 240 : 200);
+      const geometry = new THREE.BufferGeometry().setFromPoints(samples);
+      const material = riverMaterial.clone();
+      material.opacity *= opacity;
+      const line = new THREE.Line(geometry, material);
+      line.renderOrder = 2;
+      line.userData = { name, samples };
+      riverGroup.add(line);
+      rivers.push(line);
+      return line;
+    }
+    createRiver('Irrawaddy', IRRAWADDY);
+    createRiver('Salween', SALWEEN);
+
+    const deltaBranches = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0x48a9d6, transparent: true, opacity: .48, depthWrite: false })
+    );
+    deltaBranches.userData.paths = [
+      [[95.30,17.25],[94.90,16.85],[94.73,16.30],[94.70,15.85]],
+      [[95.13,16.84],[95.52,16.46],[95.77,16.03],[95.83,15.72]],
+      [[94.98,16.35],[94.52,16.20],[94.20,16.02]]
+    ];
+    riverGroup.add(deltaBranches);
+
+    const borderGeometry = new THREE.BufferGeometry();
+    const borderLine = new THREE.Line(borderGeometry, new THREE.LineBasicMaterial({ color: 0xb8c2bb, transparent: true, opacity: .58 }));
+    borderLine.renderOrder = 3;
+    world.add(borderLine);
+
+    function writeDynamicPositions(geometry, positions) {
+      const existing = geometry.getAttribute('position');
+      if (existing && existing.array.length === positions.length) {
+        existing.array.set(positions);
+        existing.needsUpdate = true;
+      } else {
+        geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+      }
+      geometry.computeBoundingSphere();
+    }
+
+    function updateRiverAndBorderHeights() {
+      rivers.forEach(line => {
+        const attr = line.geometry.attributes.position;
+        line.userData.samples.forEach((p, i) => {
+          const [lon, lat] = unproject(p.x, p.z);
+          attr.setY(i, (state.detailed ? terrainHeight(lon, lat) : 0) + .34);
+        });
+        attr.needsUpdate = true;
+        line.geometry.computeBoundingSphere();
+      });
+      const branchPositions = [];
+      deltaBranches.userData.paths.forEach(path => {
+        for (let i = 0; i < path.length - 1; i++) {
+          [path[i], path[i + 1]].forEach(([lon, lat]) => {
+            const p = project(lon, lat, (state.detailed ? terrainHeight(lon, lat) : 0) + .32);
+            branchPositions.push(p.x,p.y,p.z);
+          });
+        }
+      });
+      writeDynamicPositions(deltaBranches.geometry,branchPositions);
+      const borderPositions = [];
+      for (let i = 0; i < COUNTRY.length; i++) {
+        const a = COUNTRY[i], b = COUNTRY[(i + 1) % COUNTRY.length];
+        const steps = Math.max(1, Math.ceil(Math.hypot(b[0]-a[0], b[1]-a[1]) * 3));
+        for (let j = 0; j < steps; j++) {
+          const t = j / steps;
+          const lon = lerp(a[0],b[0],t), lat = lerp(a[1],b[1],t);
+          const p = project(lon,lat,(state.detailed ? terrainHeight(lon,lat) : 0) + .38);
+          borderPositions.push(p.x,p.y,p.z);
+        }
+      }
+      const first = COUNTRY[0];
+      const close = project(first[0],first[1],(state.detailed ? terrainHeight(first[0],first[1]) : 0) + .38);
+      borderPositions.push(close.x,close.y,close.z);
+      writeDynamicPositions(borderGeometry,borderPositions);
+    }
+
+    const CITY_DATA = [
+      { id:'yangon', name:'Yangon', lon:96.1735, lat:16.8409, count:210, weight:1, role:'Commercial capital · Lower Myanmar', description:'Myanmar’s largest urban center and principal port, set between the Bago and Yangon rivers north of the Andaman approaches.' },
+      { id:'mandalay', name:'Mandalay', lon:96.0891, lat:21.9588, count:180, weight:.94, role:'Cultural capital · Dry zone', description:'Upper Myanmar’s principal crossroads, positioned on the Irrawaddy east of the central basin.' },
+      { id:'naypyidaw', name:'Naypyidaw', lon:96.0785, lat:19.7633, count:140, weight:.8, role:'Administrative capital · Central basin', description:'The purpose-built administrative capital occupies a broad inland corridor between the Bago Yoma and Shan uplands.' },
+      { name:'Mawlamyine', lon:97.646, lat:16.454, count:70, weight:.65 }, { name:'Bago', lon:96.479, lat:17.336, count:55, weight:.55 },
+      { name:'Taunggyi', lon:97.037, lat:20.789, count:55, weight:.55 }, { name:'Myitkyina', lon:97.394, lat:25.386, count:55, weight:.5 },
+      { name:'Monywa', lon:95.142, lat:22.109, count:60, weight:.55 }, { name:'Pathein', lon:94.732, lat:16.779, count:50, weight:.5 },
+      { name:'Sittwe', lon:92.898, lat:20.146, count:45, weight:.45 }, { name:'Pyay', lon:95.222, lat:18.824, count:45, weight:.45 },
+      { name:'Pakokku', lon:95.084, lat:21.333, count:40, weight:.42 }, { name:'Lashio', lon:97.75, lat:22.933, count:40, weight:.42 },
+      { name:'Magway', lon:94.934, lat:20.15, count:35, weight:.38 }, { name:'Dawei', lon:98.2, lat:14.083, count:35, weight:.38 },
+      { name:'Myeik', lon:98.6, lat:12.439, count:30, weight:.34 }, { name:'Hpa-an', lon:97.633, lat:16.89, count:30, weight:.34 },
+      { name:'Bhamo', lon:97.233, lat:24.26, count:25, weight:.3 }
+    ];
+    const majorCities = CITY_DATA.filter(c => c.id);
+
+    const cityPlacements = [];
+    CITY_DATA.forEach((city, cityIndex) => {
+      const center = project(city.lon, city.lat);
+      const grid = Math.ceil(Math.sqrt(city.count));
+      const spacing = .29 + city.weight * .08;
+      const angle = (cityIndex * 1.73) % Math.PI;
+      const cos = Math.cos(angle), sin = Math.sin(angle);
+      for (let i = 0; i < city.count; i++) {
+        const gx = (i % grid - (grid - 1) / 2) * spacing + (random() - .5) * .08;
+        const gz = (Math.floor(i / grid) - (grid - 1) / 2) * spacing + (random() - .5) * .08;
+        const x = center.x + gx * cos - gz * sin;
+        const z = center.z + gx * sin + gz * cos;
+        const [lon, lat] = unproject(x,z);
+        if (!pointInCountry(lon,lat)) continue;
+        const core = 1 - clamp(Math.hypot(gx,gz) / (grid * spacing * .7), 0, 1);
+        const sy = .24 + random() * .52 + core * city.weight * .75;
+        cityPlacements.push({ lon,lat,x,z, sx:.14+random()*.18, sy, sz:.14+random()*.18, rot:angle, shade:random() });
+      }
+    });
+
+    const villagePlacements = [];
+    const settlementSources = [...IRRAWADDY.slice(3), ...SALWEEN.slice(3), ...CITY_DATA.map(c => [c.lon,c.lat])];
+    for (let village = 0; village < 65; village++) {
+      let centerLon = 96, centerLat = 20, accepted = false;
+      for (let attempt = 0; attempt < 30 && !accepted; attempt++) {
+        const source = settlementSources[Math.floor(random() * settlementSources.length)];
+        centerLon = source[0] + (random() - .5) * 1.1;
+        centerLat = source[1] + (random() - .5) * .9;
+        accepted = pointInCountry(centerLon,centerLat);
+      }
+      if (!accepted) continue;
+      const angle = random() * Math.PI;
+      for (let hut = 0; hut < 8; hut++) {
+        const lon = centerLon + (random() - .5) * .16;
+        const lat = centerLat + (random() - .5) * .13;
+        if (!pointInCountry(lon,lat)) continue;
+        const p = project(lon,lat);
+        const s = .22 + random() * .16;
+        villagePlacements.push({ lon,lat,x:p.x,z:p.z,sx:s,sy:s*(.65+random()*.35),sz:s*1.15,rot:angle+(random()-.5)*.3,shade:random() });
+      }
+    }
+
+    const treePlacements = [];
+    for (let attempt = 0; attempt < 18000 && treePlacements.length < 1400; attempt++) {
+      const lon = lerp(BOUNDS.minLon,BOUNDS.maxLon,random());
+      const lat = lerp(BOUNDS.minLat,BOUNDS.maxLat,random());
+      if (!pointInCountry(lon,lat)) continue;
+      const h = terrainHeight(lon,lat) / state.relief;
+      if (h < 1.2 && random() > .13) continue;
+      if (CITY_DATA.some(c => Math.hypot((c.lon-lon)*1.4,c.lat-lat) < .14)) continue;
+      const p = project(lon,lat);
+      const s = .5 + random() * .85;
+      treePlacements.push({ lon,lat,x:p.x,z:p.z,sx:s,sy:s,sz:s,rot:random()*Math.PI*2,shade:random() });
+    }
+
+    const dummy = new THREE.Object3D();
+    function createInstances(placements, geometry, material, palette) {
+      const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.userData.placements = placements;
+      const color = new THREE.Color();
+      placements.forEach((p,i) => {
+        dummy.position.set(p.x,terrainHeight(p.lon,p.lat),p.z);
+        dummy.rotation.set(0,p.rot,0);
+        dummy.scale.set(p.sx,p.sy,p.sz);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i,dummy.matrix);
+        color.set(palette[Math.min(palette.length-1,Math.floor(p.shade*palette.length))]);
+        mesh.setColorAt(i,color);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      world.add(mesh);
+      return mesh;
+    }
+    function updateInstanceTerrain(mesh) {
+      const placements = mesh.userData.placements;
+      if (!placements) return;
+      placements.forEach((p,i) => {
+        const groundY = state.detailed ? terrainHeight(p.lon,p.lat) : 0;
+        dummy.position.set(p.x,groundY+.03,p.z);
+        dummy.rotation.set(0,p.rot,0);
+        dummy.scale.set(p.sx,p.sy,p.sz);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i,dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+    }
+
+    const blockGeometry = new THREE.BoxGeometry(1,1,1);
+    blockGeometry.translate(0,.5,0);
+    const cityBlocks = createInstances(cityPlacements, blockGeometry,
+      new THREE.MeshStandardMaterial({ color:0xffffff,roughness:.9,flatShading:true }), [0x8d928d,0xa2a69f,0x747c78,0xb1b1a5]);
+
+    function createHouseGeometry() {
+      const p = [-.5,0,-.5, .5,0,-.5, .5,0,.5, -.5,0,.5, 0,.85,-.5, 0,.85,.5];
+      const idx = [0,1,4, 3,5,2, 0,4,5,0,5,3, 1,2,5,1,5,4, 0,3,2,0,2,1];
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position',new THREE.Float32BufferAttribute(p,3));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      return g;
+    }
+    const villageBuildings = createInstances(villagePlacements, createHouseGeometry(),
+      new THREE.MeshStandardMaterial({ color:0xffffff,roughness:1,flatShading:true,side:THREE.DoubleSide }), [0x777b72,0x8c887b,0x686f68]);
+
+    const treeGeometry = new THREE.ConeGeometry(.34,1.15,4,1,true);
+    treeGeometry.translate(0,.575,0);
+    const trees = createInstances(treePlacements, treeGeometry,
+      new THREE.MeshStandardMaterial({ color:0xffffff,roughness:1,flatShading:true,side:THREE.DoubleSide }), [0x47544e,0x556159,0x3f4b47,0x60695e]);
+
+    const capitalPlacements = majorCities.map((c,i) => {
+      const p = project(c.lon,c.lat);
+      return { lon:c.lon,lat:c.lat,x:p.x,z:p.z,sx:1,sy:1,sz:1,rot:i*.5,shade:i/3 };
+    });
+    const capitalGeometry = new THREE.CylinderGeometry(.42,.64,2.7,6,1,false);
+    capitalGeometry.translate(0,1.35,0);
+    const capitals = createInstances(capitalPlacements,capitalGeometry,
+      new THREE.MeshStandardMaterial({color:0xffffff,roughness:.72,flatShading:true}),[0xd3b77b,0xdac58f,0xc5aa70]);
+
+    const instancedMeshes = [cityBlocks,villageBuildings,trees,capitals];
+    const totalInstances = instancedMeshes.reduce((sum,mesh) => sum + mesh.count,0);
+    $('#instanceStat').textContent = totalInstances.toLocaleString();
+
+    const labelLayer = $('#labels');
+    const labels = [];
+    function addLabel(text, lon, lat, type, cityId = null) {
+      const el = document.createElement(type === 'city' ? 'button' : 'div');
+      el.className = `map-label ${type}-label`;
+      el.textContent = text;
+      if (cityId) {
+        el.addEventListener('click',() => focusCity(cityId));
+        el.setAttribute('aria-label',`Focus ${text}`);
+      }
+      labelLayer.appendChild(el);
+      labels.push({ el,lon,lat,type,cityId });
+    }
+    majorCities.forEach(c => addLabel(c.name,c.lon,c.lat,'city',c.id));
+    addLabel('ARAKAN YOMA',93.45,20.7,'region');
+    addLabel('SHAN PLATEAU',98.0,22.1,'region');
+    addLabel('CENTRAL VALLEY',95.45,20.25,'region');
+    addLabel('IRRAWADDY',95.0,19.25,'river');
+    addLabel('SALWEEN',97.65,18.15,'river');
+    addLabel('BAY OF BENGAL',91.8,17.0,'sea');
+    addLabel('ANDAMAN SEA',96.4,11.7,'sea');
+
+    const orbit = {
+      theta: -.46, phi: .91, radius: 165, target: new THREE.Vector3(0,0,0),
+      desiredTheta: -.46, desiredPhi: .91, desiredRadius: 165, desiredTarget: new THREE.Vector3(0,0,0)
+    };
+    const presets = {
+      overview: { lon:96.5,lat:19.2,radius:165,phi:.91,name:'National overview' },
+      central: { lon:95.75,lat:21.0,radius:76,phi:.78,name:'Central valley' },
+      rakhine: { lon:93.75,lat:20.55,radius:72,phi:.8,name:'Arakan Yoma' },
+      shan: { lon:97.9,lat:22.0,radius:82,phi:.82,name:'Shan highlands' },
+      delta: { lon:95.55,lat:16.65,radius:72,phi:.82,name:'Irrawaddy delta' }
+    };
+
+    function updateCamera(dt) {
+      const damp = reducedMotion ? 1 : 1 - Math.exp(-dt * 6.5);
+      orbit.theta = lerp(orbit.theta,orbit.desiredTheta,damp);
+      orbit.phi = lerp(orbit.phi,orbit.desiredPhi,damp);
+      orbit.radius = lerp(orbit.radius,orbit.desiredRadius,damp);
+      orbit.target.lerp(orbit.desiredTarget,damp);
+      const sinPhi = Math.sin(orbit.phi);
+      camera.position.set(
+        orbit.target.x + orbit.radius * sinPhi * Math.sin(orbit.theta),
+        orbit.target.y + orbit.radius * Math.cos(orbit.phi),
+        orbit.target.z + orbit.radius * sinPhi * Math.cos(orbit.theta)
+      );
+      camera.lookAt(orbit.target);
+      camera.updateMatrixWorld();
+      $('#compassNeedle').style.transform = `rotate(${-orbit.theta * 180 / Math.PI}deg)`;
+    }
+
+    let toastTimer;
+    function toast(message) {
+      const el = $('#toast');
+      el.textContent = message;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'),1700);
+    }
+
+    function setActiveView(id) {
+      $$('.view-button').forEach(b => b.classList.toggle('active',b.dataset.view === id));
+    }
+    function goToPreset(id, announce = true) {
+      const p = presets[id];
+      const target = project(p.lon,p.lat);
+      orbit.desiredTarget.copy(target);
+      orbit.desiredRadius = p.radius;
+      orbit.desiredPhi = p.phi;
+      state.interactionHold = 2;
+      setActiveView(id);
+      if (announce) toast(`${p.name.toUpperCase()} / VIEW ACQUIRED`);
+    }
+    function focusCity(id) {
+      const city = majorCities.find(c => c.id === id);
+      if (!city) return;
+      orbit.desiredTarget.copy(project(city.lon,city.lat));
+      orbit.desiredRadius = 54;
+      orbit.desiredPhi = .76;
+      state.interactionHold = 4;
+      setActiveView(null);
+      updateLocationCard(city);
+      toast(`${city.name.toUpperCase()} / URBAN FOCUS`);
+    }
+    function updateLocationCard(city) {
+      const index = majorCities.indexOf(city) + 1;
+      $('#selectedIndex').textContent = `CITY / 0${index}`;
+      $('#locationName').textContent = city.name;
+      $('#locationRole').textContent = city.role;
+      $('#locationDescription').textContent = city.description;
+      $('#locationLat').textContent = `${Math.abs(city.lat).toFixed(4)}° N`;
+      $('#locationLon').textContent = `${Math.abs(city.lon).toFixed(4)}° E`;
+      $$('.city-tab').forEach(b => b.classList.toggle('active',b.dataset.city === city.id));
+    }
+
+    function updateLOD() {
+      const previous = state.detailed;
+      if (state.lodMode === 'detail') state.detailed = true;
+      else if (state.lodMode === 'flat') state.detailed = false;
+      else if (state.detailed && orbit.desiredRadius > 232) state.detailed = false;
+      else if (!state.detailed && orbit.desiredRadius < 211) state.detailed = true;
+      flatTerrain.visible = !state.detailed;
+      if (previous !== state.detailed) {
+        $('#lodBadge').textContent = state.detailed ? 'DETAILED' : 'FLAT LOD';
+        $('#streamMode').textContent = state.detailed ? 'RADIUS CULLING' : 'SINGLE SILHOUETTE';
+        instancedMeshes.forEach(updateInstanceTerrain);
+        updateRiverAndBorderHeights();
+        if (!state.detailed) tiles.forEach(t => { if (t.mesh) t.mesh.visible = false; t.needed = false; });
+      }
+    }
+
+    function updateStreaming() {
+      if (!state.detailed) {
+        tiles.forEach((tile,i) => {
+          tile.needed = false;
+          if (tile.mesh) tile.mesh.visible = false;
+          chunkElements[i].classList.remove('visible');
+        });
+        return;
+      }
+      const distance = orbit.radius;
+      const vertical = Math.tan(THREE.MathUtils.degToRad(camera.fov * .5)) * distance;
+      const horizontal = vertical * camera.aspect;
+      const tilt = vertical / Math.max(.38,Math.sin(orbit.phi));
+      const viewRadius = Math.max(horizontal,tilt) * 1.08 * state.viewScale;
+      tiles.forEach((tile,i) => {
+        const dx = tile.center.x - orbit.target.x, dz = tile.center.z - orbit.target.z;
+        tile.needed = tile.hasLand && Math.hypot(dx,dz) <= viewRadius + tile.radius;
+        if (tile.needed && !tile.mesh) queueChunk(tile);
+        if (tile.mesh) tile.mesh.visible = tile.needed;
+        chunkElements[i].classList.toggle('visible',tile.needed);
+        chunkElements[i].classList.toggle('loaded',!!tile.mesh);
+      });
+    }
+
+    function processBuildQueue() {
+      if (!state.detailed || !buildQueue.length) return;
+      let tile = null;
+      while (buildQueue.length) {
+        const candidate = buildQueue.shift();
+        queued.delete(candidate.index);
+        if (candidate.needed) { tile = candidate; break; }
+      }
+      if (!tile) return;
+      buildChunk(tile);
+      if (tile.mesh) tile.mesh.visible = tile.needed;
+      chunkElements[tile.index].classList.toggle('loaded',!!tile.mesh);
+    }
+
+    function updateVisibleLayers() {
+      riverGroup.visible = state.layers.rivers;
+      borderLine.visible = state.layers.border;
+      cityBlocks.visible = state.layers.cities && state.detailed && orbit.radius < 238;
+      capitals.visible = state.layers.cities;
+      villageBuildings.visible = state.layers.villages && orbit.radius < 174 && state.detailed;
+      trees.visible = state.layers.trees && orbit.radius < 184 && state.detailed;
+      labelLayer.style.display = state.layers.labels ? '' : 'none';
+    }
+
+    const projected = new THREE.Vector3();
+    function updateLabels() {
+      if (!state.layers.labels) return;
+      labels.forEach(label => {
+        const terrainY = state.detailed && label.type !== 'sea' ? terrainHeight(label.lon,label.lat) : 0;
+        const lift = label.type === 'city' ? 4.4 : label.type === 'region' ? 1.8 : .9;
+        projected.copy(project(label.lon,label.lat,terrainY+lift)).project(camera);
+        const visible = projected.z > -1 && projected.z < 1 && Math.abs(projected.x) < 1.12 && Math.abs(projected.y) < 1.12;
+        label.el.style.opacity = visible ? '1' : '0';
+        label.el.style.pointerEvents = visible && label.type === 'city' ? 'auto' : 'none';
+        if (!visible) return;
+        const x = (projected.x * .5 + .5) * innerWidth;
+        const y = (-projected.y * .5 + .5) * innerHeight;
+        label.el.style.transform = `translate(${x}px,${y}px) translate(-50%,-100%)`;
+      });
+    }
+
+    function refreshTerrainRelief() {
+      tiles.forEach(tile => {
+        if (!tile.mesh) return;
+        const attr = tile.mesh.geometry.attributes.position;
+        const coords = tile.mesh.userData.coords;
+        for (let i = 0; i < attr.count; i++) attr.setY(i,terrainHeight(coords[i*2],coords[i*2+1]));
+        attr.needsUpdate = true;
+        tile.mesh.geometry.computeVertexNormals();
+        tile.mesh.geometry.computeBoundingSphere();
+      });
+      instancedMeshes.forEach(updateInstanceTerrain);
+      updateRiverAndBorderHeights();
+    }
+
+    let dragging = false, lastX = 0, lastY = 0;
+    const canvas = renderer.domElement;
+    canvas.addEventListener('pointerdown',e => {
+      dragging = true; lastX = e.clientX; lastY = e.clientY;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.classList.add('dragging');
+      state.interactionHold = 4;
+    });
+    canvas.addEventListener('pointermove',e => {
+      if (!dragging) return;
+      const dx = e.clientX-lastX, dy = e.clientY-lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      orbit.desiredTheta -= dx * .005;
+      orbit.desiredPhi = clamp(orbit.desiredPhi + dy * .004,.34,1.28);
+      state.interactionHold = 3;
+    });
+    function endDrag() { dragging = false; canvas.classList.remove('dragging'); }
+    canvas.addEventListener('pointerup',endDrag);
+    canvas.addEventListener('pointercancel',endDrag);
+    canvas.addEventListener('wheel',e => {
+      e.preventDefault();
+      orbit.desiredRadius = clamp(orbit.desiredRadius * Math.exp(e.deltaY * .001),48,320);
+      state.interactionHold = 2;
+    },{passive:false});
+
+    function syncOrbitUI() {
+      $('#orbitStatus').textContent = state.autoOrbit ? 'ORBIT ACTIVE' : 'ORBIT PAUSED';
+      $('#orbitPulse').classList.toggle('active',state.autoOrbit);
+      $('#orbitButtonLabel').textContent = state.autoOrbit ? 'PAUSE' : 'RESUME';
+      $('#orbitButton').setAttribute('aria-pressed',String(state.autoOrbit));
+      $('#orbitButton').title = state.autoOrbit ? 'Pause orbit (Space)' : 'Resume orbit (Space)';
+      $('#orbitIcon').innerHTML = state.autoOrbit ? '<path d="M8 5v14M16 5v14"/>' : '<path d="m8 5 11 7-11 7Z"/>';
+    }
+    function toggleOrbit() { state.autoOrbit = !state.autoOrbit; syncOrbitUI(); }
+    function resetView() { goToPreset('overview',false); orbit.desiredTheta = -.46; toast('NATIONAL OVERVIEW RESTORED'); }
+
+    $('#orbitButton').addEventListener('click',toggleOrbit);
+    $('#resetButton').addEventListener('click',resetView);
+    $('#panelToggle').addEventListener('click',() => $('#controlPanel').classList.toggle('open'));
+    $$('.view-button').forEach(b => b.addEventListener('click',() => goToPreset(b.dataset.view)));
+    $$('.city-tab').forEach(b => b.addEventListener('click',() => focusCity(b.dataset.city)));
+    $('#orbitSpeed').addEventListener('input',e => {
+      state.orbitSpeed = Number(e.target.value);
+      $('#orbitSpeedValue').textContent = `${state.orbitSpeed.toFixed(2)}×`;
+    });
+    let reliefFrame = 0;
+    $('#relief').addEventListener('input',e => {
+      state.relief = Number(e.target.value);
+      $('#reliefValue').textContent = `${state.relief.toFixed(2)}×`;
+      if (!reliefFrame) reliefFrame = requestAnimationFrame(() => { reliefFrame = 0; refreshTerrainRelief(); });
+    });
+    $('#viewRadius').addEventListener('input',e => {
+      state.viewScale = Number(e.target.value);
+      $('#viewRadiusValue').textContent = `${Math.round(state.viewScale*100)}%`;
+    });
+    $$('.segment').forEach(b => b.addEventListener('click',() => {
+      state.lodMode = b.dataset.lod;
+      $$('.segment').forEach(s => s.classList.toggle('active',s === b));
+      updateLOD();
+      toast(`LEVEL OF DETAIL / ${b.textContent}`);
+    }));
+    $$('[data-layer]').forEach(input => input.addEventListener('change',() => {
+      state.layers[input.dataset.layer] = input.checked;
+      updateVisibleLayers();
+    }));
+    addEventListener('keydown',e => {
+      if (e.target.matches('input,button')) return;
+      if (e.code === 'Space') { e.preventDefault(); toggleOrbit(); }
+      if (e.key.toLowerCase() === 'r') resetView();
+      if (e.key.toLowerCase() === 'l') {
+        state.layers.labels = !state.layers.labels;
+        $('[data-layer="labels"]').checked = state.layers.labels;
+        updateVisibleLayers();
+      }
+    });
+    addEventListener('resize',() => {
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      maxPixelRatio = Math.min(devicePixelRatio,1.75);
+      currentPixelRatio = Math.min(currentPixelRatio,maxPixelRatio);
+      renderer.setPixelRatio(currentPixelRatio);
+      renderer.setSize(innerWidth,innerHeight);
+    });
+
+    syncOrbitUI();
+    updateLocationCard(majorCities[1]);
+    updateRiverAndBorderHeights();
+    updateCamera(1);
+    updateLOD();
+    updateStreaming();
+    updateVisibleLayers();
+
+    let lastTime = performance.now(), statsTime = lastTime, frameCount = 0, streamTimer = 0;
+    let bootCleared = false, lowFpsSamples = 0, lastQualityChange = lastTime;
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now-lastTime)/1000,.05);
+      lastTime = now;
+      state.interactionHold = Math.max(0,state.interactionHold-dt);
+      if (state.autoOrbit && !dragging && state.interactionHold <= 0) orbit.desiredTheta += dt * .055 * state.orbitSpeed;
+      updateCamera(dt);
+      updateLOD();
+      streamTimer += dt;
+      if (streamTimer > .08) { updateStreaming(); streamTimer = 0; }
+      processBuildQueue();
+      updateVisibleLayers();
+      updateLabels();
+      renderer.render(scene,camera);
+
+      frameCount++;
+      if (now-statsTime > 600) {
+        const fps = Math.round(frameCount*1000/(now-statsTime));
+        const triangles = renderer.info.render.triangles;
+        const visibleChunks = tiles.filter(t => t.mesh && t.mesh.visible).length;
+        $('#fpsStat').textContent = `${fps} FPS`;
+        $('#triangleStat').textContent = `${(triangles/1000).toFixed(1)}K / 50K`;
+        $('#triangleStat').classList.toggle('good',triangles < TRIANGLE_BUDGET);
+        $('#drawStat').textContent = renderer.info.render.calls;
+        $('#chunkStat').textContent = `${String(visibleChunks).padStart(2,'0')} / 32`;
+        $('#chunkCounter').textContent = `${String(visibleChunks).padStart(2,'0')} / 32`;
+        lowFpsSamples = fps < 43 ? lowFpsSamples + 1 : 0;
+        if (lowFpsSamples >= 3 && currentPixelRatio > .8 && now-lastQualityChange > 4500) {
+          currentPixelRatio = Math.max(.8,currentPixelRatio-.18);
+          renderer.setPixelRatio(currentPixelRatio);
+          lowFpsSamples = 0;
+          lastQualityChange = now;
+        } else if (fps > 58 && currentPixelRatio < maxPixelRatio && now-lastQualityChange > 14000) {
+          currentPixelRatio = Math.min(maxPixelRatio,currentPixelRatio+.1);
+          renderer.setPixelRatio(currentPixelRatio);
+          lastQualityChange = now;
+        }
+        frameCount = 0; statsTime = now;
+      }
+      if (!bootCleared && tiles.some(t => t.mesh && t.mesh.visible)) {
+        bootCleared = true;
+        setTimeout(() => $('#boot').classList.add('done'),250);
+      }
+    }
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

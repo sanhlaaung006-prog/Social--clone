@@ -1,0 +1,2614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A four-part, interactive relief study of Myanmar: the Northern Himalayas, the Arakan Yoma, the Central Basin and Mount Popa, and the Irrawaddy Delta." />
+  <meta name="theme-color" content="#0a0f0c" />
+  <title>Myanmar, in Relief — Terrain Atlas No. 04</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --ink: #090e0b;
+      --ink-2: #0d1410;
+      --ink-3: #121b15;
+      --panel: #101812;
+      --line: rgba(223, 234, 219, 0.14);
+      --line-soft: rgba(223, 234, 219, 0.075);
+      --text: #e9ede4;
+      --muted: #95a398;
+      --faint: #64736a;
+      --sage: #bdd0b7;
+      --sage-bright: #d9e4d0;
+      --moss: #768f70;
+      --ochre: #c9ab77;
+      --ice: #e3e6dc;
+      --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+      --sans: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { background: var(--ink); -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: var(--ink);
+      font-family: var(--sans);
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    body.modal-open { overflow: hidden; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button { font-family: inherit; }
+    ::selection { background: rgba(185, 207, 176, 0.26); color: #fff; }
+    :focus-visible { outline: 1px solid var(--sage); outline-offset: 3px; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+    [hidden] { display: none !important; }
+
+    /* ---------- Shell ---------- */
+    .app-shell {
+      height: 100dvh;
+      min-height: 620px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--ink);
+    }
+    .topbar {
+      flex: 0 0 64px;
+      height: 64px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 20px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(9, 14, 11, 0.92);
+      position: relative;
+      z-index: 30;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      justify-self: start;
+      color: inherit;
+      text-decoration: none;
+      background: none;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      flex: none;
+      color: var(--sage);
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: rgba(183, 203, 177, 0.035);
+    }
+    .brand-mark svg { width: 23px; height: 23px; display: block; }
+    .brand-text { display: flex; flex-direction: column; gap: 2px; line-height: 1; }
+    .brand-text strong {
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    .brand-text span {
+      font-family: var(--mono);
+      font-size: 7.5px;
+      line-height: 1.4;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .topnav { display: flex; align-items: center; gap: 27px; justify-self: center; }
+    .nav-link {
+      position: relative;
+      border: 0;
+      padding: 7px 0;
+      background: none;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color 180ms ease;
+    }
+    .nav-link::after {
+      content: "";
+      position: absolute;
+      left: 0; right: 100%; bottom: 1px;
+      height: 1px;
+      background: var(--sage);
+      transition: right 220ms ease;
+    }
+    .nav-link:hover { color: var(--text); }
+    .nav-link:hover::after { right: 0; }
+    .topmeta {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 13px;
+      justify-self: end;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+      white-space: nowrap;
+    }
+    .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+    .status-dot {
+      width: 5px; height: 5px; border-radius: 50%; background: #9cbd8f;
+      box-shadow: 0 0 0 3px rgba(156, 189, 143, 0.09);
+      animation: pulseDot 3s ease-in-out infinite;
+    }
+    .coordinate { padding-left: 12px; border-left: 1px solid var(--line); color: var(--muted); }
+    .icon-btn {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      cursor: pointer;
+      transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+    .icon-btn:hover { color: var(--text); border-color: rgba(223,234,219,.3); background: rgba(255,255,255,.035); }
+    .icon-btn svg { width: 13px; height: 13px; }
+
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+
+    /* ---------- Editorial rail ---------- */
+    .sidebar {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 25px 24px 15px;
+      border-right: 1px solid var(--line);
+      background:
+        radial-gradient(120% 60% at 0% 100%, rgba(62, 91, 70, 0.12), transparent 70%),
+        linear-gradient(180deg, #0e1611 0%, #0a100c 100%);
+      position: relative;
+      z-index: 5;
+    }
+    .sidebar::after {
+      content: "";
+      position: absolute;
+      top: 0; right: -1px; bottom: 0;
+      width: 1px;
+      background: linear-gradient(180deg, rgba(211,229,205,.18), transparent 40%, transparent 80%, rgba(211,229,205,.08));
+      pointer-events: none;
+    }
+    .ed-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(185,207,176,.18) transparent;
+      padding-right: 2px;
+    }
+    .ed-scroll::-webkit-scrollbar { width: 4px; }
+    .ed-scroll::-webkit-scrollbar-thumb { background: rgba(185,207,176,.16); border-radius: 4px; }
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 18px;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      line-height: 1.4;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .eyebrow-rule { flex: 1; height: 1px; background: var(--line-soft); }
+    .eyebrow .accent { color: var(--sage); }
+    h1.hero-title {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: clamp(48px, 4.35vw, 61px);
+      line-height: 0.9;
+      letter-spacing: -0.035em;
+      font-weight: 400;
+      color: #eff2e9;
+    }
+    h1.hero-title em { color: var(--sage); font-weight: 400; }
+    .lede {
+      margin: 18px 0 20px;
+      max-width: 254px;
+      color: var(--muted);
+      font-size: 12.5px;
+      font-weight: 300;
+      line-height: 1.7;
+      letter-spacing: 0.002em;
+    }
+    .lede strong { color: #c8d4c3; font-weight: 400; }
+    .fact-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 11px 0 10px;
+      margin-bottom: 21px;
+    }
+    .fact { min-width: 0; padding: 0 8px; border-left: 1px solid var(--line-soft); }
+    .fact:first-child { padding-left: 0; border-left: 0; }
+    .fact b {
+      display: flex;
+      align-items: baseline;
+      gap: 2px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-weight: 400;
+      font-size: 15px;
+      letter-spacing: -0.045em;
+      white-space: nowrap;
+    }
+    .fact b span { font-size: 8px; color: var(--faint); letter-spacing: 0; }
+    .fact small {
+      display: block;
+      margin-top: 5px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7px;
+      line-height: 1.35;
+      letter-spacing: 0.055em;
+      text-transform: uppercase;
+    }
+    .side-section { margin-top: 20px; }
+    .side-section:first-of-type { margin-top: 0; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 9px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .section-head span:last-child { color: var(--faint); font-size: 7.5px; letter-spacing: 0.04em; }
+    .region-index { border-top: 1px solid var(--line); }
+    .index-item {
+      width: 100%;
+      position: relative;
+      display: grid;
+      grid-template-columns: 22px 1fr 11px;
+      gap: 7px;
+      align-items: center;
+      padding: 9px 2px;
+      border: 0;
+      border-bottom: 1px solid var(--line-soft);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      transition: background 180ms ease, padding-left 200ms ease;
+    }
+    .index-item::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 50%;
+      width: 1px; height: 0;
+      background: var(--sage);
+      transition: height 200ms ease, top 200ms ease;
+    }
+    .index-item:hover { background: rgba(201, 220, 195, 0.025); padding-left: 8px; }
+    .index-item:hover::before, .index-item[aria-current="true"]::before { height: 65%; top: 17.5%; }
+    .index-num {
+      font-family: var(--mono);
+      font-size: 8px;
+      color: var(--faint);
+      letter-spacing: 0.04em;
+      transition: color 180ms ease;
+    }
+    .index-body { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+    .index-title {
+      color: #d7ded2;
+      font-size: 11.5px;
+      font-weight: 400;
+      line-height: 1.2;
+      letter-spacing: 0.005em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .index-meta {
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: 0.02em;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .index-mark {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent, var(--sage));
+      opacity: 0.75;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, var(--sage)) 9%, transparent);
+      transition: transform 180ms ease, opacity 180ms ease;
+    }
+    .index-item:hover .index-title, .index-item[aria-current="true"] .index-title { color: #f0f3e9; }
+    .index-item[aria-current="true"] .index-mark { opacity: 1; transform: scale(1.25); }
+    .index-item[aria-current="true"] .index-num { color: var(--sage); }
+
+    .elev-bar {
+      height: 8px;
+      width: 100%;
+      margin-top: 2px;
+      background: linear-gradient(90deg, #13392a 0%, #2c5238 23%, #627248 43%, #93805a 61%, #868177 78%, #d9dcd1 100%);
+      border-radius: 1px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.045);
+    }
+    .elev-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7px;
+      letter-spacing: 0.015em;
+    }
+    .legend-note {
+      margin: 8px 0 0;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      line-height: 1.6;
+      letter-spacing: 0.015em;
+    }
+    .legend-note b { color: var(--muted); font-weight: 400; }
+    .aside-note {
+      margin-top: 17px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line-soft);
+      display: flex;
+      gap: 9px;
+      align-items: flex-start;
+      color: var(--faint);
+      font-size: 9.5px;
+      line-height: 1.55;
+      font-weight: 300;
+    }
+    .aside-note svg { flex: none; width: 12px; height: 12px; margin-top: 1px; color: var(--moss); }
+    .aside-note b { display: block; color: var(--muted); font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.07em; font-weight: 400; text-transform: uppercase; margin-bottom: 3px; }
+    .sidebar-footer {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: 0.02em;
+    }
+    .text-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 0;
+      background: none;
+      padding: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: color 160ms ease;
+    }
+    .text-link:hover { color: var(--sage-bright); }
+    .text-link svg { width: 10px; height: 10px; }
+
+    /* ---------- 3D stage ---------- */
+    .stage {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      background: #0a100d;
+    }
+    .stage-frame {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      isolation: isolate;
+      background:
+        radial-gradient(90% 100% at 52% 30%, #22372a 0%, #17251c 33%, #0e1711 66%, #090e0b 100%);
+    }
+    .stage-frame::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.5;
+      background-image:
+        linear-gradient(to right, rgba(195, 215, 190, 0.055) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(195, 215, 190, 0.055) 1px, transparent 1px);
+      background-size: 84px 84px;
+      mask-image: radial-gradient(90% 85% at 50% 42%, #000 0%, transparent 82%);
+      -webkit-mask-image: radial-gradient(90% 85% at 50% 42%, #000 0%, transparent 82%);
+    }
+    .stage-frame::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      background:
+        linear-gradient(180deg, rgba(7,11,9,.42) 0%, transparent 17%, transparent 69%, rgba(7,11,9,.74) 100%),
+        radial-gradient(120% 100% at 50% 45%, transparent 42%, rgba(4,8,5,.46) 100%);
+    }
+    #canvasWrap { position: absolute; inset: 0; z-index: 1; }
+    #terrainCanvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; cursor: grab; }
+    #terrainCanvas:active { cursor: grabbing; }
+
+    .stage-caption {
+      position: absolute;
+      z-index: 5;
+      top: 17px;
+      left: 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      line-height: 1.4;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      pointer-events: none;
+      transition: opacity 200ms ease, transform 200ms ease;
+    }
+    .stage-caption .cap-mark {
+      width: 18px; height: 18px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      display: grid; place-items: center;
+      color: var(--sage);
+    }
+    .cap-mark svg { width: 10px; height: 10px; }
+    .stage-caption .cap-rule { width: 27px; height: 1px; background: var(--line-soft); }
+    .stage-caption b { color: var(--muted); font-weight: 400; }
+    .stage-caption .cap-sub { color: var(--faint); margin-top: 2px; }
+    .stage-caption.is-hidden { opacity: 0; transform: translateY(-4px); }
+
+    .stage-tools {
+      position: absolute;
+      z-index: 8;
+      top: 15px;
+      right: 16px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .tool-btn {
+      height: 29px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 8px;
+      border: 1px solid rgba(220, 233, 215, 0.145);
+      border-radius: 2px;
+      background: rgba(9, 15, 11, 0.55);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      line-height: 1;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+    .tool-btn:hover { color: var(--text); border-color: rgba(220,233,215,.3); background: rgba(16,25,18,.8); }
+    .tool-btn svg { width: 11px; height: 11px; flex: none; }
+    .tool-btn.icon-only { width: 29px; padding: 0; }
+    .tool-btn[aria-pressed="true"] { color: var(--sage-bright); border-color: rgba(189,208,183,.28); }
+    .tool-btn[disabled] { opacity: .4; cursor: default; }
+
+    .focus-hud {
+      position: absolute;
+      z-index: 7;
+      top: 56px;
+      left: 18px;
+      width: 254px;
+      padding: 14px 15px 13px;
+      border: 1px solid rgba(218, 231, 212, 0.17);
+      border-radius: 2px;
+      background: linear-gradient(150deg, rgba(21,32,24,.94), rgba(10,16,12,.92));
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      box-shadow: 0 16px 50px rgba(0,0,0,.3);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-5px);
+      transition: opacity 220ms ease, transform 220ms ease, visibility 220ms;
+      pointer-events: none;
+    }
+    .focus-hud.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+    .focus-hud .hud-kicker {
+      display: flex; align-items: center; gap: 6px;
+      color: var(--accent, var(--sage));
+      font-family: var(--mono); font-size: 7px; letter-spacing: 0.1em; text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .hud-kicker .hud-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+    .focus-hud h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 27px;
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 0.96;
+      color: #eef1e8;
+    }
+    .focus-hud .hud-desc { margin: 8px 0 11px; color: var(--muted); font-size: 10px; line-height: 1.55; font-weight: 300; }
+    .hud-metrics { display: flex; gap: 14px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+    .hud-metrics div { display: flex; flex-direction: column; gap: 3px; }
+    .hud-metrics b { font-family: var(--mono); font-size: 10px; font-weight: 400; color: #d7e2d2; letter-spacing: -0.02em; }
+    .hud-metrics small { font-family: var(--mono); font-size: 6.5px; color: var(--faint); letter-spacing: 0.05em; text-transform: uppercase; }
+    .hud-back {
+      margin-top: 11px;
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 0; background: none; padding: 0;
+      color: var(--muted); font-family: var(--mono); font-size: 7.5px; letter-spacing: .025em;
+      cursor: pointer; transition: color 160ms ease;
+    }
+    .hud-back:hover { color: var(--sage-bright); }
+    .hud-back svg { width: 10px; height: 10px; }
+
+    .map-labels { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
+    .map-labels.is-hidden { opacity: 0; }
+    .map-labels.is-hidden .map-label { opacity: 0 !important; }
+    .map-label {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 6px;
+      border: 1px solid rgba(215, 229, 209, 0.16);
+      border-radius: 1px;
+      background: rgba(8, 14, 10, 0.76);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      white-space: nowrap;
+      box-shadow: 0 4px 14px rgba(0,0,0,.16);
+      opacity: 0;
+      transition: opacity 300ms ease;
+      will-change: transform, left, top;
+    }
+    .map-label::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      width: 1px;
+      height: 12px;
+      background: linear-gradient(to bottom, rgba(219,233,214,.5), rgba(219,233,214,0));
+    }
+    .map-label .label-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--sage-bright); box-shadow: 0 0 0 3px rgba(217,228,208,.11); flex: none; }
+    .label-num { font-family: var(--mono); font-size: 6.5px; color: var(--faint); letter-spacing: .06em; }
+    .label-name { font-family: var(--mono); font-size: 7px; letter-spacing: .055em; text-transform: uppercase; color: #d0dccb; }
+    .label-elev { font-family: var(--mono); font-size: 6.5px; letter-spacing: .02em; color: var(--faint); }
+    .map-label.is-active { border-color: rgba(203, 222, 196, 0.45); background: rgba(18, 29, 20, .9); }
+
+    .viewport-caption {
+      position: absolute;
+      z-index: 5;
+      left: 18px;
+      bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      pointer-events: none;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 7px;
+      line-height: 1.45;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .viewport-caption .vhint {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 7px;
+      border: 1px solid var(--line-soft);
+      background: rgba(8,13,9,.32);
+      border-radius: 1px;
+    }
+    .vhint svg { width: 10px; height: 10px; color: var(--moss); }
+    .azimuth { opacity: .82; }
+    .azimuth b { color: var(--muted); font-weight: 400; }
+    .map-corner-tools {
+      position: absolute;
+      z-index: 5;
+      right: 17px;
+      bottom: 13px;
+      display: flex;
+      align-items: flex-end;
+      gap: 14px;
+      pointer-events: none;
+    }
+    .scalebar { width: 94px; padding-bottom: 1px; }
+    .scalebar .scale-rule { height: 5px; border: 1px solid rgba(211,226,205,.5); border-top: 0; position: relative; }
+    .scalebar .scale-rule::before, .scalebar .scale-rule::after { content: ""; position: absolute; top: -3px; width: 1px; height: 8px; background: rgba(211,226,205,.5); }
+    .scalebar .scale-rule::before { left: 0; }
+    .scalebar .scale-rule::after { right: 0; }
+    .scalebar .scale-mid { position: absolute; left: 50%; top: -3px; width: 1px; height: 4px; background: rgba(211,226,205,.3); }
+    .scalebar span { display: block; margin-top: 5px; text-align: right; color: var(--faint); font-family: var(--mono); font-size: 6.5px; letter-spacing: .05em; }
+    .compass { width: 43px; height: 43px; position: relative; color: var(--muted); }
+    .compass svg { width: 100%; height: 100%; display: block; }
+    .compass .compass-n { position: absolute; top: -1px; left: 50%; transform: translateX(-50%); font-family: var(--mono); font-size: 6.5px; color: var(--text); letter-spacing: .04em; }
+    #compassNeedle { transform-origin: 22px 22px; transform-box: view-box; transition: transform 60ms linear; }
+    .vertical-mark {
+      position: absolute;
+      z-index: 5;
+      right: 19px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 6.5px;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+      pointer-events: none;
+    }
+    .vertical-mark::before, .vertical-mark::after { content: ""; width: 1px; height: 23px; background: var(--line-soft); }
+
+    .loading-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      background:
+        radial-gradient(80% 90% at 50% 40%, #1a2b20, #0c140f 72%, #090e0b);
+      transition: opacity 550ms ease, visibility 550ms;
+    }
+    .loading-screen.is-hidden { opacity: 0; visibility: hidden; }
+    .loader-orbit { width: 42px; height: 42px; border: 1px solid rgba(204,222,198,.16); border-radius: 50%; position: relative; animation: rotateOrbit 4s linear infinite; }
+    .loader-orbit::before { content: ""; position: absolute; inset: 6px; border: 1px solid rgba(204,222,198,.12); border-radius: 50%; }
+    .loader-orbit::after { content: ""; position: absolute; width: 4px; height: 4px; border-radius: 50%; background: var(--sage); top: 2px; left: 50%; box-shadow: 0 0 9px rgba(189,208,183,.5); }
+    .loading-text { font-family: var(--mono); font-size: 8px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+    .loading-sub { font-family: var(--mono); font-size: 7px; letter-spacing: .04em; color: var(--faint); }
+    .webgl-error {
+      position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: 30px;
+      background: #0b120e; color: var(--muted); text-align: center; font-size: 13px; line-height: 1.6;
+    }
+    .webgl-error strong { display: block; font-family: var(--serif); font-size: 28px; color: var(--text); font-weight: 400; margin-bottom: 8px; }
+
+    /* ---------- Region cards ---------- */
+    .region-bar {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      background: #0b120e;
+      border-top: 1px solid var(--line);
+      position: relative;
+      z-index: 10;
+    }
+    .region-card {
+      --accent: var(--sage);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      min-height: 123px;
+      padding: 12px 14px 11px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      transition: background 200ms ease;
+    }
+    .region-card:last-child { border-right: 0; }
+    .region-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 1.5px;
+      background: var(--accent);
+      opacity: 0;
+      transform: scaleX(.3);
+      transform-origin: left;
+      transition: opacity 220ms ease, transform 260ms ease;
+    }
+    .region-card:hover { background: rgba(199, 219, 192, 0.032); }
+    .region-card:hover::before, .region-card[aria-current="true"]::before { opacity: 1; transform: scaleX(1); }
+    .region-card[aria-current="true"] { background: linear-gradient(180deg, rgba(187, 207, 179, .073), rgba(187,207,179,.01) 65%, transparent); }
+    .card-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .card-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .card-num { font-family: var(--mono); font-size: 7.5px; color: var(--faint); letter-spacing: .04em; }
+    .card-place { color: var(--faint); font-family: var(--mono); font-size: 6.5px; line-height: 1.3; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-arrow { color: var(--faint); width: 11px; height: 11px; flex: none; transition: color 180ms ease, transform 180ms ease; }
+    .region-card:hover .card-arrow, .region-card[aria-current="true"] .card-arrow { color: var(--accent); transform: translate(1px,-1px); }
+    .card-body { display: flex; align-items: flex-end; justify-content: space-between; gap: 7px; min-width: 0; }
+    .card-body .card-title {
+      display: block;
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 20px;
+      font-weight: 400;
+      line-height: .99;
+      letter-spacing: -.015em;
+      color: #dfe5da;
+      transition: color 160ms ease;
+    }
+    .region-card:hover .card-title, .region-card[aria-current="true"] .card-title { color: #f0f4ea; }
+    .card-profile { flex: none; width: 47px; height: 23px; opacity: .44; color: var(--accent); transition: opacity 180ms ease; }
+    .region-card:hover .card-profile, .region-card[aria-current="true"] .card-profile { opacity: .9; }
+    .card-profile path { fill: none; stroke: currentColor; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .card-profile .baseline { stroke: rgba(208,224,202,.24); stroke-dasharray: 1 2; }
+    .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+    .card-elev { display: flex; align-items: baseline; gap: 4px; font-family: var(--mono); white-space: nowrap; }
+    .card-elev b { color: #d3dfce; font-size: 9px; font-weight: 400; letter-spacing: -.015em; }
+    .card-elev span { color: var(--faint); font-size: 6.5px; letter-spacing: .01em; }
+    .card-tag { color: var(--faint); font-family: var(--mono); font-size: 6px; letter-spacing: .06em; text-transform: uppercase; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ---------- Dialog ---------- */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(3, 7, 4, 0.76);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 220ms ease, visibility 220ms;
+    }
+    .modal-backdrop.is-open { opacity: 1; visibility: visible; }
+    .modal-panel {
+      width: min(704px, 100%);
+      max-height: min(84vh, 780px);
+      overflow: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(185,207,176,.22) transparent;
+      border: 1px solid rgba(214, 229, 208, 0.18);
+      background:
+        radial-gradient(100% 60% at 100% 0%, rgba(74,105,79,.18), transparent 70%),
+        #101812;
+      box-shadow: 0 30px 90px rgba(0,0,0,.48);
+      transform: translateY(9px) scale(.995);
+      transition: transform 280ms cubic-bezier(.2,.8,.2,1);
+      position: relative;
+    }
+    .modal-backdrop.is-open .modal-panel { transform: none; }
+    .modal-panel::-webkit-scrollbar { width: 5px; }
+    .modal-panel::-webkit-scrollbar-thumb { background: rgba(185,207,176,.18); border-radius: 3px; }
+    .modal-head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 24px 27px 18px;
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(16, 24, 18, .93);
+      backdrop-filter: blur(14px);
+    }
+    .modal-kicker { margin: 0 0 8px; font-family: var(--mono); font-size: 7.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--sage); }
+    .modal-head h2 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 36px; line-height: .95; letter-spacing: -.02em; color: #edf1e7; }
+    .modal-close { flex: none; }
+    .modal-content { padding: 7px 27px 30px; }
+    .modal-content h3 {
+      margin: 23px 0 8px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line-soft);
+      color: #dfe7da;
+      font-family: var(--sans);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: .02em;
+    }
+    .modal-content h3:first-child { margin-top: 14px; padding-top: 0; border-top: 0; }
+    .modal-content p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.72; font-weight: 300; }
+    .modal-content p strong { color: #d1ddcc; font-weight: 400; }
+    .modal-content .region-note { display: grid; grid-template-columns: 104px 1fr; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line-soft); }
+    .modal-content .region-note:last-of-type { border-bottom: 0; }
+    .region-note .rn-label { color: var(--faint); font-family: var(--mono); font-size: 7.5px; line-height: 1.5; letter-spacing: .08em; text-transform: uppercase; }
+    .region-note .rn-label b { display: block; color: var(--sage); font-size: 8.5px; font-weight: 400; margin-bottom: 3px; }
+    .region-note h4 { margin: 0 0 4px; font-family: var(--serif); font-size: 18px; font-weight: 400; color: var(--text); }
+    .region-note p { margin: 0; font-size: 11.5px; line-height: 1.65; }
+    .source-list { list-style: none; margin: 0; padding: 0; }
+    .source-list li { padding: 10px 0; border-bottom: 1px solid var(--line-soft); display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .source-list li:last-child { border-bottom: 0; }
+    .source-list a { color: #cbd9c6; text-decoration: none; font-size: 11.5px; line-height: 1.45; border-bottom: 1px solid rgba(203,217,198,.2); transition: color 160ms ease, border-color 160ms ease; }
+    .source-list a:hover { color: var(--sage-bright); border-color: var(--sage-bright); }
+    .source-list span { flex: none; font-family: var(--mono); font-size: 7px; color: var(--faint); letter-spacing: .04em; text-transform: uppercase; }
+    .modal-note { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line-soft); background: rgba(189,208,183,.028); color: var(--faint); font-family: var(--mono); font-size: 8px; line-height: 1.65; }
+    .modal-footer { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 24px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--faint); font-family: var(--mono); font-size: 7.5px; }
+
+    @keyframes pulseDot { 0%,100% { opacity: 1; box-shadow: 0 0 0 3px rgba(156,189,143,.09);} 50% { opacity: .55; box-shadow: 0 0 0 5px rgba(156,189,143,.025);} }
+    @keyframes rotateOrbit { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 292px minmax(0, 1fr); }
+      .sidebar { padding-left: 20px; padding-right: 20px; }
+      h1.hero-title { font-size: clamp(44px, 4.7vw, 54px); }
+      .topnav { gap: 17px; }
+      .coordinate { display: none; }
+      .region-card { padding-left: 11px; padding-right: 11px; }
+      .card-profile { width: 36px; }
+      .card-body .card-title { font-size: 18px; }
+    }
+    @media (max-width: 980px) {
+      .app-shell { height: auto; min-height: 100dvh; overflow: visible; }
+      .topbar { grid-template-columns: 1fr auto; height: 59px; flex-basis: 59px; padding: 0 16px; }
+      .topnav { display: none; }
+      .layout { display: flex; flex-direction: column; }
+      .sidebar { width: 100%; min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); padding: 18px 19px 15px; }
+      .sidebar::after { display: none; }
+      .ed-scroll { overflow: visible; }
+      .eyebrow { margin-bottom: 10px; }
+      h1.hero-title { font-size: 47px; line-height: .88; }
+      .lede { margin: 10px 0 13px; max-width: 490px; font-size: 12px; line-height: 1.55; }
+      .fact-grid { margin-bottom: 0; padding: 9px 0 8px; max-width: 440px; }
+      .fact b { font-size: 13px; }
+      .side-section.sidebar-index, .aside-note { display: none; }
+      .side-section.sidebar-legend { margin-top: 14px; max-width: 440px; }
+      .sidebar-footer { display: none; }
+      .stage { min-height: 0; }
+      .stage-frame { height: 56vh; min-height: 390px; }
+      .vertical-mark { display: none; }
+      .stage-caption { top: 13px; left: 13px; }
+      .stage-tools { top: 11px; right: 12px; }
+      .focus-hud { top: 49px; left: 13px; width: 226px; padding: 12px 13px; }
+      .focus-hud h2 { font-size: 24px; }
+      .focus-hud .hud-desc { display: none; }
+      .hud-metrics { margin-top: 8px; }
+      .region-bar { display: flex; overflow-x: auto; scrollbar-width: thin; scrollbar-color: rgba(185,207,176,.22) transparent; background: #0b120e; }
+      .region-card { flex: 0 0 204px; min-height: 103px; padding: 11px 12px 10px; }
+      .card-body .card-title { font-size: 18px; }
+      .map-label { display: none; }
+      .map-label.is-active { display: flex; }
+      .viewport-caption { bottom: 10px; left: 12px; }
+      .map-corner-tools { right: 12px; bottom: 9px; }
+      .scalebar { display: none; }
+      .compass { width: 35px; height: 35px; }
+      .modal-panel { max-height: 88vh; }
+      .modal-head { padding: 20px 20px 15px; }
+      .modal-content { padding: 6px 20px 25px; }
+    }
+    @media (max-width: 600px) {
+      .brand-mark { width: 28px; height: 28px; }
+      .brand-mark svg { width: 20px; height: 20px; }
+      .brand-text span { font-size: 6.5px; }
+      .topmeta { gap: 9px; font-size: 7px; }
+      .status .status-text { display: none; }
+      .status { gap: 0; }
+      .sidebar { padding: 15px 15px 13px; }
+      h1.hero-title { font-size: 42px; }
+      .lede { font-size: 11.5px; margin: 9px 0 11px; }
+      .fact-grid { max-width: none; }
+      .fact b { font-size: 12px; }
+      .fact small { font-size: 6.5px; }
+      .side-section.sidebar-legend .section-head span:last-child { display: none; }
+      .legend-note { font-size: 7px; }
+      .stage-frame { height: 47vh; min-height: 330px; }
+      .stage-caption { display: none; }
+      .stage-tools { top: 9px; right: 9px; }
+      .tool-btn { height: 27px; padding: 0 7px; }
+      .tool-btn .tool-label { display: none; }
+      .tool-btn.icon-only { width: 27px; }
+      .focus-hud { top: 44px; left: 9px; width: 211px; }
+      .focus-hud h2 { font-size: 22px; }
+      .hud-metrics b { font-size: 9px; }
+      .map-label { transform-origin: center bottom; }
+      .map-label .label-name { font-size: 6.5px; }
+      .label-elev { display: none; }
+      .viewport-caption { font-size: 6.5px; bottom: 8px; left: 9px; }
+      .viewport-caption .vhint { padding: 4px 5px; }
+      .map-corner-tools { right: 9px; bottom: 7px; }
+      .compass { width: 31px; height: 31px; }
+      .region-card { flex-basis: 190px; min-height: 99px; }
+      .card-body .card-title { font-size: 17px; }
+      .modal-backdrop { padding: 10px; }
+      .modal-head h2 { font-size: 29px; }
+      .modal-content .region-note { grid-template-columns: 1fr; gap: 5px; }
+      .source-list li { flex-direction: column; gap: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) { .loader-orbit { animation: none; } }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="brand" id="brandHome" aria-label="Return to the full relief atlas view">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15">
+            <circle cx="12" cy="12" r="9.3" stroke-opacity=".55"/>
+            <path d="M3.4 13.4c2.2-2.2 4.3-2.5 6.1-.8 1.8 1.6 4 1.8 5.9-.1 1.5-1.5 3.2-1.8 5.2-.8" stroke-linecap="round"/>
+            <path d="M6.1 18.2c2.1-2.5 4.3-2.9 6.3-.9 1.7 1.7 3.5 1.4 5.2-.3" stroke-opacity=".6" stroke-linecap="round"/>
+            <path d="M7.5 7.8c1.7 1.2 3.4 1.3 5.1.1 1.3-.9 2.6-.9 4-.2" stroke-opacity=".6" stroke-linecap="round"/>
+            <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <strong>Terrain</strong>
+          <span>Myanmar relief atlas</span>
+        </span>
+      </button>
+
+      <nav class="topnav" aria-label="Atlas navigation">
+        <button class="nav-link" data-modal="atlas">The atlas</button>
+        <button class="nav-link" data-modal="notes">Field notes</button>
+        <button class="nav-link" data-modal="sources">Data &amp; sources</button>
+      </nav>
+
+      <div class="topmeta">
+        <span class="status"><span class="status-dot" aria-hidden="true"></span><span class="status-text">Live relief model</span></span>
+        <span class="coordinate">28°19′ N / 97°32′ E</span>
+        <button class="icon-btn" data-modal="atlas" aria-label="About this terrain study" title="About this study">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.7v.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="Editorial introduction and region index">
+        <div class="ed-scroll">
+          <div class="eyebrow">
+            <span>Atlas of relief</span>
+            <span class="eyebrow-rule" aria-hidden="true"></span>
+            <span class="accent">No. 04</span>
+          </div>
+          <h1 class="hero-title">Myanmar,<br /><em>in relief.</em></h1>
+          <p class="lede">Between the eastern Himalaya and the Andaman Sea, four landscapes hold a country together. <strong>Read the elevation. Follow the ridges. Find the rivers.</strong></p>
+          <div class="fact-grid" aria-label="Terrain atlas facts">
+            <div class="fact"><b>5,881<span>M</span></b><small>Highest summit</small></div>
+            <div class="fact"><b>2,170<span>KM</span></b><small>Irrawaddy course</small></div>
+            <div class="fact"><b>×3.4</b><small>Vertical relief</small></div>
+          </div>
+
+          <section class="side-section sidebar-index" aria-labelledby="regionIndexLabel">
+            <div class="section-head"><span id="regionIndexLabel">Four geographies</span><span>Select to inspect</span></div>
+            <div class="region-index" id="regionIndex"></div>
+          </section>
+
+          <section class="side-section sidebar-legend" aria-labelledby="legendLabel">
+            <div class="section-head"><span id="legendLabel">Elevation key</span><span>Metres a.s.l.</span></div>
+            <div class="elev-bar" aria-hidden="true"></div>
+            <div class="elev-labels" aria-hidden="true"><span>0</span><span>1,000</span><span>3,000</span><span>5,881</span></div>
+            <p class="legend-note"><b>Snowline &gt; 4,700 m</b> &nbsp;·&nbsp; surface colour is elevation-banded, not land cover. Relief is vertically exaggerated for legibility.</p>
+          </section>
+
+          <div class="aside-note">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true"><path d="M8 2.2v11.6M2.2 8h11.6" stroke-opacity=".4"/><circle cx="8" cy="8" r="4.7"/><path d="M8 3.8a4.2 4.2 0 0 1 4 3.1"/></svg>
+            <div><b>Method</b>Procedural height fields shaped from published topography of the Indo-Burman ranges, central basin and delta.</div>
+          </div>
+        </div>
+        <div class="sidebar-footer">
+          <span>Field study MM–04 / 2026</span>
+          <button class="text-link" data-modal="sources">Sources <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true"><path d="M3 9 9 3M4 3h5v5"/></svg></button>
+        </div>
+      </aside>
+
+      <section class="stage" aria-label="Interactive four-region terrain model">
+        <div class="stage-frame" id="stageFrame">
+          <div id="canvasWrap"><canvas id="terrainCanvas" aria-label="Rotating three-dimensional relief model of four Myanmar geographic regions side by side"></canvas></div>
+
+          <div class="stage-caption" id="stageCaption">
+            <span class="cap-mark" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M1.2 8.7 4.1 4.2l2 3 1.5-1.8 2.3 3.3"/><circle cx="6" cy="6" r="5.1" stroke-opacity=".5"/></svg></span>
+            <div><b>Four terrain studies</b><div class="cap-sub">North → south · oblique model view</div></div>
+            <span class="cap-rule" aria-hidden="true"></span>
+            <span>04 / MM</span>
+          </div>
+
+          <div class="stage-tools" aria-label="Terrain view controls">
+            <button class="tool-btn" id="btnDrift" aria-pressed="true" title="Pause or resume the slow rotation">
+              <svg id="driftIcon" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><rect x="4" y="3" width="2.2" height="10" rx=".4" fill="currentColor" stroke="none"/><rect x="9.8" y="3" width="2.2" height="10" rx=".4" fill="currentColor" stroke="none"/></svg>
+              <span class="tool-label" id="driftLabel">Drift</span>
+            </button>
+            <button class="tool-btn" id="btnLabels" aria-pressed="true" title="Show or hide map labels">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 4.2 8 2l5 2.2v7.6L8 14l-5-2.2z"/><path d="M3 4.2 8 6.4l5-2.2M8 6.4V14"/></svg>
+              <span class="tool-label">Labels</span>
+            </button>
+            <button class="tool-btn icon-only" id="btnReset" title="Reset to the full atlas view" aria-label="Reset to the full atlas view">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3.1 7.2A5 5 0 1 1 4 11"/><path d="M2.7 3.7v3.8h3.8"/></svg>
+            </button>
+          </div>
+
+          <div class="focus-hud" id="focusHud" aria-live="polite">
+            <div class="hud-kicker"><span class="hud-dot"></span><span id="hudKicker">Region 01 / 04</span></div>
+            <h2 id="hudTitle">Northern Himalayas</h2>
+            <p class="hud-desc" id="hudDesc"></p>
+            <div class="hud-metrics">
+              <div><b id="hudPeak">5,881 m</b><small id="hudPeakLabel">High point</small></div>
+              <div><b id="hudCoord">28.3° N</b><small>Latitude</small></div>
+            </div>
+            <button class="hud-back" id="hudBack"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true"><path d="M10 6H2M5 2.5 1.5 6 5 9.5"/></svg>Back to all regions</button>
+          </div>
+
+          <div class="map-labels" id="mapLabels" aria-hidden="true"></div>
+
+          <div class="viewport-caption">
+            <span class="vhint">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true"><path d="M5 2.5v6M8 2v7.5M11 4v6M3 8.5v5.4c0 .6.5 1.1 1.1 1.1h6.2c.9 0 1.7-.7 1.9-1.6l1-4.5c.2-.9-.4-1.7-1.3-1.7-.5 0-1 .2-1.3.6"/></svg>
+              <span class="hint-text">Drag to orbit · Scroll to zoom</span>
+            </span>
+            <span class="azimuth" id="azimuthReadout"><b>AZ</b> 000° <b>EL</b> 24°</span>
+          </div>
+
+          <div class="map-corner-tools">
+            <div class="scalebar" aria-hidden="true">
+              <div class="scale-rule"><span class="scale-mid"></span></div>
+              <span>≈ 200 km</span>
+            </div>
+            <div class="compass" aria-label="Compass orientation">
+              <svg viewBox="0 0 44 44" aria-hidden="true">
+                <circle cx="22" cy="22" r="16.5" fill="none" stroke="rgba(216,230,210,.19)" stroke-width=".8"/>
+                <circle cx="22" cy="22" r="12.8" fill="none" stroke="rgba(216,230,210,.09)" stroke-width=".6" stroke-dasharray="1 2.5"/>
+                <g id="compassNeedle">
+                  <path d="M22 8.5 24.4 22 22 26 19.6 22Z" fill="rgba(214,228,208,.9)"/>
+                  <path d="M22 35.5 19.6 22 22 18 24.4 22Z" fill="none" stroke="rgba(214,228,208,.43)" stroke-width=".8"/>
+                </g>
+                <circle cx="22" cy="22" r="1.2" fill="#c8d9c2"/>
+              </svg>
+              <span class="compass-n">N</span>
+            </div>
+          </div>
+
+          <div class="vertical-mark" aria-hidden="true"><span>East</span><span>West</span></div>
+
+          <div class="loading-screen" id="loadingScreen">
+            <div class="loader-orbit" aria-hidden="true"></div>
+            <div class="loading-text">Sculpting the relief</div>
+            <div class="loading-sub" id="loadStatus">Building four terrain groups</div>
+          </div>
+          <div class="webgl-error" id="webglError" hidden>
+            <div><strong>The relief could not be drawn</strong>This atlas needs WebGL. Try a current browser with hardware acceleration enabled.</div>
+          </div>
+        </div>
+
+        <div class="region-bar" id="regionBar" aria-label="Focus a region"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop" role="presentation">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <div>
+          <p class="modal-kicker" id="modalKicker">Field notes / MM–04</p>
+          <h2 id="modalTitle">Reading the relief</h2>
+        </div>
+        <button class="icon-btn modal-close" id="modalClose" aria-label="Close dialog">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="modal-content" id="modalContent"></div>
+    </div>
+  </div>
+
+  <noscript>
+    <div style="position:fixed;inset:auto 0 0 0;z-index:99;background:#121b15;color:#dfe6da;padding:14px 20px;font:12px/1.5 monospace;text-align:center">This interactive relief atlas needs JavaScript to build the 3D terrain.</div>
+  </noscript>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    /* ------------------------------------------------------------------
+       Small deterministic noise toolkit
+       ------------------------------------------------------------------ */
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const smoothstep = (a, b, x) => {
+      const t = clamp((x - a) / (b - a || 1e-6), 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+    const mix = (a, b, t) => a + (b - a) * t;
+    const TAU = Math.PI * 2;
+
+    function mulberry32(seed) {
+      let a = seed >>> 0;
+      return function () {
+        a |= 0;
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function hash2(x, y, seed = 0) {
+      const value = Math.sin(x * 127.1 + y * 311.7 + seed * 74.73) * 43758.5453123;
+      return value - Math.floor(value);
+    }
+
+    function vnoise(x, y, seed = 0) {
+      const xi = Math.floor(x);
+      const yi = Math.floor(y);
+      const xf = x - xi;
+      const yf = y - yi;
+      const u = xf * xf * (3 - 2 * xf);
+      const v = yf * yf * (3 - 2 * yf);
+      const a = hash2(xi, yi, seed);
+      const b = hash2(xi + 1, yi, seed);
+      const c = hash2(xi, yi + 1, seed);
+      const d = hash2(xi + 1, yi + 1, seed);
+      return lerp(lerp(a, b, u), lerp(c, d, u), v);
+    }
+
+    function fbm(x, y, octaves = 4, seed = 0) {
+      let amplitude = 0.5;
+      let frequency = 1;
+      let sum = 0;
+      let norm = 0;
+      for (let i = 0; i < octaves; i++) {
+        sum += amplitude * vnoise(x * frequency, y * frequency, seed + i * 19.7);
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.03;
+      }
+      return sum / norm;
+    }
+
+    function ridgedNoise(x, y, octaves = 4, seed = 0) {
+      let amplitude = 0.5;
+      let frequency = 1;
+      let sum = 0;
+      let norm = 0;
+      for (let i = 0; i < octaves; i++) {
+        let n = vnoise(x * frequency, y * frequency, seed + i * 27.3);
+        n = 1 - Math.abs(n * 2 - 1);
+        n *= n;
+        sum += amplitude * n;
+        norm += amplitude;
+        amplitude *= 0.52;
+        frequency *= 2.07;
+      }
+      return sum / norm;
+    }
+
+    function gaussian(u, v, cu, cv, su, sv, rotation = 0) {
+      const c = Math.cos(rotation);
+      const s = Math.sin(rotation);
+      const du = u - cu;
+      const dv = v - cv;
+      const x = du * c - dv * s;
+      const y = du * s + dv * c;
+      return Math.exp(-(x * x / (2 * su * su) + y * y / (2 * sv * sv)));
+    }
+
+    function distanceToPath(u, v, points) {
+      let best = Infinity;
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const lengthSq = dx * dx + dy * dy || 1e-7;
+        const t = clamp(((u - a[0]) * dx + (v - a[1]) * dy) / lengthSq, 0, 1);
+        const px = a[0] + dx * t;
+        const py = a[1] + dy * t;
+        const dist = Math.hypot(u - px, v - py);
+        if (dist < best) best = dist;
+      }
+      return best;
+    }
+
+    /* ------------------------------------------------------------------
+       A geography of four regions, defined as procedural height fields
+       Coordinates u,v are normalised to [-1, 1] across each terrain sheet.
+       ------------------------------------------------------------------ */
+
+    // Region 01 — far northern Kachin / the Hkakabo Razi massif.
+    // A high, broken Himalayan spur with sharp ridgelines and three deeply incised valleys.
+    function heightNorthern(u, v) {
+      const north = smoothstep(-0.15, -1.0, v);
+      let h = 0.34 + 0.43 * fbm(u * 2.2 + 3.7, v * 2.2 + 8.2, 4, 11);
+      h += north * 0.82;
+
+      const ridge = 0.04 + 0.24 * Math.sin(v * 2.3 + 0.65) + 0.10 * Math.sin(v * 5.2 + 2.1);
+      const distance = Math.abs(u - ridge);
+      const belt = Math.exp(-Math.pow(distance / 0.66, 1.55));
+      const jag = Math.pow(ridgedNoise(u * 3.1 + 8.4, v * 2.7 + 3.1, 5, 23), 1.35);
+      h += belt * (0.82 + 2.6 * jag) * (0.88 + 0.24 * north);
+
+      const crag = Math.pow(ridgedNoise(u * 7.3 + 1.4, v * 6.7 + 5.0, 4, 71), 2.0);
+      h += belt * crag * 0.82;
+
+      // The high massifs: Hkakabo Razi (5,881 m), Gamlang Razi (5,870 m),
+      // and the broad northern summit cluster around them.
+      h += 1.06 * gaussian(u, v, 0.18, -0.58, 0.24, 0.22);
+      h += 0.84 * gaussian(u, v, -0.42, -0.80, 0.21, 0.23);
+      h += 0.73 * gaussian(u, v, 0.55, -0.30, 0.18, 0.24, -0.24);
+      h += 0.44 * gaussian(u, v, -0.18, -0.87, 0.18, 0.17, 0.4);
+
+      // An eroded outer spur, falling toward the southern foothills.
+      const westCrest = -0.67 + 0.14 * Math.sin(v * 2.7 + 1.8);
+      h += 0.66 * Math.exp(-Math.pow((u - westCrest) / 0.26, 2)) *
+        (0.54 + 0.82 * ridgedNoise(u * 5.5, v * 4.2, 4, 41));
+
+      // Narrow, steep-sided V-valleys cut into the massif.
+      const valleyA = -0.30 + 0.13 * Math.sin(v * 3.1 + 0.8) + 0.045 * Math.sin(v * 6.7 + 2.0);
+      const cutA = Math.pow(Math.max(0, 1 - Math.abs(u - valleyA) / 0.155), 1.58);
+      h -= cutA * 1.55;
+
+      const valleyB = 0.50 + 0.15 * Math.sin(v * 2.2 + 2.4) + 0.04 * Math.sin(v * 5.8);
+      const cutB = Math.pow(Math.max(0, 1 - Math.abs(u - valleyB) / 0.115), 1.6);
+      h -= cutB * 1.28;
+
+      const valleyC = 0.06 + 0.23 * Math.sin(v * 1.8 + 4.1);
+      const cutC = Math.pow(Math.max(0, 1 - Math.abs(u - valleyC) / 0.095), 1.5);
+      h -= cutC * 0.88 * smoothstep(-0.28, 0.92, v);
+
+      h += 0.12 * (vnoise(u * 15.5, v * 15.5, 5) - 0.5);
+      h += 0.12 * Math.pow(ridgedNoise(u * 9.2 + 4.3, v * 8.8 + 2.4, 3, 91), 1.7) * belt;
+      return Math.max(0.27, h);
+    }
+
+    // Region 02 — the Arakan (Rakhine) Yoma.
+    // A continuous, impassable north–south wall. A narrow Rakhine coastal strip
+    // lies west of a steep escarpment; the central valley falls away east.
+    function heightArakan(u, v) {
+      const coast = -0.58 + 0.06 * Math.sin(v * 2.8 + 1.4) +
+        0.05 * Math.sin(v * 6.4 + 2.2) + 0.045 * (vnoise(v * 3.4, 2.0, 7) - 0.5);
+      const landMask = smoothstep(coast - 0.055, coast + 0.09, u);
+      const sea = -0.28 + 0.05 * fbm(u * 3.1 + 9.0, v * 2.7 + 4.0, 3, 6);
+
+      let h = 0.12 + 0.18 * fbm(u * 2.8 + 4.0, v * 2.0 + 8.0, 4, 31);
+      h += 0.16 * smoothstep(coast, coast + 0.55, u);
+
+      const crest = 0.02 + 0.10 * Math.sin(v * 2.1 + 0.4) + 0.055 * Math.sin(v * 4.7 + 1.7);
+      const wall = Math.exp(-Math.pow((u - crest) / 0.36, 1.65));
+      const rough = 0.62 * ridgedNoise(u * 3.8 + 2.7, v * 2.7 + 1.8, 4, 19) +
+        0.28 * fbm(u * 8.2, v * 5.5, 3, 53);
+      h += wall * (1.18 + 0.95 * rough);
+
+      // West-facing ridges are more broken; the eastern flank drops toward the basin.
+      h += 0.45 * Math.exp(-Math.pow((u - crest + 0.24) / 0.14, 2)) *
+        ridgedNoise(u * 7.0, v * 6.0, 3, 63);
+      const ravine = Math.pow(Math.max(0, 1 - Math.abs(u - (crest + 0.29 + 0.03 * Math.sin(v * 7))) / 0.045), 1.5);
+      h -= ravine * 0.37 * smoothstep(crest + 0.15, crest + 0.36, u);
+
+      // Mount Victoria / Nat Ma Taung rises toward the northern end.
+      h += 0.39 * gaussian(u, v, 0.02, -0.35, 0.23, 0.24);
+      h += 0.16 * gaussian(u, v, 0.12, 0.47, 0.20, 0.20);
+      h -= 0.19 * gaussian(u, v, crest, 0.08, 0.7, 0.065);
+      h += 0.09 * wall * (vnoise(u * 13.0, v * 12.0, 6) - 0.5);
+
+      h = mix(h, sea, 1 - landMask);
+      return Math.max(-0.35, h);
+    }
+
+    // Region 03 — the central basin, Bago Yoma and Mount Popa.
+    // Rolling alluvium, a wide/low inner ridge, a steep volcanic plug, and a
+    // broad Irrawaddy riverbed with the Chindwin joining from the west.
+    function heightCentral(u, v) {
+      const rolling = 0.48 + 0.22 * fbm(u * 2.0 + 7.7, v * 1.8 + 3.3, 4, 61) +
+        0.05 * (vnoise(u * 7.2, v * 7.2, 4) - 0.5);
+      const westEdge = Math.pow(Math.max(0, (-u - 0.72) / 0.28), 1.8) * 0.76;
+      const eastEdge = Math.pow(Math.max(0, (u - 0.76) / 0.24), 1.8) * 0.58;
+      let h = rolling + westEdge + eastEdge;
+
+      // Bago Yoma: a low but unmistakable north–south ridge through the basin.
+      const bagoCrest = 0.27 + 0.045 * Math.sin(v * 4.2 + 1.2);
+      const bagoEnvelope = Math.exp(-Math.pow((u - bagoCrest) / 0.125, 2));
+      const bagoAlong = 0.18 + 0.82 * smoothstep(-0.4, 0.88, v);
+      h += bagoEnvelope * bagoAlong * (0.47 + 0.20 * ridgedNoise(u * 8, v * 6, 3, 77));
+
+      // The buried volcanic centre of Popa — the sharp plug itself is modelled
+      // separately with an organic, low-sided cone.
+      h += 0.19 * gaussian(u, v, 0.03, 0.08, 0.22, 0.22);
+      h += 0.06 * gaussian(u, v, -0.25, -0.5, 0.13, 0.13);
+
+      // The Irrawaddy. A broad valley floor first, then the incised channel.
+      const river = -0.40 + 0.105 * Math.sin(v * 2.15 + 0.6) + 0.05 * Math.sin(v * 5.3 + 2.0);
+      const d = Math.abs(u - river);
+      h -= 0.155 * Math.exp(-Math.pow(d / 0.235, 2));
+      const bedWidth = 0.079 + 0.022 * smoothstep(-0.5, 0.85, v);
+      const inner = Math.max(0, 1 - d / bedWidth);
+      h -= 0.44 * Math.pow(inner, 0.85);
+
+      // A tributary from the west joins the central valley in the north.
+      const chindwinT = smoothstep(-1.0, -0.3, v);
+      const chindwin = mix(-0.32, -0.91, chindwinT) + 0.035 * Math.sin(v * 5.2 + 2.1);
+      const chindwinDistance = Math.abs(u - chindwin);
+      const chindwinCut = Math.max(0, 1 - chindwinDistance / 0.047);
+      h -= 0.31 * chindwinCut * (0.45 + 0.55 * smoothstep(-1.0, -0.27, v));
+
+      // The smaller Sittaung valley, east of Bago Yoma.
+      const sittaung = 0.58 + 0.06 * Math.sin(v * 2.8);
+      const sittaungDistance = Math.abs(u - sittaung);
+      h -= 0.17 * Math.max(0, 1 - sittaungDistance / 0.033) * smoothstep(-0.65, 0.72, v);
+
+      h += 0.028 * Math.sin(v * 13.0 + u * 4.0) * bagoEnvelope;
+      return Math.max(0.12, h);
+    }
+
+    // Region 04 — the Irrawaddy delta and the northern Andaman coast.
+    // A nearly flat alluvial fan, broken into islands by branching distributaries.
+    const DELTA_PATHS = [
+      [[0.02, -1.08], [0.035, -0.82], [-0.005, -0.57], [0.018, -0.32], [-0.005, -0.13]],
+      [[-0.005, -0.13], [-0.08, 0.07], [-0.16, 0.27], [-0.28, 0.47], [-0.42, 0.69], [-0.57, 0.93], [-0.67, 1.1]],
+      [[-0.005, -0.13], [0.05, 0.07], [0.11, 0.29], [0.17, 0.51], [0.22, 0.75], [0.25, 0.98], [0.27, 1.12]],
+      [[0.05, 0.07], [0.18, 0.16], [0.33, 0.34], [0.44, 0.56], [0.52, 0.81], [0.56, 1.05]],
+      [[-0.08, 0.07], [-0.24, 0.20], [-0.40, 0.36], [-0.56, 0.57], [-0.66, 0.80], [-0.73, 1.02]],
+      [[0.11, 0.29], [0.29, 0.41], [0.42, 0.57], [0.50, 0.78]],
+      [[-0.16, 0.27], [-0.03, 0.39], [-0.13, 0.55], [-0.29, 0.74], [-0.41, 0.96]],
+      [[-0.72, -1.05], [-0.64, -0.80], [-0.68, -0.54], [-0.60, -0.28], [-0.63, -0.06], [-0.56, 0.17], [-0.59, 0.40], [-0.52, 0.62]]
+    ];
+
+    function heightDelta(u, v) {
+      let h = 0.14 + 0.075 * smoothstep(0.94, -1.0, v) +
+        0.034 * fbm(u * 3.0 + 1.2, v * 2.8 + 8.0, 4, 88);
+      h += 0.018 * (vnoise(u * 12.0, v * 12.0, 6) - 0.5);
+      h -= 0.017 * Math.exp(-Math.pow((u - 0.1) / 0.8, 2)) * smoothstep(-0.2, 0.92, v);
+
+      // Distributary channels. The distance field keeps every meander organic
+      // while every channel terminates in the open sea.
+      for (let i = 0; i < DELTA_PATHS.length; i++) {
+        const distance = distanceToPath(u, v, DELTA_PATHS[i]);
+        const width = (i === 0 ? 0.061 : 0.050) + 0.012 * Math.sin(v * 4.8 + i * 1.7) + i * 0.0017;
+        const channel = Math.pow(Math.max(0, 1 - distance / width), 1.35);
+        h -= channel * (0.295 + 0.035 * (i % 2));
+        h -= 0.048 * Math.exp(-Math.pow(distance / (width * 4.7), 2));
+      }
+
+      // A jagged, crenulated coastline around a broad deltaic fan.
+      const coast = 0.61 + 0.12 * Math.sin(u * 2.9 + 1.0) +
+        0.055 * Math.sin(u * 7.3 + 0.2) +
+        0.06 * (vnoise(u * 3.9 + 3.1, 0.4, 8) - 0.5);
+      const landMask = smoothstep(coast + 0.035, coast - 0.13, v) *
+        smoothstep(-0.89, -0.69, u);
+      const sea = -0.265 + 0.026 * fbm(u * 2.2 + 4, v * 2.0 + 2, 3, 19);
+      h = mix(sea, h, landMask);
+
+      // Small islands and barriers just beyond the coast.
+      h += 0.12 * gaussian(u, v, -0.47, 0.78, 0.055, 0.075) * (0.45 + 0.55 * landMask);
+      h += 0.09 * gaussian(u, v, 0.38, 0.87, 0.045, 0.065) * (0.35 + 0.65 * landMask);
+      return Math.max(-0.31, h);
+    }
+
+    /* ------------------------------------------------------------------
+       Region presentation data
+       ------------------------------------------------------------------ */
+    const REGIONS = [
+      {
+        id: "northern",
+        number: "01",
+        title: "Northern Himalayas",
+        cardTitle: "Northern<br>Himalayas",
+        place: "Kachin / Putao",
+        altPlace: "Hkakabo Razi",
+        accent: "#cbdcc4",
+        tag: "Himalayan spur",
+        peak: "5,881 m",
+        highPoint: 5881,
+        metric: "5,881 m",
+        metricLabel: "Hkakabo Razi",
+        coord: "28.3° N",
+        coordinates: "28°19′42″N / 97°32′08″E",
+        descriptor: "Snowbound Himalayan massifs, sharp arêtes and three deep V-valleys.",
+        hudDesc: "The southern tail of the eastern Himalaya. Jagged 5,000 m massifs rise above forested gorges cut by the Mali Hka and May Kha.",
+        height: heightNorthern,
+        profileV: -0.42,
+        waterY: null,
+        maxTrees: 155,
+        maxRocks: 82,
+        treeCeiling: 0.57,
+        treeFloor: 0.075,
+        slopeLimit: 1.65,
+        rockColor: "#77766c",
+        treeColor: "#32533a",
+        label: { u: 0.18, v: -0.58, name: "Hkakabo Razi", elev: "5,881 m" }
+      },
+      {
+        id: "western",
+        number: "02",
+        title: "Western Ranges",
+        cardTitle: "Western<br>Ranges",
+        place: "Rakhine / Arakan Yoma",
+        altPlace: "Arakan Yoma",
+        accent: "#a9c0a3",
+        tag: "Indo-Burman wall",
+        peak: "3,053 m",
+        highPoint: 3053,
+        metric: "3,053 m",
+        metricLabel: "Mount Victoria",
+        coord: "21.2° N",
+        coordinates: "21°14′N / 94°03′E",
+        descriptor: "A continuous north–south wall, falling steeply to the Rakhine coast.",
+        hudDesc: "A 1,000 km rain-shadow barrier between the Bay of Bengal and the central valley. Steep western spurs and a broken crest make it all but impassable.",
+        height: heightArakan,
+        profileV: -0.32,
+        waterY: 0.035,
+        maxTrees: 175,
+        maxRocks: 78,
+        treeCeiling: 0.48,
+        treeFloor: 0.055,
+        slopeLimit: 1.35,
+        rockColor: "#7e7d76",
+        treeColor: "#2d4b34",
+        label: { u: 0.02, v: -0.35, name: "Arakan Yoma", elev: "Mount Victoria · 3,053 m" }
+      },
+      {
+        id: "central",
+        number: "03",
+        title: "Central Basin",
+        cardTitle: "Central<br>Basin",
+        place: "Upper Bamar / Mandalay",
+        altPlace: "Mount Popa",
+        accent: "#d5bd8b",
+        tag: "Volcanic line",
+        peak: "1,518 m",
+        highPoint: 1518,
+        metric: "1,518 m",
+        metricLabel: "Mount Popa",
+        coord: "20.9° N",
+        coordinates: "20°55′N / 95°15′E",
+        descriptor: "Rolling alluvium, Bago Yoma and one sharp volcanic plug.",
+        hudDesc: "The dry heart of Myanmar. The Irrawaddy braids south between low hills, while the Bago Yoma divides the basin and Popa's plug breaks the plain.",
+        height: heightCentral,
+        profileV: 0.16,
+        waterY: 0.275,
+        maxTrees: 225,
+        maxRocks: 54,
+        treeCeiling: 0.46,
+        treeFloor: 0.03,
+        slopeLimit: 1.25,
+        rockColor: "#897c69",
+        treeColor: "#41603e",
+        popa: { u: 0.03, v: 0.08, radius: 0.225, height: 1.34 },
+        label: { u: 0.03, v: 0.08, name: "Mount Popa", elev: "1,518 m" }
+      },
+      {
+        id: "delta",
+        number: "04",
+        title: "Southern Delta",
+        cardTitle: "Southern<br>Delta",
+        place: "Ayeyarwady / Andaman",
+        altPlace: "Irrawaddy Delta",
+        accent: "#96b9ae",
+        tag: "Tidal coast",
+        peak: "0–5 m",
+        highPoint: 5,
+        metric: "0–5 m",
+        metricLabel: "Land elevation",
+        coord: "16.4° N",
+        coordinates: "16°25′N / 95°20′E",
+        descriptor: "A low alluvial fan split by branching, meandering distributaries.",
+        hudDesc: "The Irrawaddy unravels into a shifting fan of tidal channels, mangrove islands and low banks before meeting the Gulf of Martaban and Andaman Sea.",
+        height: heightDelta,
+        profileV: 0.36,
+        waterY: 0.058,
+        maxTrees: 240,
+        maxRocks: 34,
+        treeCeiling: 0.98,
+        treeFloor: 0.0,
+        slopeLimit: 1.2,
+        rockColor: "#8d826d",
+        treeColor: "#355b3e",
+        label: { u: -0.1, v: 0.66, name: "Gulf of Martaban", elev: "Sea level" }
+      }
+    ];
+
+    /* ------------------------------------------------------------------
+       DOM: region index, region cards, dialogs
+       ------------------------------------------------------------------ */
+    function profilePath(spec, width = 48, height = 18) {
+      const samples = [];
+      const total = 35;
+      for (let i = 0; i < total; i++) {
+        const u = -1 + (2 * i) / (total - 1);
+        samples.push(spec.height(u, spec.profileV));
+      }
+      const lo = Math.min(...samples);
+      const hi = Math.max(...samples);
+      const range = hi - lo || 1;
+      return samples.map((h, i) => {
+        const x = 1 + (i / (total - 1)) * width;
+        const y = 21 - ((h - lo) / range) * (height - 3);
+        return `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+      }).join(" ");
+    }
+
+    function buildRegionUI() {
+      const indexHost = document.getElementById("regionIndex");
+      const cardHost = document.getElementById("regionBar");
+
+      indexHost.innerHTML = REGIONS.map((region, index) => `
+        <button class="index-item" data-region="${index}" style="--accent:${region.accent}" aria-label="Inspect ${region.title}">
+          <span class="index-num">${region.number}</span>
+          <span class="index-body">
+            <span class="index-title">${region.title}</span>
+            <span class="index-meta">${region.altPlace} · ${region.metric}</span>
+          </span>
+          <span class="index-mark" aria-hidden="true"></span>
+        </button>
+      `).join("");
+
+      cardHost.innerHTML = REGIONS.map((region, index) => `
+        <button class="region-card" data-region="${index}" style="--accent:${region.accent}" aria-label="Focus ${region.title}. ${region.descriptor}" aria-pressed="false">
+          <span class="card-meta">
+            <span class="card-left">
+              <span class="card-num">${region.number}</span>
+              <span class="card-place">${region.place}</span>
+            </span>
+            <svg class="card-arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.15" aria-hidden="true"><path d="M2.5 9.5 9.5 2.5M4 2.5h5.5V8"/></svg>
+          </span>
+          <span class="card-body">
+            <span class="card-title">${region.cardTitle}</span>
+            <svg class="card-profile" viewBox="0 0 50 24" preserveAspectRatio="none" aria-hidden="true">
+              <path class="baseline" d="M0 21.5H50"/>
+              <path d="${profilePath(region)}"/>
+            </svg>
+          </span>
+          <span class="card-foot">
+            <span class="card-elev"><b>${region.metric}</b><span>${region.metricLabel}</span></span>
+            <span class="card-tag">${region.tag}</span>
+          </span>
+        </button>
+      `).join("");
+
+      const labelHost = document.getElementById("mapLabels");
+      labelHost.innerHTML = REGIONS.map((region, index) => `
+        <div class="map-label" data-label="${index}" style="--accent:${region.accent}">
+          <span class="label-dot" aria-hidden="true"></span>
+          <span class="label-num">${region.number}</span>
+          <span class="label-name">${region.label.name}</span>
+          <span class="label-elev">${region.label.elev}</span>
+        </div>
+      `).join("");
+    }
+
+    let currentRegion = -1;
+    function setActiveRegionUI(index) {
+      currentRegion = typeof index === "number" ? index : -1;
+      document.querySelectorAll("[data-region]").forEach((node) => {
+        const active = Number(node.dataset.region) === currentRegion;
+        if (node.classList.contains("region-card")) node.setAttribute("aria-pressed", active ? "true" : "false");
+        if (node.classList.contains("index-item")) node.setAttribute("aria-current", active ? "true" : "false");
+      });
+      document.querySelectorAll(".map-label").forEach((node) => {
+        node.classList.toggle("is-active", Number(node.dataset.label) === currentRegion);
+      });
+    }
+
+    /* ------------------------------------------------------------------
+       Reference material
+       ------------------------------------------------------------------ */
+    const MODALS = {
+      atlas: {
+        kicker: "Terrain atlas / MM–04",
+        title: "A country in four terrains.",
+        content: `
+          <h3>Why four separate groups?</h3>
+          <p>Myanmar has the shape of a horseshoe. A high, crumpled north opens into a central lowland, while a continuous western wall separates that basin from the sea. In the south the Irrawaddy finally loses its gradient and unravels into the delta. Each terrain group in this study isolates one part of that story, then sets it beside its neighbours.</p>
+          <h3>How the relief is built</h3>
+          <p>Each terrain begins as a dense <strong>PlaneGeometry</strong> with a grid of displaced vertices. Sharp, fbm-ridged fields make the northern peaks; a narrow exponential ridge produces the Arakan wall; low-frequency fields shape the central plain; and a distance field following eight distributary paths carves the delta. No image textures are used.</p>
+          <p>Face colours are assigned from mean elevation and slope, then flattened to express the geological structure. Green marks the low country, olive and brown the middle slopes, grey the exposed rock, and white the summit snows. The waterways are a separate horizontal plane at regional base level.</p>
+          <h3>Reading the model</h3>
+          <p>Drag to orbit, scroll to zoom, and select any region index or card to move the camera in. <strong>Drift</strong> keeps the whole row turning slowly; <strong>Labels</strong> reveals or hides the feature annotations. The vertical scale is exaggerated 3.4× so that relief reads clearly against the 1:2,000,000 horizontal scale.</p>
+          <h3>An honest caveat</h3>
+          <p>This is an interpretive relief study, not a survey-grade digital elevation model. The topology and principal landforms are informed by published data and physiographic descriptions, but the mesh is procedurally generalised.</p>
+          <div class="modal-note">Sources consulted include NASA SRTM, GEBCO, the Geological Society of London Memoir 48 (2017), Encyclopaedia Britannica and the Myanmar government's geography reference.</div>
+        `
+      },
+      notes: {
+        kicker: "Field notes / Reading the relief",
+        title: "Four landscapes, held together.",
+        content: `
+          <div class="region-note">
+            <div class="rn-label"><b>01 / North</b>Kachin<br>28.3° N</div>
+            <div>
+              <h4>The Himalayan edge</h4>
+              <p>The north is a knot of ranges, not a single peak. Hkakabo Razi reaches 5,881 m, with permanent snow and outlet glaciers above roughly 4,600 m. At the same latitude, the Mali Hka and May Kha cut narrow, steep-sided valleys toward their confluence. These are the gorges modelled here: high ridges, shadowed V forms, and forest only on their floors.</p>
+            </div>
+          </div>
+          <div class="region-note">
+            <div class="rn-label"><b>02 / West</b>Rakhine<br>21.2° N</div>
+            <div>
+              <h4>The rain-shadow wall</h4>
+              <p>The Arakan Yoma runs almost unbroken north to south for about 1,000 km. It takes the monsoon first on its western flank, leaving the central basin in its rain shadow. The highest ground is Mount Victoria at 3,053 m. A narrow coastal strip sits west of the steep escarpment; to the east, the range drops into the Irrawaddy lowland.</p>
+            </div>
+          </div>
+          <div class="region-note">
+            <div class="rn-label"><b>03 / Centre</b>Mandalay<br>20.9° N</div>
+            <div>
+              <h4>A basin with a spine</h4>
+              <p>The central basin is not flat: it rolls with old alluvium and low ridges. The Bago Yoma divides the Irrawaddy and Sittaung valleys. At the north end of that volcanic line, Mount Popa rises from the plain to 1,518 m. The Irrawaddy passes Bagan and Mandalay in a wide, sediment-heavy valley before turning south.</p>
+            </div>
+          </div>
+          <div class="region-note">
+            <div class="rn-label"><b>04 / South</b>Ayeyarwady<br>16.4° N</div>
+            <div>
+              <h4>The unfinished land</h4>
+              <p>Most of the delta stands below five metres above sea level. The Irrawaddy branches into the Pathein, Pyapon, Bogale, Toe and Yangon systems, plus thousands of tidal creeks. Spring tides, sediment and channel shifts mean the coastline is a working edge rather than a fixed line. The Gulf of Martaban: a sea the colour of the land.</p>
+            </div>
+          </div>
+          <div class="modal-note">Model coordinates are approximate. Numbers follow the published references listed under “Data &amp; sources”.</div>
+        `
+      },
+      sources: {
+        kicker: "Reference data / Not a survey",
+        title: "Data & sources.",
+        content: `
+          <h3>Principal topographic references</h3>
+          <ul class="source-list">
+            <li><a href="https://en.wikipedia.org/wiki/Hkakabo_Razi" target="_blank" rel="noopener">Hkakabo Razi — 5,881 m, northern Kachin</a><span>Reference</span></li>
+            <li><a href="https://en.wikipedia.org/wiki/Geography_of_Myanmar" target="_blank" rel="noopener">Geography of Myanmar — ranges, basins, Bago Yoma</a><span>Reference</span></li>
+            <li><a href="https://www.lyellcollection.org/doi/full/10.1144/m48.1" target="_blank" rel="noopener">Geological Society, London — Memoir 48: Geology of Myanmar</a><span>2017</span></li>
+            <li><a href="https://myanmar.gov.mm/en/geography" target="_blank" rel="noopener">Republic of the Union of Myanmar — Geography</a><span>Reference</span></li>
+            <li><a href="https://en.wikipedia.org/wiki/Irrawaddy_Delta" target="_blank" rel="noopener">Irrawaddy Delta — distributaries and physical setting</a><span>Reference</span></li>
+            <li><a href="https://en.wikipedia.org/wiki/Andaman_Sea" target="_blank" rel="noopener">Andaman Sea — Gulf of Martaban context</a><span>Reference</span></li>
+          </ul>
+          <h3>Terrain data context</h3>
+          <p><strong>Source families consulted:</strong> NASA Shuttle Radar Topography Mission (SRTM) for land elevation patterns; GEBCO for bathymetric context; Natural Earth for the regional framing. These are used as geographic references for the procedural interpretation, not streamed into the mesh.</p>
+          <p><strong>Key figures:</strong> Hkakabo Razi 5,881 m · Mount Victoria / Nat Ma Taung 3,053 m · Mount Popa 1,518 m · Irrawaddy length about 2,170 km · delta land generally below 5 m.</p>
+          <div class="modal-note">No texture maps are used. Terrain colour is computed from elevation and slope; water is a flat-shaded plane at the regional base level. Vertical exaggeration ×3.4. Drawn for interpretation only.</div>
+          <div class="modal-footer"><span>Atlas No. 04 / 2026</span><span>MM–RELIEF / 1:2,000,000</span></div>
+        `
+      }
+    };
+
+    const modalBackdrop = document.getElementById("modalBackdrop");
+    const modalContent = document.getElementById("modalContent");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalKicker = document.getElementById("modalKicker");
+    const modalClose = document.getElementById("modalClose");
+    let lastModalFocus = null;
+
+    function openModal(key) {
+      const data = MODALS[key];
+      if (!data) return;
+      lastModalFocus = document.activeElement;
+      modalKicker.textContent = data.kicker;
+      modalTitle.textContent = data.title;
+      modalContent.innerHTML = data.content;
+      modalBackdrop.classList.add("is-open");
+      document.body.classList.add("modal-open");
+      setTimeout(() => modalClose.focus({ preventScroll: true }), 80);
+    }
+
+    function closeModal() {
+      modalBackdrop.classList.remove("is-open");
+      document.body.classList.remove("modal-open");
+      if (lastModalFocus && typeof lastModalFocus.focus === "function") {
+        lastModalFocus.focus({ preventScroll: true });
+      }
+    }
+
+    document.querySelectorAll("[data-modal]").forEach((button) => {
+      button.addEventListener("click", () => openModal(button.dataset.modal));
+    });
+    modalClose.addEventListener("click", closeModal);
+    modalBackdrop.addEventListener("click", (event) => {
+      if (event.target === modalBackdrop) closeModal();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && modalBackdrop.classList.contains("is-open")) closeModal();
+    });
+
+    buildRegionUI();
+
+    /* ------------------------------------------------------------------
+       Three.js relief stage
+       ------------------------------------------------------------------ */
+    const TILE_W = 7.6;
+    const TILE_D = 8.7;
+    const TILE_GAP = 1.1;
+    const SEGMENTS_X = 112;
+    const SEGMENTS_Z = 126;
+    const REGION_OFFSETS = REGIONS.map((_, index) => (index - 1.5) * (TILE_W + TILE_GAP));
+    const WORLD_WIDTH = TILE_W * 4 + TILE_GAP * 3;
+
+    const stageFrame = document.getElementById("stageFrame");
+    const canvas = document.getElementById("terrainCanvas");
+    const canvasWrap = document.getElementById("canvasWrap");
+    const loadingScreen = document.getElementById("loadingScreen");
+    const loadStatus = document.getElementById("loadStatus");
+    const webglError = document.getElementById("webglError");
+    const labelHost = document.getElementById("mapLabels");
+    const focusHud = document.getElementById("focusHud");
+    const hudKicker = document.getElementById("hudKicker");
+    const hudTitle = document.getElementById("hudTitle");
+    const hudDesc = document.getElementById("hudDesc");
+    const hudPeak = document.getElementById("hudPeak");
+    const hudPeakLabel = document.getElementById("hudPeakLabel");
+    const hudCoord = document.getElementById("hudCoord");
+    const stageCaption = document.getElementById("stageCaption");
+    const btnDrift = document.getElementById("btnDrift");
+    const btnLabels = document.getElementById("btnLabels");
+    const btnReset = document.getElementById("btnReset");
+    const driftLabel = document.getElementById("driftLabel");
+    const driftIcon = document.getElementById("driftIcon");
+    const hudBack = document.getElementById("hudBack");
+    const azimuthReadout = document.getElementById("azimuthReadout");
+    const compassNeedle = document.getElementById("compassNeedle");
+
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let driftEnabled = !prefersReducedMotion;
+    let labelsEnabled = true;
+    let selectedRegion = -1;
+    let activeTween = null;
+    let renderer;
+    let scene;
+    let camera;
+    let controls;
+    let waterTime = 0;
+    let lastAzimuthText = "";
+    let terrainRegions = [];
+    const clock = new THREE.Clock();
+    const tempVector = new THREE.Vector3();
+    const tempProjection = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+
+    /* Palette construction is deliberately vocabulary-poor: every colour is a
+       function of elevation, material slope and a very slight per-face tint. */
+    const PALETTES = {
+      northern: [
+        { t: 0.0, c: new THREE.Color("#133a29") },
+        { t: 0.15, c: new THREE.Color("#2a5036") },
+        { t: 0.31, c: new THREE.Color("#536a43") },
+        { t: 0.47, c: new THREE.Color("#817753") },
+        { t: 0.62, c: new THREE.Color("#8a7f6e") },
+        { t: 0.75, c: new THREE.Color("#9b988d") },
+        { t: 0.84, c: new THREE.Color("#c3c4ba") },
+        { t: 0.92, c: new THREE.Color("#e5e5dc") },
+        { t: 1.0, c: new THREE.Color("#f5f4ed") }
+      ],
+      western: [
+        { t: 0.0, c: new THREE.Color("#153c2a") },
+        { t: 0.17, c: new THREE.Color("#2c5036") },
+        { t: 0.34, c: new THREE.Color("#5e6e45") },
+        { t: 0.51, c: new THREE.Color("#817550") },
+        { t: 0.68, c: new THREE.Color("#867b69") },
+        { t: 0.84, c: new THREE.Color("#9c978c") },
+        { t: 1.0, c: new THREE.Color("#c2beb2") }
+      ],
+      central: [
+        { t: 0.0, c: new THREE.Color("#21432f") },
+        { t: 0.17, c: new THREE.Color("#3f5d3a") },
+        { t: 0.35, c: new THREE.Color("#6d7448") },
+        { t: 0.51, c: new THREE.Color("#8e7c52") },
+        { t: 0.65, c: new THREE.Color("#8a7558") },
+        { t: 0.8, c: new THREE.Color("#948775") },
+        { t: 1.0, c: new THREE.Color("#bcb4a2") }
+      ],
+      delta: [
+        { t: 0.0, c: new THREE.Color("#1f4a35") },
+        { t: 0.22, c: new THREE.Color("#31583b") },
+        { t: 0.45, c: new THREE.Color("#456645") },
+        { t: 0.7, c: new THREE.Color("#64714c") },
+        { t: 1.0, c: new THREE.Color("#938c68") }
+      ]
+    };
+    const ROCK_TINTS = {
+      northern: new THREE.Color("#8d8c83"),
+      western: new THREE.Color("#87857b"),
+      central: new THREE.Color("#897d6b"),
+      delta: new THREE.Color("#8b8068")
+    };
+    const SANDS = {
+      northern: new THREE.Color("#8b8369"),
+      western: new THREE.Color("#aca17d"),
+      central: new THREE.Color("#af9c74"),
+      delta: new THREE.Color("#b4a67f")
+    };
+    const SEA_FLOOR = {
+      northern: new THREE.Color("#0d2724"),
+      western: new THREE.Color("#0b2929"),
+      central: new THREE.Color("#12312e"),
+      delta: new THREE.Color("#0c2a29")
+    };
+    const PALETTE_SCRATCH = new THREE.Color();
+    const TINT_SCRATCH = new THREE.Color();
+
+    function sampleGradient(stops, t, target) {
+      if (t <= stops[0].t) return target.copy(stops[0].c);
+      if (t >= stops[stops.length - 1].t) return target.copy(stops[stops.length - 1].c);
+      for (let i = 1; i < stops.length; i++) {
+        if (t <= stops[i].t) {
+          const a = stops[i - 1];
+          const b = stops[i];
+          return target.copy(a.c).lerp(b.c, (t - a.t) / (b.t - a.t));
+        }
+      }
+      return target.copy(stops[stops.length - 1].c);
+    }
+
+    function buildTerrainGeometry(spec) {
+      const baseGeometry = new THREE.PlaneGeometry(TILE_W, TILE_D, SEGMENTS_X, SEGMENTS_Z);
+      baseGeometry.rotateX(-Math.PI / 2);
+      const positions = baseGeometry.attributes.position;
+      let minH = Infinity;
+      let maxH = -Infinity;
+
+      for (let i = 0; i < positions.count; i++) {
+        const x = positions.getX(i);
+        const z = positions.getZ(i);
+        const h = spec.height(x / (TILE_W / 2), z / (TILE_D / 2));
+        positions.setY(i, h);
+        if (h < minH) minH = h;
+        if (h > maxH) maxH = h;
+      }
+
+      const geometry = baseGeometry.toNonIndexed();
+      baseGeometry.dispose();
+      const meshPositions = geometry.attributes.position;
+      const faceColors = new Float32Array(meshPositions.count * 3);
+      const stops = PALETTES[spec.id];
+      const rockTint = ROCK_TINTS[spec.id];
+      const sand = SANDS[spec.id];
+      const seaFloor = SEA_FLOOR[spec.id];
+      const baseline = spec.waterY != null ? Math.min(spec.waterY, minH) : minH;
+      const elevationSpan = Math.max(0.001, maxH - baseline);
+
+      for (let i = 0; i < meshPositions.count; i += 3) {
+        const ax = meshPositions.getX(i);
+        const ay = meshPositions.getY(i);
+        const az = meshPositions.getZ(i);
+        const bx = meshPositions.getX(i + 1);
+        const by = meshPositions.getY(i + 1);
+        const bz = meshPositions.getZ(i + 1);
+        const cx = meshPositions.getX(i + 2);
+        const cy = meshPositions.getY(i + 2);
+        const cz = meshPositions.getZ(i + 2);
+        const averageHeight = (ay + by + cy) / 3;
+
+        const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+        const nx = e1y * e2z - e1z * e2y;
+        const ny = e1z * e2x - e1x * e2z;
+        const nz = e1x * e2y - e1y * e2x;
+        const normalLength = Math.hypot(nx, ny, nz) || 1;
+        const slope = clamp(1 - Math.abs(ny / normalLength), 0, 1);
+
+        const t = clamp((averageHeight - baseline) / elevationSpan, 0, 1);
+        sampleGradient(stops, t, PALETTE_SCRATCH);
+
+        if (averageHeight < (spec.waterY ?? -99)) {
+          PALETTE_SCRATCH.copy(seaFloor);
+        } else if (spec.waterY != null && averageHeight < spec.waterY + (spec.id === "delta" ? 0.032 : 0.021)) {
+          PALETTE_SCRATCH.lerp(sand, spec.id === "delta" ? 0.64 : 0.4);
+        }
+
+        if (slope > 0.22 && t < 0.91) {
+          const rockAmount = smoothstep(0.23, 0.68, slope) * (spec.id === "delta" ? 0.2 : 0.52);
+          PALETTE_SCRATCH.lerp(rockTint, rockAmount);
+        }
+
+        // A soft contour band at regular elevation intervals.
+        const band = Math.abs(((t * 22) % 1) - 0.5);
+        if (band < 0.022 && t > 0.06) PALETTE_SCRATCH.multiplyScalar(0.91);
+        if (spec.id === "northern" && t > 0.82 && slope < 0.42) {
+          TINT_SCRATCH.set("#e9e9e0");
+          PALETTE_SCRATCH.lerp(TINT_SCRATCH, 0.26);
+        }
+
+        const tint = 0.945 + 0.11 * hash2(
+          Math.round(ax * 19) + i * 0.017,
+          Math.round(az * 17) - i * 0.011,
+          17
+        );
+        PALETTE_SCRATCH.multiplyScalar(tint);
+
+        faceColors[i * 3] = PALETTE_SCRATCH.r;
+        faceColors[i * 3 + 1] = PALETTE_SCRATCH.g;
+        faceColors[i * 3 + 2] = PALETTE_SCRATCH.b;
+        faceColors[i * 3 + 3] = PALETTE_SCRATCH.r;
+        faceColors[i * 3 + 4] = PALETTE_SCRATCH.g;
+        faceColors[i * 3 + 5] = PALETTE_SCRATCH.b;
+        faceColors[i * 3 + 6] = PALETTE_SCRATCH.r;
+        faceColors[i * 3 + 7] = PALETTE_SCRATCH.g;
+        faceColors[i * 3 + 8] = PALETTE_SCRATCH.b;
+      }
+
+      geometry.setAttribute("color", new THREE.BufferAttribute(faceColors, 3));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      return { geometry, minH, maxH };
+    }
+
+    const treeGeometry = new THREE.ConeGeometry(1, 1, 5, 1);
+    treeGeometry.computeVertexNormals();
+    const rockGeometry = new THREE.ConeGeometry(1, 1, 6, 1);
+    rockGeometry.computeVertexNormals();
+
+    function buildScatter(spec, maxH, seed, kind) {
+      const countLimit = kind === "tree" ? spec.maxTrees : spec.maxRocks;
+      const random = mulberry32(seed);
+      const placements = [];
+      const water = spec.waterY ?? 0;
+      const attempts = countLimit * 18;
+
+      for (let attempt = 0; attempt < attempts && placements.length < countLimit; attempt++) {
+        const u = random() * 2 - 1;
+        const v = random() * 2 - 1;
+        const h = spec.height(u, v);
+        if (h < water + (kind === "tree" ? 0.032 : 0.018)) continue;
+
+        if (spec.popa) {
+          const popaDistance = Math.hypot(u - spec.popa.u, v - spec.popa.v);
+          if (popaDistance < spec.popa.radius * 1.5) continue;
+        }
+
+        const t = clamp((h - water) / Math.max(0.001, maxH - water), 0, 1);
+        if (kind === "tree" && (t > spec.treeCeiling || t < spec.treeFloor)) continue;
+
+        const sample = 0.034;
+        const dx = (spec.height(u + sample, v) - spec.height(u - sample, v)) / (2 * sample * (TILE_W / 2));
+        const dz = (spec.height(u, v + sample) - spec.height(u, v - sample)) / (2 * sample * (TILE_D / 2));
+        const slope = Math.hypot(dx, dz);
+        const slopeLimit = kind === "tree" ? spec.slopeLimit : 4.6;
+        if (slope > slopeLimit) continue;
+
+        const x = u * (TILE_W / 2);
+        const z = v * (TILE_D / 2);
+        const radial = kind === "tree"
+          ? (0.075 + random() * 0.075) * (spec.id === "delta" ? 0.78 : 1)
+          : 0.085 + random() * 0.18;
+        const vertical = kind === "tree"
+          ? (0.30 + random() * 0.43) * (spec.id === "delta" ? 0.78 : 1)
+          : 0.055 + random() * 0.12;
+        placements.push({
+          x, y: h, z, u, v, radial, vertical,
+          yaw: random() * TAU,
+          tilt: (random() - 0.5) * 0.12,
+          hue: random()
+        });
+      }
+
+      const geometry = kind === "tree" ? treeGeometry : rockGeometry;
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: kind === "tree" ? 0.94 : 0.86,
+        metalness: 0,
+        flatShading: true
+      });
+      const mesh = new THREE.InstancedMesh(geometry, material, Math.max(1, placements.length));
+      mesh.name = `${spec.title} ${kind === "tree" ? "trees" : "rocks"}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = true;
+      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+      const matrix = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const quaternion = new THREE.Quaternion();
+      const euler = new THREE.Euler();
+      const scale = new THREE.Vector3();
+      const baseColor = new THREE.Color(spec.treeColor);
+      const rockBase = new THREE.Color(spec.rockColor);
+
+      placements.forEach((item, index) => {
+        position.set(item.x, item.y + item.vertical * (kind === "tree" ? 0.43 : 0.17), item.z);
+        euler.set(item.tilt, item.yaw, item.tilt * 0.7, "YXZ");
+        quaternion.setFromEuler(euler);
+        scale.set(item.radial, item.vertical, item.radial);
+        matrix.compose(position, quaternion, scale);
+        mesh.setMatrixAt(index, matrix);
+
+        if (kind === "tree") {
+          TINT_SCRATCH.copy(baseColor);
+          TINT_SCRATCH.offsetHSL((item.hue - 0.5) * 0.035, (item.hue - 0.5) * 0.12, (item.hue - 0.5) * 0.11);
+        } else {
+          TINT_SCRATCH.copy(rockBase);
+          TINT_SCRATCH.offsetHSL((item.hue - 0.5) * 0.015, (item.hue - 0.5) * 0.04, (item.hue - 0.5) * 0.12);
+        }
+        mesh.setColorAt(index, TINT_SCRATCH);
+      });
+
+      if (placements.length === 0) {
+        // The instance is still deliberately present and frustum-culled, but hidden
+        // below the terrain if no valid placement survived the slope threshold.
+        matrix.makeScale(0, 0, 0);
+        mesh.setMatrixAt(0, matrix);
+        mesh.setColorAt(0, new THREE.Color("#000000"));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      if (typeof mesh.computeBoundingSphere === "function") mesh.computeBoundingSphere();
+      mesh.userData.instanceCount = placements.length;
+      return mesh;
+    }
+
+    function createWater(spec) {
+      const geometry = new THREE.PlaneGeometry(TILE_W * 0.998, TILE_D * 0.998, 18, 18);
+      geometry.rotateX(-Math.PI / 2);
+      const deep = spec.id === "delta" ? "#154143" : spec.id === "central" ? "#163d3a" : "#153d3e";
+      const shallow = spec.id === "delta" ? "#3e7771" : spec.id === "central" ? "#44766c" : "#356d68";
+      const material = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+        uniforms: {
+          uTime: { value: 0 },
+          uDeep: { value: new THREE.Color(deep) },
+          uShallow: { value: new THREE.Color(shallow) },
+          uOpacity: { value: spec.id === "delta" ? 0.78 : 0.76 }
+        },
+        vertexShader: `
+          uniform float uTime;
+          varying vec2 vUv;
+          varying float vWave;
+          void main() {
+            vUv = uv;
+            vec3 p = position;
+            float wave = sin(p.x * 1.75 + uTime * 0.46) * 0.006 +
+                         sin(p.z * 1.3 - uTime * 0.33) * 0.005;
+            p.y += wave;
+            vWave = wave;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uDeep;
+          uniform vec3 uShallow;
+          uniform float uOpacity;
+          varying vec2 vUv;
+          varying float vWave;
+          void main() {
+            float gradient = clamp(vUv.y * 0.5 + (1.0 - vUv.x) * 0.25 + vWave * 12.0, 0.0, 1.0);
+            vec3 color = mix(uDeep, uShallow, gradient);
+            float glint = 1.0 - smoothstep(0.0, 0.012, abs(vWave));
+            color += vec3(0.022, 0.034, 0.030) * glint;
+            gl_FragColor = vec4(color, uOpacity);
+            #include <colorspace_fragment>
+          }
+        `
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.y = spec.waterY;
+      mesh.name = `${spec.title} water`;
+      mesh.frustumCulled = true;
+      mesh.renderOrder = 2;
+      return mesh;
+    }
+
+    function createPopa(spec) {
+      if (!spec.popa) return null;
+      const plug = spec.popa;
+      const geometry = new THREE.ConeGeometry(plug.radius, plug.height, 11, 7, false);
+      const sourcePositions = geometry.attributes.position;
+      for (let i = 0; i < sourcePositions.count; i++) {
+        const x = sourcePositions.getX(i);
+        const z = sourcePositions.getZ(i);
+        const y = sourcePositions.getY(i);
+        const t = clamp((y + plug.height / 2) / plug.height, 0, 1);
+        const angle = Math.atan2(z, x);
+        const irregular = 1 + 0.12 * Math.sin(angle * 3 + t * 8.5) + 0.07 * Math.sin(angle * 7 - t * 3.1);
+        sourcePositions.setX(i, x * irregular);
+        sourcePositions.setZ(i, z * irregular);
+        sourcePositions.setY(i, y + (t > 0.02 && t < 0.98 ? 0.025 * Math.sin(angle * 5 + i) : 0));
+      }
+      const finalGeometry = geometry.toNonIndexed();
+      geometry.dispose();
+      const positions = finalGeometry.attributes.position;
+      const colorData = new Float32Array(positions.count * 3);
+      const low = new THREE.Color("#4e4a3b");
+      const mid = new THREE.Color("#665745");
+      const high = new THREE.Color("#81745f");
+      for (let i = 0; i < positions.count; i++) {
+        const t = clamp((positions.getY(i) + plug.height / 2) / plug.height, 0, 1);
+        if (t < 0.56) PALETTE_SCRATCH.copy(low).lerp(mid, t / 0.56);
+        else PALETTE_SCRATCH.copy(mid).lerp(high, (t - 0.56) / 0.44);
+        const angle = Math.atan2(positions.getZ(i), positions.getX(i));
+        PALETTE_SCRATCH.multiplyScalar(0.91 + 0.12 * hash2(angle * 7, t * 13, 5));
+        colorData[i * 3] = PALETTE_SCRATCH.r;
+        colorData[i * 3 + 1] = PALETTE_SCRATCH.g;
+        colorData[i * 3 + 2] = PALETTE_SCRATCH.b;
+      }
+      finalGeometry.setAttribute("color", new THREE.BufferAttribute(colorData, 3));
+      finalGeometry.computeVertexNormals();
+      finalGeometry.computeBoundingSphere();
+      const mesh = new THREE.Mesh(finalGeometry, new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        flatShading: true,
+        roughness: 0.94,
+        metalness: 0
+      }));
+      const x = plug.u * (TILE_W / 2);
+      const z = plug.v * (TILE_D / 2);
+      const baseHeight = spec.height(plug.u, plug.v);
+      mesh.position.set(x, baseHeight + plug.height * 0.5 - 0.16, z);
+      mesh.rotation.y = 0.38;
+      mesh.name = "Mount Popa volcanic plug";
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = true;
+      return mesh;
+    }
+
+    function createRegion(spec, index) {
+      const group = new THREE.Group();
+      group.name = `${spec.number} — ${spec.title}`;
+      group.position.set(REGION_OFFSETS[index], 0, 0);
+
+      const built = buildTerrainGeometry(spec);
+      const terrainMaterial = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        flatShading: true,
+        roughness: 0.91,
+        metalness: 0,
+        side: THREE.FrontSide
+      });
+      const mesh = new THREE.Mesh(built.geometry, terrainMaterial);
+      mesh.name = `${spec.title} displaced terrain`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = true;
+      mesh.userData.regionIndex = index;
+      mesh.userData.kind = "terrain";
+      group.add(mesh);
+
+      let water = null;
+      if (spec.waterY != null) {
+        water = createWater(spec);
+        water.receiveShadow = false;
+        group.add(water);
+      }
+
+      const popa = createPopa(spec);
+      if (popa) group.add(popa);
+
+      const trees = buildScatter(spec, built.maxH, 100 + index * 41 + spec.maxTrees, "tree");
+      const rocks = buildScatter(spec, built.maxH, 780 + index * 83, "rock");
+      group.add(trees, rocks);
+
+      const labelElevation = spec.id === "central"
+        ? spec.height(spec.label.u, spec.label.v) + spec.popa.height + 0.34
+        : spec.height(spec.label.u, spec.label.v) + (spec.id === "delta" ? 0.32 : 0.52);
+      const labelPoint = new THREE.Vector3(
+        spec.label.u * (TILE_W / 2),
+        labelElevation,
+        spec.label.v * (TILE_D / 2)
+      );
+
+      return {
+        spec,
+        index,
+        group,
+        mesh,
+        water,
+        trees,
+        rocks,
+        minH: built.minH,
+        maxH: built.maxH,
+        labelPoint,
+        target: new THREE.Vector3(REGION_OFFSETS[index], Math.max(0.65, built.maxH * 0.38), 0)
+      };
+    }
+
+    function setupScene() {
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.innerWidth < 700 ? 1.5 : 1.8));
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.08;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.setClearColor(0x000000, 0);
+
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x0c1510, 44, 124);
+
+      camera = new THREE.PerspectiveCamera(42, 1, 0.1, 300);
+      camera.position.set(0, 15, 31);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.055;
+      controls.enablePan = false;
+      controls.minDistance = 5.5;
+      controls.maxDistance = 120;
+      controls.minPolarAngle = 0.22;
+      controls.maxPolarAngle = Math.PI * 0.468;
+      controls.autoRotate = driftEnabled;
+      controls.autoRotateSpeed = 0.34;
+      controls.rotateSpeed = 0.52;
+      controls.zoomSpeed = 0.72;
+      controls.target.set(0, 1.35, 0);
+
+      const hemisphere = new THREE.HemisphereLight(0xc8dac9, 0x182416, 1.75);
+      scene.add(hemisphere);
+
+      const sun = new THREE.DirectionalLight(0xfff0d4, 2.75);
+      sun.position.set(-16, 24, 14);
+      sun.target.position.set(0, 0, 0);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -24;
+      sun.shadow.camera.right = 24;
+      sun.shadow.camera.top = 20;
+      sun.shadow.camera.bottom = -12;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 72;
+      sun.shadow.bias = -0.00045;
+      sun.shadow.normalBias = 0.025;
+      sun.shadow.radius = 2.5;
+      scene.add(sun, sun.target);
+
+      const fill = new THREE.DirectionalLight(0x91b3a7, 0.72);
+      fill.position.set(15, 9, -13);
+      scene.add(fill);
+
+      const rim = new THREE.DirectionalLight(0xc5d6bd, 0.36);
+      rim.position.set(0, 4, -20);
+      scene.add(rim);
+
+      scene.add(new THREE.AmbientLight(0x3c5042, 0.34));
+    }
+
+    function computeOverviewFrame() {
+      const width = Math.max(320, canvasWrap.clientWidth);
+      const height = Math.max(260, canvasWrap.clientHeight);
+      const aspect = width / height;
+      const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+      const tanFov = Math.tan(verticalFov * 0.5);
+      const halfWidth = WORLD_WIDTH * 0.5;
+      const horizontalDistance = (halfWidth * 1.045) / (tanFov * aspect);
+      const verticalDistance = 2.7 / tanFov;
+      const distance = Math.max(horizontalDistance, verticalDistance, 22);
+      const target = new THREE.Vector3(0, 1.28, 0);
+      const azimuth = 0.14;
+      const elevation = 0.47;
+      const horizontal = distance * Math.cos(elevation);
+      const position = new THREE.Vector3(
+        target.x + Math.sin(azimuth) * horizontal,
+        target.y + Math.sin(elevation) * distance,
+        target.z + Math.cos(azimuth) * horizontal
+      );
+      return { position, target, distance };
+    }
+
+    function focusFrame(region) {
+      const width = Math.max(320, canvasWrap.clientWidth);
+      const height = Math.max(260, canvasWrap.clientHeight);
+      const aspect = width / height;
+      const tanFov = Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5);
+      const horizontalFit = (TILE_W * 0.83) / (2 * tanFov * Math.max(0.62, aspect));
+      const target = region.target.clone();
+      const aboveTarget = Math.max(1.3, region.maxH - target.y + 0.42);
+      const verticalFit = (aboveTarget * 1.18) / tanFov;
+      const distance = clamp(Math.max(horizontalFit + 0.7, verticalFit + 0.7, 7.7), 7.7, 34);
+      const theta = controls ? controls.getAzimuthalAngle() : 0.14;
+      const polar = controls ? clamp(controls.getPolarAngle(), 0.97, 1.22) : 1.08;
+      const spherical = new THREE.Spherical(distance, polar, theta);
+      const position = new THREE.Vector3().setFromSpherical(spherical).add(target);
+      return { position, target, distance };
+    }
+
+    function easeInOut(t) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    function tweenCamera(position, target, duration = 950, onFinish) {
+      activeTween = {
+        fromPosition: camera.position.clone(),
+        toPosition: position.clone(),
+        fromTarget: controls.target.clone(),
+        toTarget: target.clone(),
+        startedAt: performance.now(),
+        duration,
+        onFinish
+      };
+      controls.autoRotate = false;
+    }
+
+    function overview(animate = true) {
+      selectedRegion = -1;
+      setActiveRegionUI(-1);
+      focusHud.classList.remove("is-open");
+      stageCaption.classList.remove("is-hidden");
+      const frame = computeOverviewFrame();
+      if (animate) {
+        tweenCamera(frame.position, frame.target, 950, () => {
+          controls.autoRotate = driftEnabled;
+        });
+      } else {
+        camera.position.copy(frame.position);
+        controls.target.copy(frame.target);
+        controls.update();
+        controls.autoRotate = driftEnabled;
+      }
+    }
+
+    function focusRegion(index) {
+      const region = terrainRegions[index];
+      if (!region) return;
+      selectedRegion = index;
+      setActiveRegionUI(index);
+      stageCaption.classList.add("is-hidden");
+
+      hudKicker.textContent = `Region ${region.spec.number} / 04 · ${region.spec.place}`;
+      hudTitle.textContent = region.spec.title;
+      hudDesc.textContent = region.spec.hudDesc;
+      hudPeak.textContent = region.spec.peak;
+      hudPeakLabel.textContent = region.spec.id === "delta" ? "Land elevation" : "Elevation";
+      hudCoord.textContent = region.spec.coord;
+      focusHud.style.setProperty("--accent", region.spec.accent);
+      focusHud.classList.add("is-open");
+
+      const frame = focusFrame(region);
+      tweenCamera(frame.position, frame.target, 980, () => {
+        controls.autoRotate = false;
+      });
+    }
+
+    function updateDriftUI() {
+      btnDrift.setAttribute("aria-pressed", driftEnabled ? "true" : "false");
+      driftLabel.textContent = driftEnabled ? "Drift" : "Paused";
+      driftIcon.innerHTML = driftEnabled
+        ? '<rect x="4" y="3" width="2.2" height="10" rx=".4" fill="currentColor" stroke="none"></rect><rect x="9.8" y="3" width="2.2" height="10" rx=".4" fill="currentColor" stroke="none"></rect>'
+        : '<path d="M5 3.3 13 8l-8 4.7z" fill="currentColor" stroke="none"></path>';
+      controls.autoRotate = driftEnabled && selectedRegion === -1 && !activeTween;
+    }
+
+    function attachStageUI() {
+      document.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-region]");
+        if (!target) return;
+        const index = Number(target.dataset.region);
+        if (Number.isFinite(index)) focusRegion(index);
+      });
+
+      document.getElementById("brandHome").addEventListener("click", () => overview(true));
+      btnReset.addEventListener("click", () => overview(true));
+      hudBack.addEventListener("click", () => overview(true));
+
+      btnDrift.addEventListener("click", () => {
+        driftEnabled = !driftEnabled;
+        if (driftEnabled && selectedRegion !== -1) {
+          overview(true);
+        }
+        updateDriftUI();
+      });
+
+      btnLabels.addEventListener("click", () => {
+        labelsEnabled = !labelsEnabled;
+        labelHost.classList.toggle("is-hidden", !labelsEnabled);
+        btnLabels.setAttribute("aria-pressed", labelsEnabled ? "true" : "false");
+      });
+
+      renderer.domElement.addEventListener("pointerdown", (event) => {
+        if (activeTween) {
+          activeTween = null;
+          controls.autoRotate = driftEnabled && selectedRegion === -1;
+        }
+        pointerStart.x = event.clientX;
+        pointerStart.y = event.clientY;
+        pointerStart.valid = true;
+      });
+
+      renderer.domElement.addEventListener("pointerup", (event) => {
+        if (!pointerStart.valid) return;
+        const moved = Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y);
+        pointerStart.valid = false;
+        if (moved > 6) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointerNdc, camera);
+        const hits = raycaster.intersectObjects(terrainRegions.map((region) => region.mesh), false);
+        if (hits.length > 0 && hits[0].object.userData.regionIndex != null) {
+          focusRegion(hits[0].object.userData.regionIndex);
+        }
+      });
+
+      renderer.domElement.addEventListener("pointercancel", () => {
+        pointerStart.valid = false;
+      });
+
+      updateDriftUI();
+      btnLabels.setAttribute("aria-pressed", "true");
+      setActiveRegionUI(-1);
+    }
+
+    const pointerStart = { x: 0, y: 0, valid: false };
+    const pointerNdc = new THREE.Vector2();
+
+    function updateMapLabels() {
+      if (!labelsEnabled) return;
+      const rect = canvasWrap.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      for (let i = 0; i < terrainRegions.length; i++) {
+        const region = terrainRegions[i];
+        const element = labelHost.querySelector(`[data-label="${i}"]`);
+        if (!element) continue;
+        tempVector.copy(region.labelPoint);
+        region.group.localToWorld(tempVector);
+        tempProjection.copy(tempVector).project(camera);
+        const onScreen = tempProjection.z > -1 && tempProjection.z < 1 &&
+          tempProjection.x > -1.14 && tempProjection.x < 1.14 &&
+          tempProjection.y > -1.14 && tempProjection.y < 1.02;
+        if (!onScreen) {
+          element.style.opacity = "0";
+          continue;
+        }
+        const screenX = (tempProjection.x * 0.5 + 0.5) * rect.width;
+        const screenY = (-tempProjection.y * 0.5 + 0.5) * rect.height;
+        element.style.left = `${screenX.toFixed(1)}px`;
+        element.style.top = `${(screenY - 9).toFixed(1)}px`;
+        element.style.opacity = selectedRegion === -1 || selectedRegion === i ? "1" : "0.55";
+      }
+    }
+
+    function updateCameraReadout() {
+      if (!controls) return;
+      const azimuth = ((THREE.MathUtils.radToDeg(controls.getAzimuthalAngle()) % 360) + 360) % 360;
+      const elevation = 90 - THREE.MathUtils.radToDeg(controls.getPolarAngle());
+      const next = `<b>AZ</b> ${String(Math.round(azimuth)).padStart(3, "0")}° <b>EL</b> ${String(Math.round(elevation)).padStart(2, "0")}°`;
+      if (next !== lastAzimuthText) {
+        azimuthReadout.innerHTML = next;
+        lastAzimuthText = next;
+        if (compassNeedle) {
+          compassNeedle.style.transform = `rotate(${(-azimuth).toFixed(1)}deg)`;
+        }
+      }
+    }
+
+    function resizeStage() {
+      if (!renderer || !camera) return;
+      const width = Math.max(1, canvasWrap.clientWidth);
+      const height = Math.max(1, canvasWrap.clientHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.innerWidth < 700 ? 1.5 : 1.8));
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (document.hidden) return;
+      const delta = Math.min(clock.getDelta(), 0.05);
+      waterTime += delta;
+
+      if (activeTween) {
+        const t = clamp((performance.now() - activeTween.startedAt) / activeTween.duration, 0, 1);
+        const eased = easeInOut(t);
+        camera.position.lerpVectors(activeTween.fromPosition, activeTween.toPosition, eased);
+        controls.target.lerpVectors(activeTween.fromTarget, activeTween.toTarget, eased);
+        camera.lookAt(controls.target);
+        if (t >= 1) {
+          const finish = activeTween.onFinish;
+          controls.target.copy(activeTween.toTarget);
+          camera.position.copy(activeTween.toPosition);
+          activeTween = null;
+          controls.update();
+          if (finish) finish();
+        }
+      } else {
+        controls.update();
+      }
+
+      for (let i = 0; i < terrainRegions.length; i++) {
+        const water = terrainRegions[i].water;
+        if (water) water.material.uniforms.uTime.value = waterTime;
+      }
+
+      updateMapLabels();
+      updateCameraReadout();
+      renderer.render(scene, camera);
+    }
+
+    async function nextFrame() {
+      return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
+    async function initAtlas() {
+      try {
+        setupScene();
+        resizeStage();
+
+        for (let i = 0; i < REGIONS.length; i++) {
+          loadStatus.textContent = `${REGIONS[i].number} / ${REGIONS[i].title}`;
+          await nextFrame();
+          terrainRegions.push(createRegion(REGIONS[i], i));
+          scene.add(terrainRegions[i].group);
+        }
+
+        loadStatus.textContent = "Scattering canopy and rock";
+        attachStageUI();
+        const frame = computeOverviewFrame();
+        camera.position.copy(frame.position);
+        controls.target.copy(frame.target);
+        controls.update();
+
+        let lastStageAspect = camera.aspect;
+        const handleStageResize = () => {
+          resizeStage();
+          const nextAspect = camera.aspect;
+          const aspectShifted = Math.abs(nextAspect - lastStageAspect) > 0.035;
+          if (aspectShifted && selectedRegion === -1 && !activeTween) {
+            const overviewFrame = computeOverviewFrame();
+            camera.position.copy(overviewFrame.position);
+            controls.target.copy(overviewFrame.target);
+            controls.update();
+          }
+          lastStageAspect = nextAspect;
+        };
+        if ("ResizeObserver" in window) {
+          const resizeObserver = new ResizeObserver(handleStageResize);
+          resizeObserver.observe(canvasWrap);
+        } else {
+          window.addEventListener("resize", handleStageResize);
+        }
+
+        renderer.render(scene, camera);
+        await nextFrame();
+        loadingScreen.classList.add("is-hidden");
+        animate();
+      } catch (error) {
+        console.error("Relief stage could not be created:", error);
+        loadingScreen.classList.add("is-hidden");
+        webglError.hidden = false;
+      }
+    }
+
+    initAtlas();
+  </script>
+</body>
+</html>
