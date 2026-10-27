@@ -295,14 +295,15 @@ export class World {
     const wall = new THREE.MeshStandardMaterial({ color: 0xc8b184, roughness: 0.9, flatShading: true });
     const leaf = new THREE.MeshStandardMaterial({ color: 0x4f7a3c, roughness: 0.85, flatShading: true });
 
-    // Square prism from a 4-segment cylinder and a matching pyramid roof —
-    // a gabled silhouette without a single box.
-    const wallGeo = new THREE.CylinderGeometry(1.85, 1.95, 2.0, 4, 1);
-    wallGeo.rotateY(Math.PI / 4);
-    const roofGeo = new THREE.ConeGeometry(2.9, 1.9, 4);
-    roofGeo.rotateY(Math.PI / 4);
+    // Octagonal faceted wall and roof — planar traditional-hut faces,
+    // but never a square box prism.
+    const wallGeo = new THREE.CylinderGeometry(1.85, 1.95, 2.0, 8, 1);
+    const roofGeo = new THREE.ConeGeometry(2.9, 1.9, 8);
     const legGeo = new THREE.CylinderGeometry(0.13, 0.17, 2.4, 6);
     legGeo.translate(0, 1.2, 0);
+    // Raised octagonal floor platform and a round water jar on the porch.
+    const floorGeo = new THREE.CylinderGeometry(2.35, 2.35, 0.18, 8);
+    const jarGeo = new THREE.CylinderGeometry(0.28, 0.34, 0.6, 8);
 
     const makeHut = (): THREE.Group => {
       const g = new THREE.Group();
@@ -320,10 +321,14 @@ export class World {
       bodyMesh.position.y = 3.4;
       const roof = new THREE.Mesh(roofGeo, leaf);
       roof.position.y = 5.3;
-      // A gabled prism variant is kept available for porch extensions.
+      // A gabled prism porch roof over the entry, plus platform and jar.
       const gable = new THREE.Mesh(gabledHouseGeometry(1.4, 1.1, 1.0), wood);
       gable.position.set(0, 2.3, 2.05);
-      g.add(bodyMesh, roof, gable);
+      const floor = new THREE.Mesh(floorGeo, wood);
+      floor.position.y = 2.25;
+      const jar = new THREE.Mesh(jarGeo, wall);
+      jar.position.set(-1.7, 2.62, 1.5);
+      g.add(bodyMesh, roof, gable, floor, jar);
       g.traverse((o) => {
         if (o instanceof THREE.Mesh) {
           o.castShadow = true;
