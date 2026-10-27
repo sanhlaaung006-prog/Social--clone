@@ -75,10 +75,13 @@ components/
   Minimap.tsx         2D-canvas tactical minimap
   TouchControls.tsx   Joystick + look pad + fire/aim/jump/reload
 game/
-  engine.ts           WebGLRenderer, game loop, systems orchestration
-  world.ts            Procedural terrain, water, pagoda, huts, instanced jungle
-  actors.ts           Low-poly humanoids, Player controller, bot AI
-  combat.ts           Tracer pool, muzzle flash, medkit/ammo pickups
+  engine.ts           WebGLRenderer, ACES tone mapping, FogExp2, game loop
+  world.ts            Smooth terrain, animated water, lathe pagoda, huts,
+                      instanced two-species jungle, grass, drifting clouds
+  geometry/kit.ts     Shared stylized builders: loft, jittered blobs,
+                      gabled prism, struts, palette variation (anti-voxel)
+  actors.ts           Rounded humanoids (cylinders/spheres), Player, bot AI
+  combat.ts           Tracer pool, muzzle flash, canister/hex-tin pickups
   zone.ts             Shrinking battle-royale circle
   cameraRig.ts        Third-person orbit camera w/ terrain pull-in
   input.ts            Unified touch + keyboard/mouse input state
@@ -103,12 +106,23 @@ scripts/
   integration.ts      30-second headless simulated match
   screenshot.ts       CPU rasterizer: real scene geometry -> PNG (no GPU)
   vehicles.test.ts    Driving, steering, collision, stylized-geometry rules
+  art-style.test.ts   Anti-voxel gate: zero boxes, smooth terrain, curved humans
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts
   mig.test.ts         MiG material revision, rig hooks and render proofs
   lib/raster.ts       Shared headless triangle rasterizer
   lib/dom-stub.ts     Headless canvas/DOM stub for texture-building modules
 reference/            Supplied vehicle and terrain concepts (not shipped)
 ```
+
+## Art direction: smooth stylized low-poly, no voxel
+
+The game deliberately rejects block/voxel aesthetics. Ground is an indexed
+heightfield with smooth normals and blended color ramps; props use lofts,
+jittered polyhedra, tapered cylinders, lathe and extrude geometry. Raw
+`THREE.BoxGeometry` is forbidden in shipped gameplay modules by
+`scripts/art-style.test.ts`, which also asserts smooth terrain normals,
+per-instance color variation and curved-primitive characters. Open-source
+references and licenses are recorded in `reference/oss-research.md`.
 
 ## Stylized vehicle factory
 

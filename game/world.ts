@@ -209,18 +209,28 @@ export class World {
 
   /* ------------------------------- water -------------------------------- */
 
+  private waterMesh: THREE.Mesh | null = null;
+  private waterBase: Float32Array | null = null;
+  private waterTime = 0;
+
   private buildWater() {
-    const geo = new THREE.PlaneGeometry(CONFIG.world.size * 1.4, CONFIG.world.size * 1.4);
+    // Subdivided plane so gentle CPU-side waves can move real vertices.
+    const span = CONFIG.world.size * 1.4;
+    const geo = new THREE.PlaneGeometry(span, span, 56, 56);
+    geo.rotateX(-Math.PI / 2);
+    this.waterBase = (geo.getAttribute("position") as THREE.BufferAttribute).array.slice() as Float32Array;
     const mat = new THREE.MeshStandardMaterial({
       color: 0x3f7d8c,
       transparent: true,
       opacity: 0.72,
       roughness: 0.22,
       metalness: 0.12,
+      flatShading: true,
     });
     const water = new THREE.Mesh(geo, mat);
-    water.rotation.x = -Math.PI / 2;
     water.position.y = CONFIG.world.waterLevel;
+    water.receiveShadow = true;
+    this.waterMesh = water;
     this.group.add(water);
   }
 
@@ -552,8 +562,24 @@ export class World {
     this.group.add(this.cloudMesh);
   }
 
-  /** Slow cloud drift, called once per frame from the engine. */
+  /** Slow cloud drift and water waves, called once per frame. */
   updateAmbient(dt: number) {
+    this.waterTime += dt;
+    if (this.waterMesh && this.waterBase) {
+      const attr = this.waterMesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const t = this.waterTime;
+      for (let i = 0; i < attr.count; i++) {
+        const x = this.waterBase[i * 3];
+        const z = this.waterBase[i * 3 + 2];
+        // Two crossed sine fields read as small irregular ripples.
+        const wave =
+          Math.sin(x * 0.12 + t * 1.1) * 0.09 +
+          Math.cos(z * 0.16 + t * 0.8) * 0.06;
+        attr.setY(i, wave);
+      }
+      attr.needsUpdate = true;
+      this.waterMesh.geometry.computeVertexNormals();
+    }
     if (!this.cloudMesh) return;
     const dummy = new THREE.Object3D();
     const limit = this.half + 30;
