@@ -1,0 +1,4160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#080b0c" />
+  <title>FULCRUM 09 — MiG-29 Interactive Airframe</title>
+  <meta name="description" content="An interactive procedural MiG-29 showcase. Explore the airframe in the showroom, fly a looping aerobatic sortie, open the cockpit, orbit the model and trigger a full destructive sequence." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <!-- Presentation layer is hand-authored inline so the artwork, typography and HUD remain entirely portable. -->
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --bg: #080b0c;
+      --panel: rgba(11, 16, 17, .72);
+      --panel-solid: #0c1112;
+      --ink: #e9e7df;
+      --mute: #899493;
+      --faint: #5c6868;
+      --line: rgba(222, 234, 230, .13);
+      --line-soft: rgba(222, 234, 230, .07);
+      --accent: #ff5b33;
+      --accent-soft: rgba(255, 91, 51, .14);
+      --ice: #b5e5e7;
+      --sans: 'Archivo', system-ui, -apple-system, sans-serif;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #080b0c;
+      color: var(--ink);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    button { font: inherit; color: inherit; }
+    button:focus-visible, a:focus-visible {
+      outline: 1px solid var(--accent);
+      outline-offset: 4px;
+    }
+    ::selection { color: #080b0c; background: var(--ice); }
+
+    #app { position: fixed; inset: 0; isolation: isolate; }
+    #stage {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: grab;
+      z-index: 1;
+    }
+    #stage:active { cursor: grabbing; }
+    .mode-flight #stage { cursor: crosshair; }
+
+    .grade, .grain, .vignette { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+    .grade {
+      background:
+        linear-gradient(90deg, rgba(5, 8, 9, .88) 0%, rgba(5, 8, 9, .52) 26%, rgba(5, 8, 9, .02) 55%, rgba(5, 8, 9, .12) 100%),
+        linear-gradient(0deg, rgba(5, 8, 9, .92) 0%, rgba(5, 8, 9, .16) 26%, transparent 44%),
+        linear-gradient(180deg, rgba(5, 8, 9, .62) 0%, transparent 17%);
+      transition: opacity .8s ease, background .8s ease;
+    }
+    .mode-flight .grade {
+      background:
+        linear-gradient(0deg, rgba(4, 13, 16, .74) 0%, rgba(4, 13, 16, .06) 30%, transparent 48%),
+        linear-gradient(180deg, rgba(4, 13, 16, .56) 0%, transparent 18%),
+        radial-gradient(ellipse at 58% 46%, transparent 38%, rgba(3, 10, 12, .35) 100%);
+    }
+    .vignette {
+      background: radial-gradient(ellipse at 50% 48%, transparent 48%, rgba(3, 5, 6, .5) 100%);
+    }
+    .grain {
+      opacity: .035;
+      mix-blend-mode: screen;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.7'/%3E%3C/svg%3E");
+    }
+
+    /* ── header ─────────────────────────────────────────── */
+    header {
+      position: absolute;
+      inset: 0 0 auto 0;
+      z-index: 20;
+      height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 clamp(16px, 2.4vw, 36px);
+      border-bottom: 1px solid var(--line-soft);
+      background: linear-gradient(180deg, rgba(7, 10, 11, .68), transparent);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--ink);
+      text-decoration: none;
+      user-select: none;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      background: rgba(14, 19, 20, .55);
+      color: var(--accent);
+      position: relative;
+    }
+    .brand-mark::before, .brand-mark::after {
+      content: '';
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      border-color: var(--faint);
+    }
+    .brand-mark::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+    .brand-mark::after { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+    .brand-mark svg { width: 21px; height: 21px; }
+    .brand-copy { display: flex; flex-direction: column; line-height: 1; gap: 5px; }
+    .brand-copy strong { font-size: 14px; font-weight: 700; letter-spacing: .22em; }
+    .brand-copy small { font-family: var(--mono); font-size: 7.5px; letter-spacing: .16em; color: var(--mute); }
+
+    .navline {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      letter-spacing: .14em;
+      color: var(--mute);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .navline span { display: flex; align-items: center; gap: 8px; }
+    .navline i {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--faint);
+      display: block;
+    }
+    .navline .nav-accent { color: #cbd4d0; }
+    .navline .nav-accent i { background: var(--accent); }
+    .nav-divider { height: 12px; width: 1px; background: var(--line); }
+
+    .sysline { display: flex; align-items: center; gap: 16px; }
+    .sys-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      letter-spacing: .13em;
+      color: var(--mute);
+      text-transform: uppercase;
+    }
+    .pulse {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: #8fe0b4;
+      box-shadow: 0 0 0 0 rgba(143, 224, 180, .4);
+      animation: pulse 2.6s infinite;
+    }
+    .mode-flight .pulse { background: var(--accent); animation-duration: 1.5s; }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(143, 224, 180, .28); }
+      50% { box-shadow: 0 0 0 5px rgba(143, 224, 180, 0); }
+    }
+    .icon-btn {
+      width: 32px; height: 32px;
+      border: 1px solid var(--line);
+      background: rgba(11, 16, 17, .4);
+      display: grid; place-items: center;
+      cursor: pointer;
+      color: var(--mute);
+      transition: color .25s, border-color .25s, background .25s;
+    }
+    .icon-btn:hover { color: var(--ink); border-color: rgba(255,255,255,.28); background: rgba(255,255,255,.04); }
+    .icon-btn svg { width: 13px; height: 13px; }
+
+    /* ── hero / dossier ─────────────────────────────────── */
+    .hero {
+      position: absolute;
+      z-index: 10;
+      left: clamp(20px, 3.8vw, 62px);
+      top: clamp(104px, 17vh, 176px);
+      width: min(480px, 42vw);
+      pointer-events: none;
+      transition: opacity .42s ease, transform .55s cubic-bezier(.22,.8,.2,1);
+    }
+    .mode-flight .hero { opacity: 0; transform: translateY(-14px); }
+    .eyebrow {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 400;
+      letter-spacing: .2em;
+      color: #b8c2bf;
+      text-transform: uppercase;
+    }
+    .eyebrow .rule { width: 32px; height: 1px; background: var(--accent); display: block; }
+    .eyebrow .origin {
+      color: var(--faint);
+      border-left: 1px solid var(--line);
+      padding-left: 12px;
+      letter-spacing: .13em;
+    }
+    .title-row { display: flex; align-items: flex-end; gap: clamp(12px, 1.6vw, 22px); margin-top: clamp(20px, 3.5vh, 38px); }
+    h1 {
+      margin: 0;
+      font-size: clamp(86px, 10.6vw, 158px);
+      font-weight: 800;
+      line-height: .76;
+      letter-spacing: -.07em;
+      color: #efede5;
+      text-shadow: 0 24px 60px rgba(0,0,0,.35);
+    }
+    h1 .dash { color: var(--accent); font-weight: 400; margin: 0 .01em 0 -.015em; }
+    .title-meta {
+      font-family: var(--mono);
+      font-size: 8.5px;
+      line-height: 1.9;
+      letter-spacing: .15em;
+      color: var(--mute);
+      border-left: 1px solid var(--line);
+      padding-left: 14px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .title-meta b { color: #cbd4d0; font-weight: 400; }
+    .lede {
+      max-width: 338px;
+      margin: clamp(16px, 2.6vh, 26px) 0 0;
+      font-size: 12.5px;
+      font-weight: 300;
+      line-height: 1.75;
+      letter-spacing: .01em;
+      color: #a6b0ac;
+    }
+    .lede strong { color: #d8dcd6; font-weight: 500; }
+    .specs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      max-width: 418px;
+      margin: clamp(20px, 3.4vh, 32px) 0 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .spec {
+      padding: 13px 14px 13px 0;
+      border-right: 1px solid var(--line);
+    }
+    .spec + .spec { padding-left: 14px; }
+    .spec:last-child { border-right: 0; }
+    .spec span {
+      display: block;
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: .15em;
+      color: var(--faint);
+      text-transform: uppercase;
+      margin-bottom: 7px;
+    }
+    .spec strong {
+      display: flex;
+      align-items: baseline;
+      gap: 3px;
+      font-size: clamp(17px, 1.55vw, 21px);
+      line-height: 1;
+      font-weight: 500;
+      letter-spacing: -.03em;
+      color: #e2e4dd;
+    }
+    .spec strong em { font-style: normal; font-family: var(--mono); font-size: 8px; color: var(--mute); letter-spacing: .06em; margin-left: 2px; }
+    .hero-foot {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: .15em;
+      color: var(--faint);
+      text-transform: uppercase;
+    }
+    .hero-foot .index { color: var(--accent); }
+    .hero-foot .rule { flex: 1; height: 1px; background: var(--line-soft); }
+    .ghost-index {
+      position: absolute;
+      z-index: 3;
+      left: clamp(16px, 3.7vw, 60px);
+      bottom: 56px;
+      font-size: clamp(150px, 22vw, 330px);
+      font-weight: 900;
+      line-height: .62;
+      letter-spacing: -.08em;
+      color: transparent;
+      -webkit-text-stroke: 1px rgba(223, 235, 230, .045);
+      pointer-events: none;
+      transition: opacity .6s;
+      user-select: none;
+    }
+    body.mode-flight .ghost-index { opacity: 0; }
+
+    /* ── control rail ───────────────────────────────────── */
+    .control-rail {
+      position: absolute;
+      z-index: 16;
+      top: clamp(98px, 14vh, 128px);
+      right: clamp(16px, 2.3vw, 34px);
+      width: 226px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(18px) saturate(120%);
+      -webkit-backdrop-filter: blur(18px) saturate(120%);
+      box-shadow: 0 24px 70px rgba(0,0,0,.3);
+    }
+    .rail-head {
+      display: flex;
+      justify-content: space-between;
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line-soft);
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: .15em;
+      color: var(--faint);
+      text-transform: uppercase;
+    }
+    .rail-btn {
+      position: relative;
+      display: grid;
+      grid-template-columns: 30px 1fr 6px;
+      align-items: center;
+      gap: 11px;
+      width: 100%;
+      padding: 11px 13px;
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--line-soft);
+      text-align: left;
+      cursor: pointer;
+      transition: background .22s ease, padding-left .22s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .rail-btn:hover { background: rgba(255,255,255,.045); padding-left: 16px; }
+    .rail-btn:active { background: rgba(255,255,255,.07); }
+    .rail-icon {
+      width: 30px; height: 30px;
+      display: grid; place-items: center;
+      border: 1px solid var(--line);
+      color: #aebbb7;
+      transition: color .2s, border-color .2s, background .2s;
+    }
+    .rail-icon svg { width: 14px; height: 14px; }
+    .rail-copy strong {
+      display: block;
+      font-size: 11.5px;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: .01em;
+      color: #dfe2dc;
+    }
+    .rail-copy small {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--mono);
+      font-size: 7px;
+      line-height: 1.2;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .rail-led {
+      width: 5px; height: 5px;
+      border: 1px solid var(--faint);
+      border-radius: 50%;
+      justify-self: end;
+      transition: background .2s, border-color .2s, box-shadow .2s;
+    }
+    .rail-btn.is-active .rail-icon { color: var(--accent); border-color: rgba(255,91,51,.5); background: var(--accent-soft); }
+    .rail-btn.is-active .rail-led { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px rgba(255,91,51,.7); }
+    .rail-btn.is-active .rail-copy strong { color: #fff3ec; }
+    .rail-btn.rail-danger .rail-icon { color: var(--accent); }
+    .rail-btn:disabled { opacity: .36; cursor: not-allowed; }
+    .rail-btn:disabled:hover { padding-left: 13px; background: transparent; }
+    .rail-btn.rail-danger.is-active .rail-led { box-shadow: 0 0 9px rgba(255,91,51,.8); }
+    .rail-state {
+      padding: 11px 13px 12px;
+      background: rgba(255,255,255,.022);
+      display: grid;
+      gap: 7px;
+    }
+    .rail-state div { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-family: var(--mono); font-size: 7.5px; letter-spacing: .11em; text-transform: uppercase; }
+    .rail-state span { color: var(--faint); }
+    .rail-state strong { color: #bcc9c5; font-weight: 400; text-align: right; }
+    .rail-state strong.hot { color: var(--accent); }
+
+    /* ── showroom page matter ───────────────────────────── */
+    .plaque {
+      position: absolute;
+      z-index: 8;
+      left: clamp(20px, 3.8vw, 62px);
+      bottom: 104px;
+      display: flex;
+      align-items: flex-start;
+      gap: 13px;
+      pointer-events: none;
+      transition: opacity .35s;
+    }
+    .mode-flight .plaque { opacity: 0; }
+    .plaque-line { width: 1px; height: 34px; background: linear-gradient(var(--accent), transparent); margin-top: 2px; }
+    .plaque-copy { font-family: var(--mono); font-size: 7.5px; line-height: 1.9; letter-spacing: .14em; color: var(--faint); text-transform: uppercase; }
+    .plaque-copy b { color: #adb9b5; font-weight: 400; }
+
+    /* ── flight hud ─────────────────────────────────────── */
+    .flight-hud {
+      position: absolute;
+      inset: 0;
+      z-index: 9;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity .5s ease, visibility .5s;
+    }
+    .mode-flight .flight-hud { opacity: 1; visibility: visible; }
+    .mission {
+      position: absolute;
+      left: clamp(20px, 3.8vw, 62px);
+      top: clamp(96px, 14vh, 126px);
+      width: 208px;
+    }
+    .hud-kicker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 7.5px;
+      letter-spacing: .16em;
+      color: #bfcbc6;
+      text-transform: uppercase;
+      margin-bottom: 13px;
+    }
+    .live-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 1.6s infinite; }
+    .mission-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-top: 1px solid rgba(222,234,230,.15);
+      font-family: var(--mono);
+      font-size: 7px;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      color: rgba(224,236,230,.46);
+      gap: 14px;
+    }
+    .mission-row strong { color: #d7dfd9; font-size: 8px; font-weight: 400; text-align: right; white-space: nowrap; }
+    .mission-row strong.accent-line { color: var(--accent); }
+
+    .hud-readouts {
+      position: absolute;
+      left: clamp(20px, 3.8vw, 62px);
+      bottom: 103px;
+      display: flex;
+      border-top: 1px solid rgba(222,234,230,.2);
+      border-bottom: 1px solid rgba(222,234,230,.2);
+      background: rgba(6, 13, 15, .36);
+      backdrop-filter: blur(9px);
+      -webkit-backdrop-filter: blur(9px);
+    }
+    .readout {
+      position: relative;
+      padding: 10px 16px 9px;
+      min-width: 86px;
+      border-right: 1px solid rgba(222,234,230,.14);
+    }
+    .readout:last-child { border-right: 0; }
+    .hud-label {
+      display: block;
+      font-family: var(--mono);
+      font-size: 7px;
+      letter-spacing: .15em;
+      color: rgba(222,234,230,.46);
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .readout strong {
+      font-family: var(--mono);
+      font-size: 17px;
+      line-height: 1;
+      font-weight: 400;
+      letter-spacing: -.04em;
+      color: #eef1eb;
+      font-variant-numeric: tabular-nums;
+    }
+    .readout small { margin-left: 4px; font-family: var(--mono); font-size: 6.5px; letter-spacing: .06em; color: rgba(222,234,230,.4); }
+    .bars { display: flex; gap: 2px; margin-top: 7px; height: 8px; align-items: flex-end; }
+    .bars i { display: block; width: 3px; height: 3px; background: rgba(222,234,230,.2); }
+    .bars i:nth-child(3n) { height: 5px; }
+    .bars i:nth-child(5n) { height: 8px; }
+    .bars i.on { background: var(--ice); }
+    .mode-flight .bars i.on { background: #dcf5ee; }
+
+    .weapon-panel {
+      position: absolute;
+      right: calc(clamp(16px, 2.3vw, 34px) + 250px);
+      top: clamp(98px, 14vh, 128px);
+      width: 190px;
+      padding: 11px 13px 12px;
+      background: rgba(7, 14, 16, .55);
+      border: 1px solid rgba(222,234,230,.16);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      pointer-events: auto;
+    }
+    .weapon-panel .hud-kicker { margin-bottom: 9px; }
+    .weapon-row {
+      display: flex; justify-content: space-between; align-items: center;
+      font-family: var(--mono); font-size: 7px; letter-spacing: .1em;
+      padding: 5px 0; color: rgba(230,238,231,.64); border-bottom: 1px solid rgba(222,234,230,.09);
+    }
+    .weapon-row span { color: rgba(230,238,231,.33); }
+    .target-title {
+      display: flex; align-items: baseline; gap: 5px;
+      margin: 13px 0 8px;
+      font-family: var(--mono); font-size: 7px; letter-spacing: .14em; color: rgba(230,238,231,.44); text-transform: uppercase;
+    }
+    .target-title strong { margin-left: auto; font-size: 18px; line-height: 1; font-weight: 400; letter-spacing: -.04em; color: #ecf1ea; }
+    .target-title em { font-style: normal; color: var(--faint); }
+    .pips { display: flex; gap: 5px; }
+    .pip {
+      flex: 1; height: 14px; border: 1px solid rgba(222,234,230,.2);
+      display: grid; place-items: center; position: relative;
+      transition: border-color .3s, background .3s;
+    }
+    .pip::after { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px rgba(255,91,51,.7); }
+    .pip.down { border-color: rgba(222,234,230,.08); background: rgba(255,255,255,.02); }
+    .pip.down::after { background: rgba(222,234,230,.16); box-shadow: none; }
+    .weapon-panel.panel-hit { animation: panelFlash .5s ease; }
+    @keyframes panelFlash { 0%,100% { border-color: rgba(222,234,230,.16); } 25% { border-color: var(--accent); background: rgba(255,91,51,.1); } }
+
+    .maneuver-controls {
+      position: absolute;
+      right: calc(clamp(16px, 2.3vw, 34px) + 250px);
+      bottom: 104px;
+      display: flex;
+      gap: 6px;
+      pointer-events: auto;
+    }
+    .hud-toggle {
+      display: flex; align-items: center; gap: 8px;
+      border: 1px solid rgba(222,234,230,.17);
+      padding: 8px 10px;
+      background: rgba(7,14,16,.46);
+      color: rgba(231,239,233,.47);
+      font-family: var(--mono); font-size: 7.5px; letter-spacing: .12em;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: color .2s, border-color .2s, background .2s;
+    }
+    .hud-toggle:hover { color: #f0f2eb; border-color: rgba(222,234,230,.35); }
+    .hud-toggle .switch { width: 18px; height: 8px; border: 1px solid rgba(222,234,230,.28); position: relative; }
+    .hud-toggle .switch::after { content: ''; position: absolute; top: 1px; left: 1px; width: 6px; height: 4px; background: rgba(222,234,230,.34); transition: transform .2s, background .2s; }
+    .hud-toggle.is-on { color: #e6f2ec; border-color: rgba(181,229,231,.37); background: rgba(27,54,57,.4); }
+    .hud-toggle.is-on .switch::after { transform: translateX(9px); background: var(--ice); box-shadow: 0 0 5px var(--ice); }
+
+    .hud-crosshair {
+      position: absolute;
+      left: 54%;
+      top: 46%;
+      width: 210px; height: 210px;
+      transform: translate(-50%, -50%);
+      opacity: .38;
+      transition: opacity .4s;
+    }
+    .hud-crosshair svg { width: 100%; height: 100%; overflow: visible; }
+    .crosshair-label {
+      position: absolute;
+      left: calc(100% + 14px);
+      top: 50%;
+      transform: translateY(-50%);
+      width: 90px;
+      font-family: var(--mono);
+      font-size: 6.5px;
+      line-height: 1.9;
+      letter-spacing: .13em;
+      color: rgba(228,240,235,.68);
+      text-transform: uppercase;
+      border-left: 1px solid rgba(255,91,51,.5);
+      padding-left: 8px;
+    }
+    .crosshair-label b { color: var(--accent); font-weight: 400; display: block; }
+
+    /* ── toasts, hotspot, footer ─────────────────────────── */
+    .toast {
+      position: absolute;
+      z-index: 40;
+      left: 50%;
+      bottom: 101px;
+      transform: translate(-50%, 12px);
+      max-width: min(480px, calc(100vw - 32px));
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 15px;
+      border: 1px solid rgba(222,234,230,.18);
+      background: rgba(8, 14, 15, .85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 16px 44px rgba(0,0,0,.32);
+      font-family: var(--mono);
+      font-size: 8px;
+      line-height: 1.5;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: #d7e1da;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .25s ease, transform .35s cubic-bezier(.22,.8,.2,1);
+    }
+    .toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
+    .toast-icon { color: var(--accent); font-size: 12px; line-height: 1; flex: 0 0 auto; }
+    .toast.is-danger { border-color: rgba(255,91,51,.4); background: rgba(31, 14, 11, .88); }
+    .toast.is-danger .toast-icon { color: #ffb194; }
+
+    .hotspot {
+      position: absolute;
+      z-index: 12;
+      left: 0; top: 0;
+      display: flex;
+      align-items: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .3s;
+      will-change: transform;
+    }
+    .hotspot.is-visible { opacity: 1; }
+    .hotspot-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(255,91,51,.15), 0 0 14px rgba(255,91,51,.65);
+      flex: 0 0 auto;
+    }
+    .hotspot-line { width: clamp(26px, 5vw, 82px); height: 1px; background: linear-gradient(90deg, var(--accent), rgba(255,91,51,.15)); }
+    .hotspot-card {
+      min-width: 132px;
+      padding: 8px 10px;
+      background: rgba(7,12,13,.8);
+      border: 1px solid rgba(255,91,51,.27);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    .hotspot-card small { display: block; font-family: var(--mono); font-size: 6.5px; letter-spacing: .12em; color: var(--accent); margin-bottom: 4px; }
+    .hotspot-card strong { display: block; font-size: 10.5px; font-weight: 500; color: #f0eee6; line-height: 1.2; }
+    .hotspot-card span { display: block; margin-top: 4px; font-family: var(--mono); font-size: 6.5px; letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+
+    footer.bottombar {
+      position: absolute;
+      inset: auto 0 0 0;
+      z-index: 25;
+      height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 clamp(16px, 2.4vw, 36px);
+      border-top: 1px solid var(--line-soft);
+      background: linear-gradient(0deg, rgba(7,11,12,.88), rgba(7,11,12,.18));
+      pointer-events: none;
+    }
+    footer.bottombar > * { pointer-events: auto; }
+    .footer-meta { display: flex; align-items: center; gap: 16px; min-width: 200px; }
+    .footer-meta.right { justify-content: flex-end; }
+    .micro { font-family: var(--mono); font-size: 7px; letter-spacing: .13em; color: var(--faint); text-transform: uppercase; white-space: nowrap; }
+    .footer-meta .micro.accent { color: var(--accent); }
+    .drag-hint { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 7px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute); white-space: nowrap; }
+    .drag-hint svg { width: 10px; height: 10px; opacity: .6; }
+
+    .mode-switch {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+      border: 1px solid rgba(222,234,230,.2);
+      background: rgba(8, 13, 14, .74);
+      padding: 3px;
+      backdrop-filter: blur(18px) saturate(120%);
+      -webkit-backdrop-filter: blur(18px) saturate(120%);
+      box-shadow: 0 12px 44px rgba(0,0,0,.25);
+      isolation: isolate;
+    }
+    .mode-indicator {
+      position: absolute;
+      z-index: 0;
+      top: 3px; left: 3px;
+      height: calc(100% - 6px);
+      width: calc(50% - 3px);
+      background: #e6e4db;
+      transition: transform .48s cubic-bezier(.22,.85,.2,1);
+    }
+    .mode-flight .mode-indicator { transform: translateX(100%); }
+    .mode-switch button {
+      position: relative;
+      z-index: 1;
+      width: 146px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 10px 14px;
+      border: 0;
+      background: transparent;
+      color: #899493;
+      font-family: var(--mono);
+      font-size: 8.5px;
+      font-weight: 500;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color .35s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mode-switch button .num { font-size: 6.5px; letter-spacing: .04em; opacity: .62; }
+    .mode-switch button.is-active { color: #090d0e; }
+    .mode-switch button.is-active .num { color: #b23d22; opacity: 1; }
+
+    .screen-flash {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      background: #ffe1c2;
+      opacity: 0;
+      pointer-events: none;
+      mix-blend-mode: screen;
+    }
+    .screen-flash.is-flashing { animation: screenFlash .52s ease-out; }
+    @keyframes screenFlash {
+      0% { opacity: .65; }
+      100% { opacity: 0; }
+    }
+    .screen-flash.is-danger { background: #ffb088; }
+
+    /* ── loader / fallback ──────────────────────────────── */
+    .loader {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse at 50% 42%, #141d1e 0%, #090d0e 52%, #060809 100%);
+      transition: opacity .8s ease, visibility .8s;
+    }
+    .loader.is-done { opacity: 0; visibility: hidden; pointer-events: none; }
+    .loader-inner { width: min(390px, calc(100vw - 52px)); }
+    .loader-mark { width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid rgba(222,234,230,.18); color: var(--accent); margin-bottom: 28px; position: relative; }
+    .loader-mark::before { content: ''; position: absolute; inset: 6px; border: 1px solid rgba(255,91,51,.14); }
+    .loader-mark svg { width: 23px; height: 23px; position: relative; z-index: 1; }
+    .loader-copy { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-bottom: 13px; }
+    .loader-copy span { font-family: var(--mono); font-size: 7px; letter-spacing: .13em; color: var(--faint); text-transform: uppercase; }
+    .loader-copy strong { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 500; color: #e1e4dd; white-space: nowrap; }
+    .loader-track { height: 1px; background: rgba(222,234,230,.14); overflow: hidden; }
+    .loader-track span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .45s ease; box-shadow: 0 0 12px rgba(255,91,51,.55); }
+    .loader-meta { display: flex; justify-content: space-between; margin-top: 10px; font-family: var(--mono); font-size: 6.5px; letter-spacing: .1em; color: var(--faint); text-transform: uppercase; gap: 12px; }
+    .fallback {
+      position: fixed; inset: 0; z-index: 110;
+      background: #080b0c;
+      display: none;
+      place-items: center;
+      text-align: center;
+      padding: 28px;
+    }
+    .fallback.is-visible { display: grid; }
+    .fallback-inner { max-width: 420px; }
+    .fallback svg { width: 34px; height: 34px; color: var(--accent); margin-bottom: 20px; }
+    .fallback h2 { font-size: 22px; letter-spacing: -.02em; margin: 0 0 10px; font-weight: 600; }
+    .fallback p { font-family: var(--mono); font-size: 8px; line-height: 1.9; letter-spacing: .08em; color: var(--mute); text-transform: uppercase; }
+
+    /* ── responsive ─────────────────────────────────────── */
+    @media (max-width: 1180px) {
+      .navline { display: none; }
+      .hero { width: min(450px, 48vw); }
+    }
+    @media (max-width: 900px) {
+      header { height: 64px; padding-inline: 16px; }
+      .brand-mark { width: 33px; height: 33px; }
+      .brand-copy strong { font-size: 12px; }
+      .brand-copy small { font-size: 6.5px; }
+      .sys-status { display: none; }
+      .hero { left: 18px; top: 91px; width: min(420px, 67vw); }
+      h1 { font-size: clamp(64px, 13vw, 104px); }
+      .lede { max-width: 285px; font-size: 11px; margin-top: 15px; }
+      .specs { max-width: 330px; margin-top: 18px; }
+      .spec { padding-block: 10px; }
+      .spec + .spec { padding-left: 10px; }
+      .spec strong { font-size: 17px; }
+      .hero-foot { display: none; }
+      .plaque { display: none; }
+      .ghost-index { bottom: 146px; left: 14px; opacity: .48; }
+      .control-rail {
+        top: auto;
+        right: 12px;
+        left: 12px;
+        bottom: 80px;
+        width: auto;
+        display: flex;
+        overflow-x: auto;
+        scrollbar-width: none;
+        background: rgba(9, 14, 15, .82);
+        border-radius: 2px;
+      }
+      .control-rail::-webkit-scrollbar { display: none; }
+      .rail-head, .rail-state { display: none; }
+      .rail-btn {
+        flex: 1 0 74px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        justify-content: center;
+        padding: 8px 7px 7px;
+        border-bottom: 0;
+        border-right: 1px solid var(--line-soft);
+        text-align: center;
+      }
+      .rail-btn:last-of-type { border-right: 0; }
+      .rail-btn:hover { padding-left: 7px; background: rgba(255,255,255,.035); }
+      .rail-icon { width: 26px; height: 26px; margin: 0 auto; }
+      .rail-icon svg { width: 12px; height: 12px; }
+      .rail-copy strong { font-size: 9px; text-align: center; letter-spacing: .04em; }
+      .rail-copy small { font-size: 6px; text-align: center; margin-top: 2px; letter-spacing: .07em; }
+      .rail-led { display: none; }
+      .weapon-panel { right: 18px; top: 84px; width: 142px; padding: 9px 10px 10px; }
+      .weapon-panel .weapon-row { font-size: 6.5px; padding: 4px 0; }
+      .weapon-panel .target-title { margin-top: 9px; font-size: 6px; }
+      .weapon-panel .hud-kicker { font-size: 6.5px; margin-bottom: 6px; }
+      .weapon-panel .weapon-row:nth-of-type(3) { display: none; }
+      .mission { left: 18px; top: 82px; width: 160px; }
+      .mission .hud-kicker { font-size: 6.5px; margin-bottom: 9px; }
+      .mission-row { padding: 6px 0; font-size: 6px; }
+      .mission-row:nth-of-type(4) { display: none; }
+      .hud-readouts { left: 18px; right: 18px; bottom: 153px; border-inline: 0; }
+      .readout { flex: 1; min-width: 0; padding: 8px 9px; }
+      .readout strong { font-size: 14px; }
+      .maneuver-controls { right: 18px; top: 174px; bottom: auto; flex-direction: column; align-items: flex-end; }
+      .hud-toggle { padding: 6px 8px; font-size: 6.5px; }
+      .hud-crosshair { left: 57%; top: 45%; width: 150px; height: 150px; opacity: .25; }
+      .crosshair-label { display: none; }
+      .toast { bottom: 151px; font-size: 7px; padding: 9px 12px; }
+      .footer-meta { min-width: 0; }
+      .footer-meta .micro { display: none; }
+      footer.bottombar { height: 70px; padding-inline: 14px; }
+      .mode-switch button { width: 110px; font-size: 7.5px; padding: 9px 7px; gap: 6px; }
+      .drag-hint span { display: none; }
+      .hotspot-card { display: none; }
+      .hotspot-line { width: 26px; }
+    }
+    @media (max-width: 620px) {
+      .hero { width: calc(100vw - 36px); top: 78px; }
+      .eyebrow { font-size: 7px; gap: 8px; }
+      .eyebrow .origin { display: none; }
+      .eyebrow .rule { width: 20px; }
+      .title-row { margin-top: 17px; gap: 11px; }
+      h1 { font-size: clamp(54px, 17vw, 82px); }
+      .title-meta { font-size: 6px; padding-left: 9px; line-height: 1.8; }
+      .lede { display: none; }
+      .specs { margin-top: 16px; max-width: 100%; }
+      .spec span { font-size: 6px; letter-spacing: .1em; margin-bottom: 5px; }
+      .spec strong { font-size: 15px; }
+      .spec { padding: 8px 8px 8px 0; }
+      .spec + .spec { padding-left: 8px; }
+      .hero { top: 82px; }
+      .mission { top: 76px; width: 142px; left: 14px; }
+      .mission-row { font-size: 5.7px; }
+      .weapon-panel { top: 76px; right: 14px; }
+      .maneuver-controls { top: 194px; right: 14px; }
+      .hud-readouts { left: 14px; right: 14px; bottom: 152px; }
+      .readout { padding-inline: 6px; }
+      .readout strong { font-size: 12px; }
+      .readout .bars { display: none; }
+      .hud-label { font-size: 6px; margin-bottom: 3px; }
+      .control-rail { left: 8px; right: 8px; bottom: 72px; }
+      .rail-btn { flex-basis: 64px; padding-inline: 4px; }
+      .rail-copy strong { font-size: 8px; }
+      .rail-copy small { display: none; }
+      footer.bottombar { height: 63px; }
+      .mode-switch button { width: 96px; font-size: 7px; }
+      .mode-switch button .num { display: none; }
+      .footer-meta.left { display: none; }
+      .footer-meta.right { min-width: 0; }
+      .toast { bottom: 145px; }
+      .ghost-index { display: none; }
+    }
+    @media (max-height: 700px) and (min-width: 901px) {
+      .hero { top: 96px; }
+      h1 { font-size: clamp(72px, 9vw, 120px); }
+      .lede { margin-top: 14px; line-height: 1.55; }
+      .specs { margin-top: 16px; }
+      .ghost-index { display: none; }
+      .control-rail { top: 90px; }
+      .hud-readouts { bottom: 92px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body class="mode-showroom">
+  <div id="app">
+    <canvas id="stage" aria-label="Interactive Three.js MiG-29 aircraft scene"></canvas>
+    <div class="grade"></div>
+    <div class="vignette"></div>
+    <div class="grain"></div>
+    <div class="ghost-index" aria-hidden="true">09</div>
+
+    <header>
+      <a class="brand" href="#" aria-label="Fulcrum — return to showroom" id="brandHome">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.8l3.08 6.26 6.92.99-5.01 4.9 1.19 6.9L12 17.57l-6.18 3.28 1.19-6.9L2 9.05l6.92-.99z"/></svg>
+        </span>
+        <span class="brand-copy"><strong>FULCRUM</strong><small>MIKOYAN · GUREVICH</small></span>
+      </a>
+      <nav class="navline" aria-label="Project metadata">
+        <span class="nav-accent"><i></i> Airframe dossier</span>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <span>Product 9.12</span>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <span>Procedural twin-engine</span>
+      </nav>
+      <div class="sysline">
+        <span class="sys-status"><span class="pulse"></span><span id="sysStatusText">Simulation live</span></span>
+        <button class="icon-btn" id="fullscreenBtn" type="button" aria-label="Toggle fullscreen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="aircraftTitle">
+        <p class="eyebrow"><span class="rule"></span>Air superiority <span class="origin">/ 1983</span></p>
+        <div class="title-row">
+          <h1 id="aircraftTitle">MiG<span class="dash">-</span>29</h1>
+          <div class="title-meta">Fulcrum<br><b>Type 9.12</b><br>USSR</div>
+        </div>
+        <p class="lede">A twin-engine fighter built to duel beyond the horizon and dance inside it. Explore the <strong>airframe</strong>, open the cockpit, then take the Fulcrum into the weather.</p>
+        <div class="specs" aria-label="Aircraft specifications">
+          <div class="spec"><span>Max speed</span><strong>2.25<em>Mach</em></strong></div>
+          <div class="spec"><span>Service ceiling</span><strong>18.0<em>km</em></strong></div>
+          <div class="spec"><span>Thrust × 2</span><strong>81.4<em>kN</em></strong></div>
+        </div>
+        <div class="hero-foot"><span class="index">01</span><span>Showroom specimen</span><span class="rule"></span><span>Drag to inspect</span></div>
+      </section>
+
+      <aside class="plaque" aria-hidden="true">
+        <span class="plaque-line"></span>
+        <div class="plaque-copy"><b>Fulcrum / 09</b><br>First flight 06 Oct 1977<br>Ramenskoye · USSR</div>
+      </aside>
+
+      <section class="flight-hud" id="flightHud" aria-label="Flight telemetry">
+        <div class="mission">
+          <div class="hud-kicker"><i class="live-dot"></i>Active sortie / CAP</div>
+          <div class="mission-row"><span>Sector</span><strong>Kuban 04</strong></div>
+          <div class="mission-row"><span>Maneuver</span><strong class="accent-line" id="hudManeuver">Vertical loop</strong></div>
+          <div class="mission-row"><span>Airframe</span><strong>09 / Fulcrum</strong></div>
+        </div>
+
+        <div class="hud-readouts">
+          <div class="readout">
+            <span class="hud-label">IAS · km/h</span>
+            <strong id="hudSpeed">842</strong>
+            <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="readout">
+            <span class="hud-label">Altitude · m</span>
+            <strong id="hudAltitude">3400</strong>
+            <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="readout">
+            <span class="hud-label">Load · g</span>
+            <strong id="hudG">+5.2</strong>
+            <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="readout">
+            <span class="hud-label">Heading</span>
+            <strong id="hudHeading">214°</strong>
+            <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+        </div>
+
+        <div class="weapon-panel" id="weaponPanel">
+          <div class="hud-kicker">Armament</div>
+          <div class="weapon-row">R-27R <span>×2</span></div>
+          <div class="weapon-row">R-73E <span>×4</span></div>
+          <div class="weapon-row">GSh-30-1 <span>30mm</span></div>
+          <div class="target-title">Targets <strong id="targetsLeft">04</strong><em>/04</em></div>
+          <div class="pips" id="targetPips" aria-hidden="true"><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div>
+        </div>
+
+        <div class="hud-crosshair" aria-hidden="true">
+          <svg viewBox="0 0 210 210" fill="none" stroke="rgba(226,240,233,.65)" stroke-width="1">
+            <path d="M35 68V35h33M142 35h33v33M175 142v33h-33M68 175H35v-33" opacity=".65"/>
+            <circle cx="105" cy="105" r="43" opacity=".35"/>
+            <circle cx="105" cy="105" r="2.2" fill="rgba(255,91,51,.9)" stroke="none"/>
+            <path d="M105 48v18M105 144v18M48 105h18M144 105h18" opacity=".5"/>
+            <path d="M89 105h8M113 105h8M105 89v8M105 113v8" opacity=".7"/>
+          </svg>
+          <div class="crosshair-label"><b>FULCRUM 09</b>tracking<br>lock clear</div>
+        </div>
+
+        <div class="maneuver-controls">
+          <button class="hud-toggle is-on" type="button" data-toggle="loop" aria-pressed="true">Loop <span class="switch"></span></button>
+          <button class="hud-toggle is-on" type="button" data-toggle="jiggle" aria-pressed="true">Jiggle <span class="switch"></span></button>
+        </div>
+      </section>
+
+      <aside class="control-rail" aria-label="Airframe controls">
+        <div class="rail-head"><span>Airframe</span><span>Control</span></div>
+        <button class="rail-btn is-active" type="button" data-action="orbit" aria-pressed="true">
+          <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="12" cy="12" rx="9" ry="4.2"/><ellipse cx="12" cy="12" rx="4.2" ry="9" transform="rotate(30 12 12)" opacity=".55"/><circle cx="20" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg></span>
+          <span class="rail-copy"><strong>Orbit</strong><small>O · camera drift</small></span>
+          <span class="rail-led" aria-hidden="true"></span>
+        </button>
+        <button class="rail-btn" type="button" data-action="cockpit" aria-pressed="false">
+          <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 15.5V11a8 8 0 0116 0v4.5"/><path d="M4 15.5h16M8 12.5v3M16 12.5v3" opacity=".7"/><path d="M6 19h12" opacity=".5"/></svg></span>
+          <span class="rail-copy"><strong>Canopy</strong><small>C · open cockpit</small></span>
+          <span class="rail-led" aria-hidden="true"></span>
+        </button>
+        <button class="rail-btn rail-danger" type="button" data-action="explode" aria-pressed="false">
+          <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg></span>
+          <span class="rail-copy"><strong>Explode</strong><small>E · fracture airframe</small></span>
+          <span class="rail-led" aria-hidden="true"></span>
+        </button>
+        <button class="rail-btn rail-danger" type="button" data-action="annihilate" aria-pressed="false">
+          <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="12" r="7.5" opacity=".55"/><circle cx="12" cy="12" r="2.6"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></span>
+          <span class="rail-copy"><strong>Annihilate</strong><small>A · launch salvo</small></span>
+          <span class="rail-led" aria-hidden="true"></span>
+        </button>
+        <div class="rail-state">
+          <div><span>State</span><strong id="stateText">Parked</strong></div>
+          <div><span>Canopy</span><strong id="canopyText">Sealed</strong></div>
+        </div>
+      </aside>
+
+      <div class="hotspot" id="hotspot" aria-hidden="true">
+        <span class="hotspot-dot"></span>
+        <span class="hotspot-line"></span>
+        <div class="hotspot-card"><small>K-36D · 01</small><strong>Canopy unlocked</strong><span>Press C to seal</span></div>
+      </div>
+
+      <div class="toast" id="toast" role="status" aria-live="polite">
+        <span class="toast-icon" aria-hidden="true">✦</span>
+        <span id="toastText">System ready</span>
+      </div>
+    </main>
+
+    <footer class="bottombar">
+      <div class="footer-meta left">
+        <span class="micro accent">09° 12′ / 2026</span>
+        <span class="micro">Procedural airframe — WebGL</span>
+      </div>
+      <div class="mode-switch" role="group" aria-label="Scene mode">
+        <span class="mode-indicator" aria-hidden="true"></span>
+        <button type="button" data-mode="showroom" class="is-active"><span class="num">01</span><span>Showroom</span></button>
+        <button type="button" data-mode="flight"><span class="num">02</span><span>Flight</span></button>
+      </div>
+      <div class="footer-meta right">
+        <span class="drag-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 11V6.5a1.5 1.5 0 013 0V11m0-2.5a1.5 1.5 0 013 0V11m0-1a1.5 1.5 0 013 0v5a5 5 0 01-5 5h-2.4a5 5 0 01-3.9-1.9L4 14.5a1.7 1.7 0 012.7-2l2.3 2.1"/></svg><span>Drag to orbit</span></span>
+        <span class="micro">Scroll to zoom</span>
+      </div>
+    </footer>
+
+    <div class="screen-flash" id="screenFlash" aria-hidden="true"></div>
+
+    <div class="loader" id="loader">
+      <div class="loader-inner">
+        <div class="loader-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.8l3.08 6.26 6.92.99-5.01 4.9 1.19 6.9L12 17.57l-6.18 3.28 1.19-6.9L2 9.05l6.92-.99z"/></svg></div>
+        <div class="loader-copy"><span>Fulcrum / airframe 09–12</span><strong>Assembling airframe</strong></div>
+        <div class="loader-track"><span id="loadBar"></span></div>
+        <div class="loader-meta"><span id="loadText">Initialising renderer</span><span>Three.js · procedural</span></div>
+      </div>
+    </div>
+
+    <div class="fallback" id="fallback" role="alert">
+      <div class="fallback-inner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M12 3l9 17H3L12 3z"/><path d="M12 9v5M12 17v.1"/></svg>
+        <h2>Airframe unavailable</h2>
+        <p>This experience needs WebGL and an internet connection for the Three.js renderer. Please enable WebGL or try a recent browser.</p>
+      </div>
+    </div>
+  </div>
+
+  <noscript><div style="position:fixed;inset:0;background:#080b0c;z-index:200;display:grid;place-items:center;color:#e9e7df;font-family:monospace;font-size:11px;letter-spacing:.1em;">JAVASCRIPT IS REQUIRED TO ASSEMBLE THE AIRFRAME.</div></noscript>
+
+  <script type="module">
+    /* ============================================================
+       FULCRUM 09 / SINGLE-FILE PROCEDURAL THREE.JS SHOWCASE
+       ------------------------------------------------------------
+       01 · CORE          ─ renderer, utilities, textures, materials
+       02 · AIRFRAME      ─ fully procedural MiG-29 + cockpit + FX
+       03 · WORLD         ─ studio environment, sky, drones, particles
+       04 · EXPERIENCE    ─ camera rig, interactions, animation loop
+       ------------------------------------------------------------
+       Everything is generated in code. No model files, no image
+       assets. Functions are intentionally small and swappable so
+       the experience can be ported to another page or build.
+       ============================================================ */
+
+    // ===================== 01 · CORE =====================
+    import * as THREE from 'three';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+    const TAU = Math.PI * 2;
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    const clamp01 = (v) => clamp(v, 0, 1);
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+    const easeInOut = (t) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+    function damp(current, target, lambda, dt) {
+      return THREE.MathUtils.damp(current, target, lambda, dt);
+    }
+
+    function mulberry32(seed) {
+      return function () {
+        seed |= 0;
+        seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    const PALETTE = {
+      accent: 0xff5b33,
+      accentDeep: 0xb9321f,
+      ice: 0xa9e4e6,
+      studio: 0x090d0e,
+      hull: 0x94a0a1,
+      hullLight: 0xaeb8b7,
+      hullDark: 0x667375,
+      metal: 0x353e40,
+      rubber: 0x131718,
+      glass: 0x15333a,
+      skyTop: 0x225a6c,
+      skyHorizon: 0xe8b98e
+    };
+
+    /* ── canvas texture factory ──────────────────────────────
+       Kept deliberately dependency-free: every texture used by
+       the airframe is drawn here, so the scene remains portable. */
+    function makeCamoTexture() {
+      const size = 1024;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const rnd = mulberry32(2909);
+      ctx.fillStyle = '#929e9e';
+      ctx.fillRect(0, 0, size, size);
+
+      const blotchColors = ['#768587', '#7f8d8e', '#a8b2b0', '#687779', '#b3bab6', '#5e6e72'];
+      for (let i = 0; i < 65; i++) {
+        const x = rnd() * size;
+        const y = rnd() * size;
+        const rx = 50 + rnd() * 170;
+        const ry = 25 + rnd() * 95;
+        const color = blotchColors[Math.floor(rnd() * blotchColors.length)];
+        const grad = ctx.createRadialGradient(x, y, 1, x, y, Math.max(rx, ry));
+        grad.addColorStop(0, color + 'c4');
+        grad.addColorStop(.58, color + '75');
+        grad.addColorStop(1, color + '00');
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1, ry / rx);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(0, 0, rx, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Subtle directional wash and weathering.
+      const wash = ctx.createLinearGradient(0, 0, size, size);
+      wash.addColorStop(0, 'rgba(236,241,235,.09)');
+      wash.addColorStop(.5, 'rgba(255,255,255,0)');
+      wash.addColorStop(1, 'rgba(33,45,47,.12)');
+      ctx.fillStyle = wash;
+      ctx.fillRect(0, 0, size, size);
+
+      // Aircraft paneling and fasteners.
+      ctx.strokeStyle = 'rgba(39,51,53,.22)';
+      ctx.lineWidth = 1.4;
+      for (let i = 0; i < 24; i++) {
+        const x = rnd() * size;
+        const y = rnd() * size;
+        const w = 40 + rnd() * 210;
+        const h = 20 + rnd() * 90;
+        ctx.strokeRect(x, y, w, h);
+      }
+      ctx.strokeStyle = 'rgba(26,37,39,.17)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 2200; i++) {
+        const x = rnd() * size;
+        const y = rnd() * size;
+        ctx.fillStyle = `rgba(30,43,44,${.08 + rnd() * .16})`;
+        ctx.fillRect(x, y, 1.1, 1.1);
+      }
+      for (let i = 0; i < 12; i++) {
+        const y = rnd() * size;
+        ctx.strokeStyle = 'rgba(233,240,234,.13)';
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(size, y + rnd() * 6 - 3);
+        ctx.stroke();
+      }
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(1.6, 1.6);
+      texture.anisotropy = 8;
+      return texture;
+    }
+
+    function makeStudioBackdrop() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1024;
+      canvas.height = 1024;
+      const ctx = canvas.getContext('2d');
+      const base = ctx.createRadialGradient(562, 364, 40, 512, 512, 760);
+      base.addColorStop(0, '#1b2425');
+      base.addColorStop(.36, '#111718');
+      base.addColorStop(.76, '#090d0e');
+      base.addColorStop(1, '#050708');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, 1024, 1024);
+      const warm = ctx.createRadialGradient(610, 360, 20, 610, 360, 410);
+      warm.addColorStop(0, 'rgba(199,121,79,.13)');
+      warm.addColorStop(.6, 'rgba(95,82,72,.05)');
+      warm.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = warm;
+      ctx.fillRect(0, 0, 1024, 1024);
+      const cool = ctx.createRadialGradient(220, 470, 10, 220, 470, 480);
+      cool.addColorStop(0, 'rgba(115,175,180,.1)');
+      cool.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = cool;
+      ctx.fillRect(0, 0, 1024, 1024);
+      const fade = ctx.createLinearGradient(0, 560, 0, 1024);
+      fade.addColorStop(0, 'rgba(0,0,0,0)');
+      fade.addColorStop(1, 'rgba(2,4,5,.8)');
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, 0, 1024, 1024);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      return texture;
+    }
+
+    function makePlatformTexture() {
+      const size = 1400;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const rnd = mulberry32(12);
+      const c = size / 2;
+      const max = size * .485;
+
+      const base = ctx.createRadialGradient(c, c * .84, 20, c, c, max);
+      base.addColorStop(0, '#272f30');
+      base.addColorStop(.26, '#1e2627');
+      base.addColorStop(.7, '#121819');
+      base.addColorStop(1, '#0b1011');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, size, size);
+
+      ctx.save();
+      ctx.translate(c, c);
+      // Brushed concentric surface rings.
+      for (let i = 0; i < 120; i++) {
+        const r = 28 + i * (max / 120) + rnd() * 3;
+        ctx.strokeStyle = i % 5 === 0 ? `rgba(205,220,216,${.035 + rnd() * .04})` : `rgba(4,8,9,${.05 + rnd() * .08})`;
+        ctx.lineWidth = .7 + rnd();
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, TAU);
+        ctx.stroke();
+      }
+      // Technical markings.
+      ctx.strokeStyle = 'rgba(203,221,215,.24)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, max * .72, Math.PI * .07, Math.PI * .31);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,91,51,.72)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, max * .72, Math.PI * .33, Math.PI * .43);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(198,217,213,.2)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 72; i++) {
+        const a = i / 72 * TAU;
+        const long = i % 6 === 0;
+        const inner = max * (long ? .82 : .865);
+        const outer = max * (long ? .885 : .88);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+        ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+        ctx.stroke();
+      }
+      // Simple compass cross.
+      ctx.strokeStyle = 'rgba(200,219,214,.16)';
+      ctx.beginPath();
+      ctx.moveTo(0, -max * .43); ctx.lineTo(0, max * .43);
+      ctx.moveTo(-max * .43, 0); ctx.lineTo(max * .43, 0);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(214,229,222,.5)';
+      ctx.font = '500 20px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.letterSpacing = '7px';
+      ctx.fillText('FULCRUM  /  TYPE 09-12', 0, max * .54);
+      ctx.fillStyle = 'rgba(255,91,51,.9)';
+      ctx.font = '500 15px "JetBrains Mono", monospace';
+      ctx.fillText('MIKOYAN  ·  GUREVICH', 0, max * .54 + 30);
+      ctx.fillStyle = 'rgba(219,231,225,.34)';
+      ctx.font = '400 12px "JetBrains Mono", monospace';
+      ctx.fillText('AIRFRAME No. 09  /  MASS 11 000 KG', 0, max * .54 + 56);
+      ctx.restore();
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = 8;
+      return texture;
+    }
+
+    function makeGlowTexture(inner = 'rgba(255,255,255,1)', outer = 'rgba(255,255,255,0)', size = 256) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, inner);
+      grad.addColorStop(.16, inner);
+      grad.addColorStop(.46, 'rgba(255,167,101,.28)');
+      grad.addColorStop(1, outer);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    function makeSoftTexture(fill = 'rgba(238,230,214,.7)', core = 'rgba(235,229,216,.32)', size = 128) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createRadialGradient(size / 2, size / 2, 1, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, fill);
+      grad.addColorStop(.36, core);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    function makeInsigniaTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      const c = 128;
+      const star = (r1, r2, color) => {
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const a = -Math.PI / 2 + i * Math.PI / 5;
+          const r = i % 2 ? r2 : r1;
+          ctx.lineTo(c + Math.cos(a) * r, c + Math.sin(a) * r);
+        }
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+      };
+      star(88, 35, 'rgba(235,225,209,.22)');
+      star(79, 31, '#c6382a');
+      star(63, 25, 'rgba(245,232,205,.85)');
+      star(52, 20, '#c6382a');
+      ctx.strokeStyle = 'rgba(20,26,28,.65)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(c, c, 101, 0, TAU);
+      ctx.stroke();
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      return tex;
+    }
+
+    function makeNumberTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      const star = (cx, cy, r, color) => {
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const a = -Math.PI / 2 + i * Math.PI / 5;
+          const rr = i % 2 ? r * .41 : r;
+          ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+        }
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+      };
+      star(78, 75, 31, '#c6382a');
+      ctx.fillStyle = 'rgba(41,55,59,.88)';
+      ctx.font = '700 126px "Archivo", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('09', 148, 177);
+      ctx.strokeStyle = 'rgba(34,48,51,.6)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(145, 38);
+      ctx.lineTo(145, 195);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(43,57,59,.55)';
+      ctx.font = '500 18px "JetBrains Mono", monospace';
+      ctx.fillText('FULCRUM', 340, 95);
+      ctx.fillText('9.12', 340, 122);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      return tex;
+    }
+
+    function makeGallerySignTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1400;
+      canvas.height = 600;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(8,13,14,0)';
+      ctx.fillRect(0, 0, 1400, 600);
+      ctx.strokeStyle = 'rgba(211,228,220,.16)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(60, 60, 1280, 480);
+      ctx.fillStyle = 'rgba(224,235,225,.68)';
+      ctx.font = '500 22px "JetBrains Mono", monospace';
+      ctx.fillText('MUSEUM OF FLIGHT  /  ROOM 09', 104, 132);
+      ctx.fillStyle = 'rgba(209,226,215,.13)';
+      ctx.font = '800 380px "Archivo", sans-serif';
+      ctx.fillText('09', 96, 470);
+      ctx.fillStyle = 'rgba(233,232,222,.88)';
+      ctx.font = '600 60px "Archivo", sans-serif';
+      ctx.fillText('Mikoyan MiG-29', 540, 315);
+      ctx.fillStyle = 'rgba(224,233,224,.48)';
+      ctx.font = '400 21px "JetBrains Mono", monospace';
+      ctx.fillText('TWIN-ENGINE AIR SUPERIORITY FIGHTER', 544, 360);
+      ctx.fillStyle = 'rgba(255,91,51,.92)';
+      ctx.fillRect(543, 394, 118, 3);
+      ctx.fillStyle = 'rgba(226,234,225,.36)';
+      ctx.font = '400 17px "JetBrains Mono", monospace';
+      ctx.fillText('FIRST FLIGHT 1977  ·  NTO 1983  ·  AIRFRAME 9.12', 544, 452);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    /* ── geometry utilities ─────────────────────────────────── */
+    function superEllipsePoint(angle, width, height, exponent = .78) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const x = width * Math.sign(cos) * Math.pow(Math.abs(cos), exponent);
+      const y = height * Math.sign(sin) * Math.pow(Math.abs(sin), exponent);
+      return [x, y];
+    }
+
+    /** Builds a smooth, capped lofted hull from a list of cross sections. */
+    function makeLoft(sections, segments, material) {
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+      segments = Math.max(8, segments);
+      const seg = segments;
+
+      sections.forEach((section, i) => {
+        const exponent = section.e ?? .8;
+        for (let j = 0; j < seg; j++) {
+          const angle = j / seg * TAU;
+          const [x, y] = superEllipsePoint(angle, section.w, section.h, exponent);
+          positions.push(x, y + (section.y || 0), section.z);
+          uvs.push(j / seg, i / (sections.length - 1));
+        }
+      });
+
+      for (let i = 0; i < sections.length - 1; i++) {
+        for (let j = 0; j < seg; j++) {
+          const next = (j + 1) % seg;
+          const a = i * seg + j;
+          const b = (i + 1) * seg + j;
+          const aNext = i * seg + next;
+          const bNext = (i + 1) * seg + next;
+          indices.push(a, b, aNext, b, bNext, aNext);
+        }
+      }
+
+      // Caps keep silhouette clean and allow every side to be visible.
+      const front = sections[0];
+      const frontCenter = positions.length / 3;
+      positions.push(0, front.y || 0, front.z);
+      uvs.push(.5, .5);
+      for (let j = 0; j < seg; j++) indices.push(frontCenter, j, (j + 1) % seg);
+
+      const back = sections[sections.length - 1];
+      const backStart = (sections.length - 1) * seg;
+      const backCenter = positions.length / 3;
+      positions.push(0, back.y || 0, back.z);
+      uvs.push(.5, .5);
+      for (let j = 0; j < seg; j++) {
+        const next = (j + 1) % seg;
+        indices.push(backCenter, backStart + next, backStart + j);
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      return new THREE.Mesh(geometry, material);
+    }
+
+    /** Extrudes a 2D [x,z] profile into a thin, beveled aircraft plate. */
+    function plateGeometry(points, thickness = .1) {
+      let pts = points.map(p => [p[0], p[1]]);
+      let area = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        area += a[0] * b[1] - b[0] * a[1];
+      }
+      if (area < 0) pts.reverse();
+      const shape = new THREE.Shape();
+      shape.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: thickness,
+        steps: 1,
+        bevelEnabled: true,
+        bevelThickness: Math.min(.018, thickness * .28),
+        bevelSize: Math.min(.018, thickness * .35),
+        bevelSegments: 1,
+        curveSegments: 3
+      });
+      geometry.rotateX(Math.PI / 2);
+      geometry.translate(0, thickness / 2, 0);
+      geometry.computeBoundingSphere();
+      return geometry;
+    }
+
+    function addTube(parent, points, radius, material, closed = false) {
+      const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
+      const geometry = new THREE.TubeGeometry(curve, 28, radius, 5, closed);
+      const mesh = new THREE.Mesh(geometry, material);
+      parent.add(mesh);
+      return mesh;
+    }
+
+    function meshOf(geometry, material, castShadow = true) {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = castShadow;
+      mesh.receiveShadow = false;
+      return mesh;
+    }
+
+    /* ── material library ───────────────────────────────────── */
+    function createMaterials() {
+      const camo = makeCamoTexture();
+      const insignia = makeInsigniaTexture();
+      const numbers = makeNumberTexture();
+
+      const shared = {
+        hull: new THREE.MeshStandardMaterial({ map: camo, color: 0xf0f4ef, metalness: .43, roughness: .43, envMapIntensity: 1.05 }),
+        hullPlain: new THREE.MeshStandardMaterial({ color: 0x8f9c9d, metalness: .43, roughness: .49, envMapIntensity: .95 }),
+        hullLight: new THREE.MeshStandardMaterial({ color: 0xb4bdbb, metalness: .34, roughness: .51, envMapIntensity: .9 }),
+        hullDark: new THREE.MeshStandardMaterial({ color: 0x637173, metalness: .44, roughness: .48, envMapIntensity: .9 }),
+        metal: new THREE.MeshStandardMaterial({ color: 0x333c3e, metalness: .92, roughness: .3, envMapIntensity: 1.1 }),
+        darkMetal: new THREE.MeshStandardMaterial({ color: 0x141b1d, metalness: .86, roughness: .37, envMapIntensity: 1 }),
+        radome: new THREE.MeshStandardMaterial({ color: 0x586466, metalness: .28, roughness: .65, envMapIntensity: .8 }),
+        rubber: new THREE.MeshStandardMaterial({ color: 0x121617, metalness: .04, roughness: .92 }),
+        cockpit: new THREE.MeshStandardMaterial({ color: 0x0b1011, metalness: .2, roughness: .8, side: THREE.DoubleSide }),
+        seat: new THREE.MeshStandardMaterial({ color: 0x2b302d, metalness: .17, roughness: .87 }),
+        seatPad: new THREE.MeshStandardMaterial({ color: 0x4b4034, metalness: .05, roughness: .95 }),
+        accent: new THREE.MeshStandardMaterial({ color: 0xbd3628, metalness: .32, roughness: .54, envMapIntensity: .8 }),
+        glass: new THREE.MeshPhysicalMaterial({
+          color: 0x1b3c43,
+          metalness: .12,
+          roughness: .08,
+          clearcoat: 1,
+          clearcoatRoughness: .06,
+          transparent: true,
+          opacity: .58,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          envMapIntensity: 1.7
+        }),
+        screen: new THREE.MeshBasicMaterial({ color: 0x79d5bb, transparent: true, opacity: .8 }),
+        hudGlass: new THREE.MeshBasicMaterial({ color: 0x7fd4bd, transparent: true, opacity: .2, side: THREE.DoubleSide, depthWrite: false }),
+        star: new THREE.MeshBasicMaterial({ map: insignia, transparent: true, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 }),
+        number: new THREE.MeshBasicMaterial({ map: numbers, transparent: true, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 }),
+        flameOuter: new THREE.MeshBasicMaterial({ color: 0xff7d3f, transparent: true, opacity: .5, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+        flameInner: new THREE.MeshBasicMaterial({ color: 0xa8e4ff, transparent: true, opacity: .7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+        navRed: new THREE.MeshBasicMaterial({ color: 0xff402f, toneMapped: false }),
+        navGreen: new THREE.MeshBasicMaterial({ color: 0x88ffb4, toneMapped: false }),
+        navWhite: new THREE.MeshBasicMaterial({ color: 0xfff4dc, toneMapped: false }),
+        droneCore: new THREE.MeshBasicMaterial({ color: 0xff5434, toneMapped: false }),
+        missileNose: new THREE.MeshStandardMaterial({ color: 0xc9c9be, metalness: .55, roughness: .33 }),
+        missileBand: new THREE.MeshStandardMaterial({ color: 0x3f4a4c, metalness: .6, roughness: .35 })
+      };
+
+      return {
+        ...shared,
+        textures: { camo, insignia, numbers, studioBackdrop: makeStudioBackdrop(), platform: makePlatformTexture(), gallery: makeGallerySignTexture(), glow: makeGlowTexture() }
+      };
+    }
+
+    // ===================== 02 · AIRFRAME =====================
+    const AIRCRAFT = {
+      length: 11.2,
+      showroomY: 2.10,
+      wingtipX: 3.55,
+      rotationSpeed: .0001
+    };
+
+    /** Extrudes a vertical fin profile defined as [fore-aft, height]. */
+    function verticalPlateGeometry(points, thickness = .08) {
+      let pts = points.map(p => [p[0], p[1]]);
+      let area = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        area += a[0] * b[1] - b[0] * a[1];
+      }
+      if (area < 0) pts.reverse();
+      const shape = new THREE.Shape();
+      shape.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: thickness,
+        steps: 1,
+        bevelEnabled: true,
+        bevelThickness: Math.min(.012, thickness * .25),
+        bevelSize: Math.min(.012, thickness * .25),
+        bevelSegments: 1
+      });
+      geometry.rotateY(-Math.PI / 2);
+      geometry.translate(thickness / 2, 0, 0);
+      geometry.computeBoundingSphere();
+      return geometry;
+    }
+
+    /* A small, reusable AAM. The same factory is used for the
+       display rounds and for the projectiles launched in-flight. */
+    function createMissile(mats, length = 2.6, radius = .115) {
+      const group = new THREE.Group();
+      group.name = 'R-series missile';
+
+      const bodyLength = length * .62;
+      const body = meshOf(new THREE.CylinderGeometry(radius, radius * 1.03, bodyLength, 14, 1), mats.missileNose);
+      body.rotation.x = Math.PI / 2;
+      body.position.z = -length * .02;
+      group.add(body);
+
+      const nose = meshOf(new THREE.ConeGeometry(radius * 1.02, length * .25, 14), mats.radome);
+      nose.rotation.x = Math.PI / 2;
+      nose.position.z = bodyLength / 2 + length * .105;
+      group.add(nose);
+
+      const tail = meshOf(new THREE.CylinderGeometry(radius * .93, radius * .73, length * .13, 12), mats.metal);
+      tail.rotation.x = Math.PI / 2;
+      tail.position.z = -bodyLength / 2 - length * .055;
+      group.add(tail);
+
+      for (let i = 0; i < 4; i++) {
+        const a = i / 4 * TAU + Math.PI / 4;
+        const fin = meshOf(new THREE.BoxGeometry(radius * 2.5, .012, length * .17), mats.missileBand);
+        fin.position.set(Math.cos(a) * radius * 1.55, Math.sin(a) * radius * 1.55, -length * .34);
+        fin.rotation.z = a;
+        group.add(fin);
+      }
+
+      const band = meshOf(new THREE.CylinderGeometry(radius * 1.045, radius * 1.045, .035, 14), mats.missileBand);
+      band.rotation.x = Math.PI / 2;
+      band.position.z = bodyLength * .32;
+      group.add(band);
+
+      const seeker = meshOf(new THREE.SphereGeometry(radius * .38, 10, 7), mats.darkMetal);
+      seeker.position.z = bodyLength / 2 + length * .23;
+      group.add(seeker);
+
+      group.userData.length = length;
+      group.userData.isMissile = true;
+      return group;
+    }
+
+    function makeGearAssembly(mats, type = 'main') {
+      const group = new THREE.Group();
+      const isMain = type === 'main';
+      const strutLength = isMain ? 1.03 : 1.06;
+      const wheelRadius = isMain ? .34 : .28;
+
+      const upper = meshOf(new THREE.CylinderGeometry(.038, .05, strutLength, 10), mats.metal);
+      upper.position.y = -strutLength / 2;
+      group.add(upper);
+
+      const shiny = meshOf(new THREE.CylinderGeometry(.018, .026, strutLength * .62, 8), mats.hullLight);
+      shiny.position.y = -strutLength * .46;
+      group.add(shiny);
+
+      const hub = meshOf(new THREE.CylinderGeometry(wheelRadius * .47, wheelRadius * .47, .14, 12), mats.hullDark);
+      hub.rotation.z = Math.PI / 2;
+      hub.position.y = -strutLength - wheelRadius * .38;
+      group.add(hub);
+
+      const tyre = meshOf(new THREE.TorusGeometry(wheelRadius, wheelRadius * .34, 8, 20), mats.rubber);
+      tyre.rotation.y = Math.PI / 2;
+      tyre.position.y = hub.position.y;
+      group.add(tyre);
+
+      const axle = meshOf(new THREE.CylinderGeometry(.025, .025, .24, 8), mats.metal);
+      axle.rotation.z = Math.PI / 2;
+      axle.position.y = hub.position.y;
+      group.add(axle);
+
+      const brace = meshOf(new THREE.CylinderGeometry(.018, .018, .5, 7), mats.metal);
+      brace.rotation.z = isMain ? .52 : -.52;
+      brace.position.set(isMain ? -.2 : .2, -strutLength * .64, 0);
+      group.add(brace);
+
+      const door = meshOf(new THREE.BoxGeometry(isMain ? .28 : .2, .42, .035), mats.hullDark);
+      door.position.set(isMain ? -.16 : .11, -strutsSafeY(strutLength), .1);
+      group.add(door);
+
+      group.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
+      return group;
+    }
+
+    function strutsSafeY(length) { return length * .38; }
+
+    function buildMiG29(mats) {
+      const root = new THREE.Group();
+      root.name = 'MiG-29 Fulcrum 09';
+      const register = (group, name) => {
+        group.name = name;
+        root.add(group);
+        return group;
+      };
+
+      /* ── forward fuselage ────────────────────────────────── */
+      const frontHull = new THREE.Group();
+      const frontLoft = makeLoft([
+        { z: 4.62, w: .295, h: .265, y: -.01, e: .88 },
+        { z: 4.22, w: .355, h: .32, y: -.005, e: .86 },
+        { z: 3.62, w: .44, h: .38, y: 0, e: .83 },
+        { z: 2.92, w: .53, h: .43, y: .005, e: .81 },
+        { z: 2.2, w: .61, h: .46, y: .005, e: .79 },
+        { z: 1.5, w: .7, h: .485, y: -.005, e: .78 },
+        { z: 1.0, w: .79, h: .49, y: -.02, e: .76 }
+      ], 32, mats.hull);
+      frontHull.add(frontLoft);
+
+      const radome = meshOf(new THREE.ConeGeometry(.30, 1.12, 26), mats.radome);
+      radome.rotation.x = Math.PI / 2;
+      radome.position.z = 5.18;
+      frontHull.add(radome);
+
+      const radomeBand = meshOf(new THREE.CylinderGeometry(.303, .323, .07, 26), mats.hullDark);
+      radomeBand.rotation.x = Math.PI / 2;
+      radomeBand.position.z = 4.66;
+      frontHull.add(radomeBand);
+
+      const pitot = meshOf(new THREE.CylinderGeometry(.014, .022, 1.15, 8), mats.metal);
+      pitot.rotation.x = Math.PI / 2;
+      pitot.position.z = 5.97;
+      frontHull.add(pitot);
+      const pitotVane = meshOf(new THREE.BoxGeometry(.015, .18, .026), mats.metal);
+      pitotVane.position.set(0, .005, 6.22);
+      frontHull.add(pitotVane);
+
+      // IRST ball on the starboard side of the nose.
+      const irstBase = meshOf(new THREE.CylinderGeometry(.12, .145, .16, 16), mats.hullDark);
+      irstBase.rotation.z = Math.PI / 2;
+      irstBase.position.set(.28, .135, 3.75);
+      frontHull.add(irstBase);
+      const irstBall = meshOf(new THREE.SphereGeometry(.14, 20, 12), mats.glass);
+      irstBall.position.set(.39, .135, 3.78);
+      frontHull.add(irstBall);
+
+      // Side-mounted cannon and its gas vent.
+      const cannon = meshOf(new THREE.CylinderGeometry(.028, .034, .58, 10), mats.metal);
+      cannon.rotation.x = Math.PI / 2;
+      cannon.position.set(-.31, -.20, 3.15);
+      frontHull.add(cannon);
+      const cannonVent = meshOf(new THREE.BoxGeometry(.20, .055, .46), mats.darkMetal);
+      cannonVent.position.set(-.38, -.24, 2.66);
+      frontHull.add(cannonVent);
+
+      // Small dielectric panels around the nose.
+      for (let i = 0; i < 3; i++) {
+        const panel = meshOf(new THREE.BoxGeometry(.07, .045, .24), mats.hullDark);
+        panel.position.set(-.29 - i * .085, -.19 + i * .07, 4.05 + i * .13);
+        panel.rotation.x = -.3;
+        frontHull.add(panel);
+      }
+      frontHull.add(buildCockpit(mats));
+      root.add(frontHull);
+      frontHull.name = 'forward fuselage';
+
+      /* ── centre / aft fuselage ───────────────────────────── */
+      const aftHull = new THREE.Group();
+      const aftLoft = makeLoft([
+        { z: 1.0, w: .79, h: .49, y: -.02, e: .76 },
+        { z: .34, w: .92, h: .505, y: -.028, e: .74 },
+        { z: -.52, w: 1.03, h: .505, y: -.035, e: .72 },
+        { z: -1.45, w: 1.055, h: .49, y: -.04, e: .72 },
+        { z: -2.35, w: .975, h: .455, y: -.028, e: .74 },
+        { z: -3.2, w: .84, h: .41, y: -.008, e: .77 },
+        { z: -4.1, w: .66, h: .35, y: .012, e: .8 },
+        { z: -4.75, w: .49, h: .29, y: .035, e: .83 }
+      ], 32, mats.hull);
+      aftHull.add(aftLoft);
+
+      const dorsal = makeLoft([
+        { z: 2.25, w: .11, h: .03, y: .425, e: .9 },
+        { z: 1.4, w: .17, h: .06, y: .46, e: .9 },
+        { z: .3, w: .22, h: .07, y: .49, e: .9 },
+        { z: -1.0, w: .235, h: .075, y: .46, e: .9 },
+        { z: -2.1, w: .18, h: .055, y: .405, e: .9 },
+        { z: -3.15, w: .1, h: .035, y: .34, e: .9 }
+      ], 16, mats.hullDark);
+      aftHull.add(dorsal);
+
+      // Rear fuselage seam band and dielectric panel accents.
+      const seamBand = meshOf(new THREE.CylinderGeometry(.925, .925, .055, 32), mats.hullDark);
+      seamBand.rotation.x = Math.PI / 2;
+      seamBand.scale.y = .55;
+      seamBand.position.set(0, -.03, -.52);
+      aftHull.add(seamBand);
+
+      for (let side = -1; side <= 1; side += 2) {
+        const bellyPanel = meshOf(new THREE.BoxGeometry(.42, .025, 1.35), mats.hullDark);
+        bellyPanel.position.set(side * .38, -.51, -.9);
+        bellyPanel.rotation.x = .05;
+        aftHull.add(bellyPanel);
+      }
+
+      // Dorsal airbrake, raised slightly for silhouette detail.
+      const airbrake = meshOf(new THREE.BoxGeometry(.48, .035, .9), mats.hullDark);
+      airbrake.position.set(0, .43, -2.0);
+      airbrake.rotation.x = -.12;
+      aftHull.add(airbrake);
+
+      // Twin intakes with dark throats and splitter plates.
+      for (let side = -1; side <= 1; side += 2) {
+        const intake = makeLoft([
+          { z: 1.62, w: .235, h: .245, y: -.17, e: .6 },
+          { z: 1.18, w: .32, h: .31, y: -.17, e: .6 },
+          { z: .15, w: .36, h: .32, y: -.16, e: .6 },
+          { z: -.82, w: .3, h: .29, y: -.14, e: .62 }
+        ], 20, mats.hullPlain);
+        intake.position.x = side * .82;
+        aftHull.add(intake);
+
+        const throat = meshOf(new THREE.PlaneGeometry(.5, .42), mats.darkMetal);
+        throat.position.set(side * .82, -.18, 1.652);
+        aftHull.add(throat);
+
+        const splitter = meshOf(new THREE.BoxGeometry(.035, .44, .68), mats.hullLight);
+        splitter.position.set(side * 1.1, -.14, 1.22);
+        splitter.rotation.y = side * -.12;
+        aftHull.add(splitter);
+
+        const lip = meshOf(new THREE.BoxGeometry(.11, .54, .06), mats.metal);
+        lip.position.set(side * .99, -.16, 1.61);
+        lip.rotation.z = side * .13;
+        aftHull.add(lip);
+      }
+
+      // Nose number decals.
+      for (let side = -1; side <= 1; side += 2) {
+        const decal = new THREE.Mesh(new THREE.PlaneGeometry(.86, .43), mats.number);
+        decal.position.set(side * .47, .075, 3.3);
+        decal.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+        decal.renderOrder = 2;
+        frontHull.add(decal);
+      }
+
+      // Panel-line ribbons along the upper fuselage.
+      for (let i = 0; i < 3; i++) {
+        const ribbon = meshOf(new THREE.BoxGeometry(.018, .008, 1.35 - i * .19), mats.hullDark);
+        ribbon.position.set((i - 1) * .24, .472 - i * .012, -.4 - i * .24);
+        aftHull.add(ribbon);
+      }
+
+      root.add(aftHull);
+      aftHull.name = 'centre fuselage';
+
+      /* ── wings and LERX ──────────────────────────────────── */
+      function buildWing(side) {
+        const group = new THREE.Group();
+        const sign = side > 0 ? 1 : -1;
+        const points = [
+          [.7, 1.22], [3.55, -1.57], [3.31, -2.24], [.72, -1.56]
+        ].map(([x, z]) => [x * sign, z]);
+        const wing = meshOf(plateGeometry(points, .105), mats.hull);
+        wing.position.y = -.03;
+        group.add(wing);
+
+        const lerxPoints = [
+          [.58, 2.32], [1.14, 2.17], [1.35, .48], [.61, .02]
+        ].map(([x, z]) => [x * sign, z]);
+        const lerx = meshOf(plateGeometry(lerxPoints, .06), mats.hullPlain);
+        lerx.position.y = .12;
+        group.add(lerx);
+
+        // Camouflage repairs / composite patches.
+        const patchA = meshOf(plateGeometry([
+          [1.5, .68], [2.7, -.72], [2.34, -1.22], [1.4, -.36]
+        ].map(([x, z]) => [x * sign, z]), .012), mats.hullDark);
+        patchA.position.y = .046;
+        group.add(patchA);
+
+        const patchB = meshOf(plateGeometry([
+          [.95, .2], [1.5, .05], [1.62, -.6], [.98, -.92]
+        ].map(([x, z]) => [x * sign, z]), .01), mats.hullLight);
+        patchB.position.y = .048;
+        group.add(patchB);
+
+        // Outer aileron plate (a subtle control-surface silhouette).
+        const aileron = meshOf(plateGeometry([
+          [2.58, -1.62], [3.27, -2.18], [3.16, -2.28], [2.55, -1.76]
+        ].map(([x, z]) => [x * sign, z]), .022), mats.hullDark);
+        aileron.position.y = .05;
+        group.add(aileron);
+
+        // Pylons, kept clear of the main landing-gear bay.
+        const pylonPositions = [[1.62, -.55], [2.42, -.4], [3.02, -.29]];
+        pylonPositions.forEach(([x, z]) => {
+          const pylon = meshOf(new THREE.BoxGeometry(.11, .24, .48), mats.hullLight);
+          pylon.position.set(sign * x, -.2, z);
+          pylon.rotation.z = sign * -.03;
+          group.add(pylon);
+        });
+
+        // Wingtip navigation light and pitot.
+        const tipLight = meshOf(new THREE.SphereGeometry(.052, 9, 6), sign > 0 ? mats.navGreen : mats.navRed, false);
+        tipLight.position.set(sign * 3.5, .025, -1.88);
+        group.add(tipLight);
+        const tipTube = meshOf(new THREE.CylinderGeometry(.009, .012, .48, 6), mats.metal);
+        tipTube.rotation.x = Math.PI / 2;
+        tipTube.position.set(sign * 3.4, 0, -2.15);
+        group.add(tipTube);
+
+        // Star insignia on the upper wing.
+        const star = new THREE.Mesh(new THREE.PlaneGeometry(.63, .63), mats.star);
+        star.rotation.x = -Math.PI / 2;
+        star.rotation.z = sign > 0 ? Math.PI * .14 : -Math.PI * .14;
+        star.position.set(sign * 1.91, .061, -1.25);
+        star.renderOrder = 2;
+        group.add(star);
+
+        group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return group;
+      }
+
+      register(buildWing(1), 'starboard wing');
+      register(buildWing(-1), 'port wing');
+
+      /* ── twin vertical tails ─────────────────────────────── */
+      function buildFin(side) {
+        const sign = side > 0 ? 1 : -1;
+        const group = new THREE.Group();
+        group.position.set(sign * 1.02, .24, -3.18);
+        group.rotation.z = -sign * .21;
+
+        const geometry = verticalPlateGeometry([[-1.04, 0], [.64, 0], [.20, 1.76], [-.82, 1.76]], .08);
+        const fin = meshOf(geometry, mats.hull);
+        group.add(fin);
+
+        const rudder = meshOf(verticalPlateGeometry([[-1.10, .03], [-.84, .03], [-.69, 1.54], [-.95, 1.5]], .035), mats.hullDark);
+        group.add(rudder);
+
+        const cap = meshOf(new THREE.BoxGeometry(.09, .13, .3), mats.hullDark);
+        cap.position.set(0, 1.81, -.45);
+        group.add(cap);
+
+        for (let face = -1; face <= 1; face += 2) {
+          const star = new THREE.Mesh(new THREE.PlaneGeometry(.45, .45), mats.star);
+          star.position.set(face * .065, 1.12, -.36);
+          star.rotation.y = face * Math.PI / 2;
+          star.renderOrder = 3;
+          group.add(star);
+        }
+
+        const formation = meshOf(new THREE.BoxGeometry(.03, .04, .16), mats.navWhite, false);
+        formation.position.set(0, 1.55, -.9);
+        group.add(formation);
+
+        group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return group;
+      }
+
+      register(buildFin(1), 'starboard vertical tail');
+      register(buildFin(-1), 'port vertical tail');
+
+      /* ── horizontal stabilisers ──────────────────────────── */
+      function buildStabiliser(side) {
+        const sign = side > 0 ? 1 : -1;
+        const group = new THREE.Group();
+        const geometry = plateGeometry([
+          [.64, -2.88], [2.58, -3.92], [2.4, -4.38], [.66, -4.16]
+        ].map(([x, z]) => [x * sign, z]), .075);
+        const stabiliser = meshOf(geometry, mats.hull);
+        stabiliser.position.y = .035;
+        group.add(stabiliser);
+        const tipLight = meshOf(new THREE.SphereGeometry(.04, 8, 6), mats.navWhite, false);
+        tipLight.position.set(sign * 2.46, .04, -4.16);
+        group.add(tipLight);
+        group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return group;
+      }
+
+      register(buildStabiliser(1), 'starboard stabiliser');
+      register(buildStabiliser(-1), 'port stabiliser');
+
+      /* ── engine nacelles and afterburners ────────────────── */
+      const afterburners = [];
+      function buildEngine(side) {
+        const sign = side > 0 ? 1 : -1;
+        const group = new THREE.Group();
+        group.position.set(sign * .66, -.22, -2.7);
+
+        const nacelle = makeLoft([
+          { z: 1.76, w: .35, h: .38, y: 0, e: .85 },
+          { z: 1.18, w: .46, h: .45, y: 0, e: .82 },
+          { z: 0, w: .50, h: .47, y: 0, e: .82 },
+          { z: -1.2, w: .45, h: .43, y: 0, e: .84 },
+          { z: -1.9, w: .37, h: .36, y: 0, e: .86 }
+        ], 24, mats.hullPlain);
+        group.add(nacelle);
+
+        for (let i = 0; i < 3; i++) {
+          const band = meshOf(new THREE.TorusGeometry(.45 - i * .035, .012, 6, 28), mats.hullDark);
+          band.position.z = -1.32 + i * .12;
+          group.add(band);
+        }
+
+        const nozzle = meshOf(new THREE.CylinderGeometry(.38, .31, .62, 26, 1, true), mats.darkMetal);
+        nozzle.rotation.x = Math.PI / 2;
+        nozzle.position.z = -2.17;
+        group.add(nozzle);
+
+        const nozzleInner = meshOf(new THREE.CylinderGeometry(.3, .25, .58, 22, 1, true), mats.metal);
+        nozzleInner.rotation.x = Math.PI / 2;
+        nozzleInner.position.z = -2.18;
+        group.add(nozzleInner);
+
+        const glowDisc = meshOf(new THREE.CircleGeometry(.29, 22), mats.flameOuter, false);
+        glowDisc.position.z = -2.36;
+        glowDisc.rotation.y = Math.PI;
+        group.add(glowDisc);
+
+        // Individual nozzle petals.
+        for (let i = 0; i < 14; i++) {
+          const a = i / 14 * TAU;
+          const petal = meshOf(new THREE.BoxGeometry(.06, .024, .46), mats.metal);
+          petal.position.set(Math.cos(a) * .34, Math.sin(a) * .34, -2.16);
+          petal.rotation.z = a;
+          group.add(petal);
+        }
+
+        const flameOuter = meshOf(new THREE.ConeGeometry(.3, 2.7, 18, 1, true), mats.flameOuter, false);
+        flameOuter.rotation.x = -Math.PI / 2;
+        flameOuter.position.z = -2.44 - 1.35;
+        flameOuter.visible = false;
+        group.add(flameOuter);
+        afterburners.push(flameOuter);
+
+        const flameInner = meshOf(new THREE.ConeGeometry(.15, 2.0, 14, 1, true), mats.flameInner, false);
+        flameInner.rotation.x = -Math.PI / 2;
+        flameInner.position.z = -2.44 - 1.0;
+        flameInner.visible = false;
+        group.add(flameInner);
+        afterburners.push(flameInner);
+
+        group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        return group;
+      }
+
+      register(buildEngine(1), 'starboard engine');
+      register(buildEngine(-1), 'port engine');
+
+      /* ── armament ────────────────────────────────────────── */
+      const missiles = [];
+      const missileData = [
+        { x: 1.62, z: -.58, length: 3.15, radius: .125, kind: 'R-27R' },
+        { x: -1.62, z: -.58, length: 3.15, radius: .125, kind: 'R-27R' },
+        { x: 2.42, z: -.46, length: 2.22, radius: .1, kind: 'R-73E' },
+        { x: -2.42, z: -.46, length: 2.22, radius: .1, kind: 'R-73E' },
+        { x: 3.02, z: -.32, length: 2.1, radius: .09, kind: 'R-73E' },
+        { x: -3.02, z: -.32, length: 2.1, radius: .09, kind: 'R-73E' }
+      ];
+      missileData.forEach((m, index) => {
+        const missile = createMissile(mats, m.length, m.radius);
+        missile.position.set(m.x, -.37, m.z);
+        missile.rotation.z = m.x > 0 ? -.045 : .045;
+        missile.userData.slot = index;
+        missile.userData.kind = m.kind;
+        missile.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        register(missile, `missile ${index + 1}`);
+        missiles.push(missile);
+      });
+
+      /* ── canopy and cockpit ──────────────────────────────── */
+      const canopy = buildCanopy(mats);
+      register(canopy.group, 'canopy');
+
+      /* ── landing gear ────────────────────────────────────── */
+      const gear = [];
+      const noseGear = makeGearAssembly(mats, 'nose');
+      noseGear.position.set(0, -.28, 2.65);
+      register(noseGear, 'nose landing gear');
+      gear.push(noseGear);
+
+      const mainLeft = makeGearAssembly(mats, 'main');
+      mainLeft.position.set(-1.0, -.20, -1.15);
+      mainLeft.rotation.z = .055;
+      register(mainLeft, 'port main gear');
+      gear.push(mainLeft);
+
+      const mainRight = makeGearAssembly(mats, 'main');
+      mainRight.position.set(1.0, -.20, -1.15);
+      mainRight.rotation.z = -.055;
+      register(mainRight, 'starboard main gear');
+      gear.push(mainRight);
+
+      // Small static discharge whips add scale cues along the tail cone.
+      for (let side = -1; side <= 1; side += 2) {
+        const whip = meshOf(new THREE.CylinderGeometry(.006, .012, .42, 5), mats.darkMetal);
+        whip.position.set(side * .28, -.05, -4.56);
+        whip.rotation.z = side * .24;
+        whip.rotation.x = .34;
+        aftHull.add(whip);
+      }
+
+      // Anti-collision beacon on the spine.
+      const beacon = meshOf(new THREE.SphereGeometry(.055, 10, 7), mats.navRed, false);
+      beacon.position.set(0, .53, -.9);
+      aftHull.add(beacon);
+
+      // Final shadow/material housekeeping.
+      root.traverse((object) => {
+        if (!object.isMesh) return;
+        object.castShadow = object.material !== mats.glass && !object.material.transparent;
+        object.receiveShadow = false;
+        if (object.geometry && !object.geometry.attributes.normal) object.geometry.computeVertexNormals();
+      });
+
+      root.userData = {
+        parts: root.children.slice(),
+        canopyPivot: canopy.pivot,
+        gear,
+        missiles,
+        afterburners,
+        beacon,
+        baseGearRotation: gear.map(g => g.rotation.x)
+      };
+
+      return root;
+    }
+
+    function buildCockpit(mats) {
+      const cockpit = new THREE.Group();
+      cockpit.name = 'K-36D cockpit interior';
+
+      const tub = meshOf(new THREE.BoxGeometry(.83, .28, 1.72), mats.cockpit);
+      tub.position.set(0, .31, 1.42);
+      cockpit.add(tub);
+
+      // Dark aperture gives the solid loft the illusion of a cut-out cockpit.
+      const aperture = meshOf(new THREE.CircleGeometry(.55, 32), mats.cockpit);
+      aperture.rotation.x = -Math.PI / 2;
+      aperture.scale.set(1.08, 1.28, 1);
+      aperture.position.set(0, .498, 1.4);
+      cockpit.add(aperture);
+
+      const rim = meshOf(new THREE.BoxGeometry(.94, .055, 1.9), mats.darkMetal);
+      rim.position.set(0, .45, 1.4);
+      cockpit.add(rim);
+
+      // Instrument coaming.
+      const coaming = meshOf(new THREE.BoxGeometry(.82, .25, .3), mats.cockpit);
+      coaming.position.set(0, .42, 2.08);
+      coaming.rotation.x = -.22;
+      cockpit.add(coaming);
+
+      for (let i = 0; i < 3; i++) {
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(.17, .105), mats.screen);
+        screen.position.set((i - 1) * .225, .50, 1.91);
+        screen.rotation.x = -.33;
+        cockpit.add(screen);
+      }
+
+      const hudFrame = meshOf(new THREE.BoxGeometry(.48, .035, .03), mats.darkMetal);
+      hudFrame.position.set(0, .59, 1.77);
+      hudFrame.rotation.x = -.36;
+      cockpit.add(hudFrame);
+      const hudGlass = new THREE.Mesh(new THREE.PlaneGeometry(.39, .22), mats.hudGlass);
+      hudGlass.position.set(0, .61, 1.75);
+      hudGlass.rotation.x = -.36;
+      cockpit.add(hudGlass);
+
+      // K-36D ejection seat.
+      const pan = meshOf(new THREE.BoxGeometry(.38, .08, .41), mats.seatPad);
+      pan.position.set(0, .47, 1.31);
+      cockpit.add(pan);
+      const back = meshOf(new THREE.BoxGeometry(.4, .36, .10), mats.seat);
+      back.position.set(0, .60, 1.10);
+      back.rotation.x = -.10;
+      cockpit.add(back);
+      const headrest = meshOf(new THREE.BoxGeometry(.36, .15, .12), mats.accent);
+      headrest.position.set(0, .775, 1.06);
+      headrest.rotation.x = -.10;
+      cockpit.add(headrest);
+      const seatRail = meshOf(new THREE.BoxGeometry(.17, .06, .6), mats.darkMetal);
+      seatRail.position.set(0, .43, 1.2);
+      cockpit.add(seatRail);
+      for (let side = -1; side <= 1; side += 2) {
+        const harness = meshOf(new THREE.BoxGeometry(.04, .27, .032), mats.seatPad);
+        harness.position.set(side * .10, .60, 1.22);
+        harness.rotation.x = -.15;
+        cockpit.add(harness);
+      }
+
+      // Side consoles and canopy rails.
+      for (let side = -1; side <= 1; side += 2) {
+        const console = meshOf(new THREE.BoxGeometry(.14, .12, .7), mats.cockpit);
+        console.position.set(side * .34, .47, 1.52);
+        cockpit.add(console);
+        const rail = meshOf(new THREE.CylinderGeometry(.016, .016, 1.34, 7), mats.metal);
+        rail.rotation.x = Math.PI / 2;
+        rail.position.set(side * .43, .50, 1.54);
+        cockpit.add(rail);
+      }
+
+      // Control stick with a red trigger.
+      const stick = meshOf(new THREE.CylinderGeometry(.018, .023, .4, 8), mats.darkMetal);
+      stick.position.set(0, .57, 1.58);
+      stick.rotation.x = -.22;
+      cockpit.add(stick);
+      const grip = meshOf(new THREE.BoxGeometry(.07, .13, .08), mats.seat);
+      grip.position.set(0, .75, 1.53);
+      grip.rotation.x = -.22;
+      cockpit.add(grip);
+      const trigger = meshOf(new THREE.BoxGeometry(.018, .024, .018), mats.accent);
+      trigger.position.set(-.038, .77, 1.51);
+      cockpit.add(trigger);
+
+      cockpit.traverse(o => { if (o.isMesh) o.castShadow = true; });
+      return cockpit;
+    }
+
+    function buildCanopy(mats) {
+      const group = new THREE.Group();
+      const pivot = new THREE.Group();
+      pivot.name = 'canopy hinge';
+      pivot.position.set(0, .44, .22);
+      group.add(pivot);
+
+      const shell = meshOf(new THREE.SphereGeometry(1, 32, 20, 0, TAU, 0, Math.PI / 2), mats.glass, false);
+      shell.scale.set(.53, .42, 1.16);
+      shell.position.set(0, 0, 1.02);
+      shell.renderOrder = 4;
+      pivot.add(shell);
+
+      const arch = (z, width, height) => {
+        const points = [];
+        for (let i = 0; i <= 12; i++) {
+          const a = i / 12 * Math.PI;
+          points.push([-Math.cos(a) * width, Math.sin(a) * height, z]);
+        }
+        return points;
+      };
+      [.48, 1.02, 1.68, 2.16].forEach((z, i) => {
+        const height = i === 0 || i === 3 ? .20 : .40;
+        addTube(pivot, arch(z, i === 0 || i === 3 ? .46 : .52, height), .012, mats.darkMetal);
+      });
+
+      const baseOutline = [];
+      for (let i = 0; i <= 40; i++) {
+        const a = i / 40 * TAU;
+        baseOutline.push([Math.cos(a) * .51, .006, 1.02 + Math.sin(a) * 1.15]);
+      }
+      addTube(pivot, baseOutline, .018, mats.darkMetal, true);
+
+      const centerSpine = [
+        [0, .414, .0], [0, .362, .42], [0, .30, .81], [0, .348, 1.38], [0, .225, 2.0]
+      ];
+      addTube(pivot, centerSpine, .012, mats.darkMetal);
+
+      const latch = meshOf(new THREE.BoxGeometry(.13, .07, .08), mats.metal);
+      latch.position.set(0, .31, 1.88);
+      pivot.add(latch);
+
+      const canopyLock = meshOf(new THREE.BoxGeometry(.1, .1, .08), mats.accent);
+      canopyLock.position.set(0, .39, .42);
+      pivot.add(canopyLock);
+
+      pivot.traverse(o => { if (o.isMesh) o.castShadow = false; });
+      return { group, pivot };
+    }
+
+    // ===================== 03 · WORLD =====================
+    const FX = { glow: null, smoke: null, ring: null, cloud: null };
+    const bursts = [];
+
+    function initFXTextures() {
+      FX.glow = makeGlowTexture('rgba(255,244,220,1)', 'rgba(255,127,64,0)', 256);
+      FX.smoke = makeSoftTexture('rgba(183,179,169,.55)', 'rgba(68,66,61,.32)', 160);
+      FX.cloud = makeSoftTexture('rgba(255,250,240,.83)', 'rgba(250,244,233,.34)', 256);
+      FX.ring = makeRingTexture();
+    }
+
+    function makeRingTexture() {
+      const size = 256;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const c = size / 2;
+      const grad = ctx.createRadialGradient(c, c, size * .17, c, c, size * .5);
+      grad.addColorStop(0, 'rgba(255,255,255,0)');
+      grad.addColorStop(.45, 'rgba(255,225,181,.05)');
+      grad.addColorStop(.66, 'rgba(255,213,156,.75)');
+      grad.addColorStop(.74, 'rgba(255,255,242,.95)');
+      grad.addColorStop(.82, 'rgba(255,174,105,.38)');
+      grad.addColorStop(1, 'rgba(255,120,48,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    class Blast {
+      constructor(position, options = {}) {
+        const scale = options.scale ?? 1;
+        this.age = 0;
+        this.life = options.life ?? 1.65;
+        this.group = new THREE.Group();
+        this.group.position.copy(position);
+        this.group.name = 'blast';
+        scene.add(this.group);
+
+        const sparkCount = Math.max(8, Math.round((options.sparks ?? 52) * Math.min(2.2, scale)));
+        const positions = new Float32Array(sparkCount * 3);
+        const velocities = new Float32Array(sparkCount * 3);
+        for (let i = 0; i < sparkCount; i++) {
+          const direction = new THREE.Vector3(rand(-1, 1), rand(-.55, 1), rand(-1, 1)).normalize();
+          const speed = rand(2.6, 10.5) * Math.sqrt(scale);
+          velocities[i * 3] = direction.x * speed;
+          velocities[i * 3 + 1] = direction.y * speed;
+          velocities[i * 3 + 2] = direction.z * speed;
+          const jitter = scale * .65;
+          positions[i * 3] = rand(-jitter, jitter);
+          positions[i * 3 + 1] = rand(-jitter, jitter);
+          positions[i * 3 + 2] = rand(-jitter, jitter);
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        this.pointsMaterial = new THREE.PointsMaterial({
+          color: options.sparkColor ?? 0xffa15f,
+          size: .28 * Math.min(2, scale),
+          transparent: true,
+          opacity: 1,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+          toneMapped: false
+        });
+        this.points = new THREE.Points(geometry, this.pointsMaterial);
+        this.group.add(this.points);
+        this.velocities = velocities;
+
+        this.flashMaterial = new THREE.SpriteMaterial({
+          map: FX.glow,
+          color: options.color ?? 0xffc28b,
+          transparent: true,
+          opacity: .95,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          toneMapped: false
+        });
+        this.flash = new THREE.Sprite(this.flashMaterial);
+        this.flash.scale.setScalar(8.5 * scale);
+        this.group.add(this.flash);
+
+        this.ringMaterial = new THREE.SpriteMaterial({
+          map: FX.ring,
+          color: options.color ?? 0xffbd83,
+          transparent: true,
+          opacity: .9,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          toneMapped: false
+        });
+        this.ring = new THREE.Sprite(this.ringMaterial);
+        this.ring.scale.setScalar(3.5 * scale);
+        this.group.add(this.ring);
+
+        this.smoke = [];
+        const smokeCount = Math.round((options.smoke ?? 7) * Math.min(2, scale));
+        for (let i = 0; i < smokeCount; i++) {
+          const material = new THREE.SpriteMaterial({
+            map: FX.smoke,
+            color: options.smokeColor ?? 0x746e64,
+            transparent: true,
+            opacity: .34,
+            depthWrite: false,
+            rotation: rand(0, TAU)
+          });
+          const sprite = new THREE.Sprite(material);
+          const size = rand(1.1, 2.2) * scale;
+          sprite.scale.set(size * rand(.8, 1.5), size, 1);
+          sprite.position.set(rand(-1, 1) * scale, rand(-.4, 1) * scale, rand(-1, 1) * scale);
+          this.group.add(sprite);
+          this.smoke.push({
+            sprite,
+            velocity: new THREE.Vector3(rand(-1.2, 1.2), rand(.35, 1.7), rand(-1.2, 1.2)).multiplyScalar(scale),
+            spin: rand(-.3, .3),
+            growth: rand(.6, 1.4) * scale
+          });
+        }
+
+        this.light = null;
+        if (scale >= 1.25) {
+          this.light = new THREE.PointLight(0xff9055, 90 * scale, 22 * scale, 2);
+          this.group.add(this.light);
+        }
+      }
+
+      update(dt, camera) {
+        this.age += dt;
+        const t = this.age / this.life;
+        const positions = this.points.geometry.attributes.position.array;
+        const drag = Math.exp(-dt * 1.35);
+        for (let i = 0; i < positions.length / 3; i++) {
+          this.velocities[i * 3] *= drag;
+          this.velocities[i * 3 + 1] = this.velocities[i * 3 + 1] * drag - 3.6 * dt;
+          this.velocities[i * 3 + 2] *= drag;
+          positions[i * 3] += this.velocities[i * 3] * dt;
+          positions[i * 3 + 1] += this.velocities[i * 3 + 1] * dt;
+          positions[i * 3 + 2] += this.velocities[i * 3 + 2] * dt;
+        }
+        this.points.geometry.attributes.position.needsUpdate = true;
+        this.pointsMaterial.opacity = clamp01(1 - t * 1.25);
+
+        const flashT = clamp01(t / .32);
+        this.flash.scale.setScalar((8.5 + flashT * 9) * Math.min(2, 1 / Math.max(.7, t + .7)) + flashT * 3);
+        this.flashMaterial.opacity = (1 - flashT) * .95;
+
+        this.ring.scale.setScalar(3.5 + easeInOut(t) * 17);
+        this.ringMaterial.opacity = (1 - clamp01(t / .7)) * .72;
+
+        this.smoke.forEach((puff, i) => {
+          puff.sprite.position.addScaledVector(puff.velocity, dt);
+          puff.velocity.multiplyScalar(Math.exp(-dt * .65));
+          puff.velocity.y += .26 * dt;
+          puff.sprite.material.rotation += puff.spin * dt;
+          const grow = 1 + t * puff.growth;
+          puff.sprite.scale.x *= 1 + (grow - 1) * dt * .28;
+          puff.sprite.scale.y *= 1 + (grow - 1) * dt * .28;
+          puff.sprite.material.opacity = clamp01(1 - t) * (.19 + i * .008);
+        });
+
+        if (this.light) this.light.intensity = (1 - clamp01(t / .6)) * 90 * Math.min(2, this.pointsMaterial.size * 5);
+        return t < 1;
+      }
+
+      dispose() {
+        this.group.traverse((object) => {
+          if (object.geometry) object.geometry.dispose();
+          if (object.material) {
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            materials.forEach((material) => material.dispose());
+          }
+        });
+        scene.remove(this.group);
+      }
+    }
+
+    function spawnBurst(position, options = {}) {
+      const blast = new Blast(position, options);
+      bursts.push(blast);
+      return blast;
+    }
+
+    function updateBursts(dt, camera) {
+      for (let i = bursts.length - 1; i >= 0; i--) {
+        const alive = bursts[i].update(dt, camera);
+        if (!alive) {
+          bursts[i].dispose();
+          bursts.splice(i, 1);
+        }
+      }
+    }
+
+    class FlightTrail {
+      constructor(parent, color = 0xffd9ab, max = 95) {
+        this.max = max;
+        this.points = [];
+        this.positions = new Float32Array(max * 3);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+        this.geometry = geometry;
+        this.material = new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: .32,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          toneMapped: false
+        });
+        this.line = new THREE.Line(geometry, this.material);
+        this.line.frustumCulled = false;
+        this.line.renderOrder = 2;
+        parent.add(this.line);
+      }
+
+      reset() {
+        this.points = [];
+        this.positions.fill(0);
+        this.geometry.attributes.position.needsUpdate = true;
+      }
+
+      push(position) {
+        this.points.push(position.clone());
+        if (this.points.length > this.max) this.points.shift();
+        const count = this.points.length;
+        for (let i = 0; i < this.max; i++) {
+          const p = this.points[clamp(i, 0, Math.max(0, count - 1))] || position;
+          this.positions[i * 3] = p.x;
+          this.positions[i * 3 + 1] = p.y;
+          this.positions[i * 3 + 2] = p.z;
+        }
+        this.geometry.attributes.position.needsUpdate = true;
+        this.geometry.setDrawRange(0, Math.max(2, count));
+      }
+
+      set visible(value) { this.line.visible = value; }
+      get visible() { return this.line.visible; }
+    }
+
+    /* ── museum showroom ───────────────────────────────────── */
+    function buildShowroom(mats) {
+      const group = new THREE.Group();
+      group.name = 'Museum showroom';
+
+      const wood = new THREE.MeshStandardMaterial({ color: 0x0b0f10, metalness: .63, roughness: .36, envMapIntensity: .7 });
+      const floor = meshOf(new THREE.CircleGeometry(75, 96), new THREE.MeshStandardMaterial({
+        color: 0x0a0e0f, metalness: .82, roughness: .26, envMapIntensity: .95
+      }), false);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -.01;
+      floor.receiveShadow = true;
+      group.add(floor);
+
+      const grid = new THREE.GridHelper(130, 65, 0x263334, 0x172020);
+      grid.position.y = .002;
+      grid.material.transparent = true;
+      grid.material.opacity = .38;
+      group.add(grid);
+
+      const platformBase = meshOf(new THREE.CylinderGeometry(6.78, 7.05, .28, 96, 1, false), wood, false);
+      platformBase.position.y = .14;
+      platformBase.receiveShadow = true;
+      group.add(platformBase);
+
+      const platformTopMaterial = new THREE.MeshStandardMaterial({
+        map: mats.textures.platform,
+        color: 0xdfe5de,
+        metalness: .58,
+        roughness: .39,
+        envMapIntensity: .9
+      });
+      const platformTop = meshOf(new THREE.CircleGeometry(6.76, 96), platformTopMaterial, false);
+      platformTop.rotation.x = -Math.PI / 2;
+      platformTop.position.y = .284;
+      platformTop.receiveShadow = true;
+      group.add(platformTop);
+
+      const rimMaterial = new THREE.MeshBasicMaterial({ color: 0xff5b33, toneMapped: false, transparent: true, opacity: .48 });
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(6.79, .017, 6, 150), rimMaterial);
+      rim.rotation.x = -Math.PI / 2;
+      rim.position.y = .288;
+      group.add(rim);
+
+      const arcs = new THREE.Group();
+      [0, Math.PI * .68, Math.PI * 1.38].forEach((rotation, index) => {
+        const material = new THREE.MeshBasicMaterial({
+          color: index === 0 ? 0xff6b40 : 0xb9dad8,
+          transparent: true,
+          opacity: index === 0 ? .52 : .2,
+          toneMapped: false
+        });
+        const arc = new THREE.Mesh(new THREE.TorusGeometry(8.2 + index * .42, .011, 5, 130, Math.PI * .65), material);
+        arc.rotation.x = -Math.PI / 2;
+        arc.rotation.z = rotation;
+        arc.position.y = .015;
+        arcs.add(arc);
+      });
+      group.add(arcs);
+
+      // Vertical studio bays and the museum sign.
+      const backWall = meshOf(new THREE.PlaneGeometry(64, 30), new THREE.MeshStandardMaterial({ color: 0x0c1213, roughness: .92, metalness: .08 }), false);
+      backWall.position.set(0, 11, -25);
+      group.add(backWall);
+
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(16, 6.85), new THREE.MeshBasicMaterial({
+        map: mats.textures.gallery,
+        transparent: true,
+        opacity: .76,
+        depthWrite: false,
+        toneMapped: false
+      }));
+      sign.position.set(0, 8.2, -24.85);
+      group.add(sign);
+
+      const bayMaterials = [
+        new THREE.MeshBasicMaterial({ color: 0xffe4c2, transparent: true, opacity: .24, toneMapped: false }),
+        new THREE.MeshBasicMaterial({ color: 0x9ed9da, transparent: true, opacity: .14, toneMapped: false })
+      ];
+      for (let i = 0; i < 6; i++) {
+        const strip = meshOf(new THREE.BoxGeometry(.035, 8.5 + (i % 3) * 2.3, .035), bayMaterials[i % 2], false);
+        strip.position.set(-15 + i * 6, 8.2, -23.5);
+        group.add(strip);
+      }
+      for (let i = 0; i < 3; i++) {
+        const bar = meshOf(new THREE.BoxGeometry(5.4, .035, .035), bayMaterials[i === 1 ? 1 : 0], false);
+        bar.position.set(i === 0 ? -5.8 : i === 1 ? 0 : 5.8, 12.2, -9);
+        bar.rotation.z = i === 0 ? -.28 : i === 2 ? .28 : 0;
+        group.add(bar);
+      }
+
+      // Fine atmospheric dust.
+      const dustCount = 240;
+      const dustPositions = new Float32Array(dustCount * 3);
+      for (let i = 0; i < dustCount; i++) {
+        const radius = rand(3.5, 20);
+        const angle = rand(0, TAU);
+        dustPositions[i * 3] = Math.cos(angle) * radius;
+        dustPositions[i * 3 + 1] = rand(.1, 12);
+        dustPositions[i * 3 + 2] = Math.sin(angle) * radius;
+      }
+      const dustGeometry = new THREE.BufferGeometry();
+      dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+      const dustMaterial = new THREE.PointsMaterial({
+        color: 0xdce6dc,
+        size: .025,
+        transparent: true,
+        opacity: .39,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        sizeAttenuation: true
+      });
+      const dust = new THREE.Points(dustGeometry, dustMaterial);
+      group.add(dust);
+      group.userData.dust = dust;
+      group.userData.arcs = arcs;
+      group.userData.platformTop = platformTop;
+
+      // The lighting design: warm key, orange rim, cool fill.
+      const lights = new THREE.Group();
+      const hemisphere = new THREE.HemisphereLight(0x9ab7b6, 0x070a0b, 1.15);
+      lights.add(hemisphere);
+
+      const key = new THREE.SpotLight(0xffe9d0, 1050, 48, .67, .82, 1.7);
+      key.position.set(8.5, 14, 9);
+      key.target.position.set(0, 1.4, 0);
+      key.castShadow = true;
+      key.shadow.mapSize.set(window.innerWidth < 900 ? 1024 : 2048, window.innerWidth < 900 ? 1024 : 2048);
+      key.shadow.bias = -.00018;
+      key.shadow.normalBias = .022;
+      key.shadow.camera.near = 1;
+      key.shadow.camera.far = 38;
+      lights.add(key, key.target);
+
+      const rim = new THREE.SpotLight(0xff6537, 760, 42, .72, .9, 1.75);
+      rim.position.set(-8, 6.5, -9);
+      rim.target.position.set(0, 2.1, 0);
+      lights.add(rim, rim.target);
+
+      const fill = new THREE.DirectionalLight(0x9edbe0, 1.9);
+      fill.position.set(-7, 5.5, 9);
+      lights.add(fill);
+
+      const floorBounce = new THREE.PointLight(0x79b6ba, 22, 16, 2);
+      floorBounce.position.set(0, .6, 2);
+      lights.add(floorBounce);
+
+      const stripLightA = new THREE.PointLight(0xffbd8e, 35, 15, 2);
+      stripLightA.position.set(5.5, 7.5, -5);
+      lights.add(stripLightA);
+
+      group.add(lights);
+      group.userData.lights = lights;
+      group.userData.key = key;
+      group.userData.rim = rim;
+
+      return group;
+    }
+
+    /* ── high altitude playground ──────────────────────────── */
+    function buildSky(mats) {
+      const group = new THREE.Group();
+      group.name = 'Altitude 3,400';
+
+      const skyMaterial = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: {
+          topColor: { value: new THREE.Color(0x1f5266) },
+          horizonColor: { value: new THREE.Color(0xe9bb90) },
+          bottomColor: { value: new THREE.Color(0x987462) },
+          sunColor: { value: new THREE.Color(0xffd0a0) }
+        },
+        vertexShader: `
+          varying vec3 vDirection;
+          void main() {
+            vDirection = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 topColor;
+          uniform vec3 horizonColor;
+          uniform vec3 bottomColor;
+          uniform vec3 sunColor;
+          varying vec3 vDirection;
+          void main() {
+            float h = normalize(vDirection).y;
+            vec3 color = mix(horizonColor, topColor, smoothstep(-0.02, 0.74, h));
+            color = mix(bottomColor, color, smoothstep(-0.32, 0.02, h));
+            float sun = pow(max(dot(vDirection, normalize(vec3(-0.46, 0.17, -0.86))), 0.0), 26.0);
+            color += sunColor * sun * 0.5;
+            float band = sin(vDirection.x * 5.0 + vDirection.z * 3.0) * .012;
+            color += band;
+            gl_FragColor = vec4(color, 1.0);
+          }
+        `
+      });
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(1200, 36, 24), skyMaterial);
+      dome.renderOrder = -100;
+      group.add(dome);
+
+      const sunMaterial = new THREE.SpriteMaterial({
+        map: FX.glow,
+        color: 0xffd9ae,
+        transparent: true,
+        opacity: .95,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false
+      });
+      const sun = new THREE.Sprite(sunMaterial);
+      sun.position.set(-540, 230, -720);
+      sun.scale.setScalar(390);
+      group.add(sun);
+
+      const sunCore = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: FX.glow, color: 0xfff2d4, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false
+      }));
+      sunCore.position.copy(sun.position);
+      sunCore.scale.setScalar(105);
+      group.add(sunCore);
+
+      const cloudMaterials = [
+        new THREE.MeshStandardMaterial({ color: 0xf3eadf, roughness: 1, metalness: 0, flatShading: true, envMapIntensity: .22 }),
+        new THREE.MeshStandardMaterial({ color: 0xe9ded2, roughness: 1, metalness: 0, flatShading: true, envMapIntensity: .18 }),
+        new THREE.MeshStandardMaterial({ color: 0xcec6bf, roughness: 1, metalness: 0, flatShading: true, envMapIntensity: .14 })
+      ];
+      const cloudGeometry = new THREE.IcosahedronGeometry(1, 1);
+      const clouds = new THREE.Group();
+
+      const makeCloud = (scale, materialIndex = 0) => {
+        const cluster = new THREE.Group();
+        const blobs = Math.floor(rand(5, 10));
+        for (let i = 0; i < blobs; i++) {
+          const blob = new THREE.Mesh(cloudGeometry, cloudMaterials[materialIndex]);
+          const size = rand(2.4, 5.6) * scale;
+          blob.scale.set(size * rand(1.2, 2.1), size * rand(.55, .88), size * rand(.9, 1.5));
+          blob.position.set(rand(-7, 7) * scale, rand(-1.2, 2.2) * scale, rand(-6, 6) * scale);
+          blob.rotation.set(rand(0, TAU), rand(0, TAU), rand(0, TAU));
+          blob.castShadow = false;
+          blob.receiveShadow = false;
+          cluster.add(blob);
+        }
+        return cluster;
+      };
+
+      for (let i = 0; i < 17; i++) {
+        const angle = rand(0, TAU);
+        const radius = rand(82, 280);
+        const cloud = makeCloud(rand(.8, 2.3), i % 3 === 0 ? 2 : i % 2);
+        cloud.position.set(Math.cos(angle) * radius, rand(6, 105), Math.sin(angle) * radius);
+        cloud.rotation.y = rand(0, TAU);
+        cloud.userData.drift = rand(.16, .65);
+        cloud.userData.startAngle = angle;
+        cloud.userData.radius = radius;
+        clouds.add(cloud);
+      }
+      group.add(clouds);
+
+      // Haze wisps close to the flight box.
+      const wisps = new THREE.Group();
+      for (let i = 0; i < 15; i++) {
+        const material = new THREE.SpriteMaterial({
+          map: FX.cloud,
+          color: i % 4 === 0 ? 0xead9c8 : 0xf7f1e8,
+          transparent: true,
+          opacity: rand(.07, .19),
+          depthWrite: false,
+          rotation: rand(0, TAU)
+        });
+        const wisp = new THREE.Sprite(material);
+        const size = rand(34, 92);
+        wisp.scale.set(size, size * rand(.24, .48), 1);
+        const angle = rand(0, TAU);
+        const radius = rand(62, 160);
+        wisp.position.set(Math.cos(angle) * radius, rand(6, 62), Math.sin(angle) * radius);
+        wisp.userData.drift = rand(.08, .3);
+        wisp.userData.angle = angle;
+        wisp.userData.radius = radius;
+        wisps.add(wisp);
+      }
+      group.add(wisps);
+
+      // Distant mountain ranges.
+      const ranges = new THREE.Group();
+      const ridgeMaterialNear = new THREE.MeshStandardMaterial({ color: 0x44555c, roughness: 1, metalness: .02, flatShading: true });
+      const ridgeMaterialFar = new THREE.MeshStandardMaterial({ color: 0x6a7379, roughness: 1, metalness: .02, flatShading: true });
+      for (let ringIndex = 0; ringIndex < 2; ringIndex++) {
+        const radius = ringIndex === 0 ? 520 : 720;
+        const count = ringIndex === 0 ? 28 : 22;
+        for (let i = 0; i < count; i++) {
+          const angle = (i / count) * TAU + rand(-.06, .06);
+          const height = rand(35, 110) * (ringIndex === 0 ? 1 : 1.35);
+          const mountain = new THREE.Mesh(new THREE.ConeGeometry(rand(55, 120), height, 4 + Math.floor(rand(0, 3))), ringIndex === 0 ? ridgeMaterialNear : ridgeMaterialFar);
+          mountain.position.set(Math.cos(angle) * radius, -32 + height / 2, Math.sin(angle) * radius);
+          mountain.rotation.y = rand(0, TAU);
+          mountain.rotation.z = rand(-.08, .08);
+          mountain.castShadow = false;
+          mountain.receiveShadow = false;
+          ranges.add(mountain);
+        }
+      }
+      group.add(ranges);
+
+      const cloudSea = meshOf(new THREE.CircleGeometry(840, 80), new THREE.MeshStandardMaterial({
+        color: 0xe5d8c9, roughness: 1, metalness: 0, envMapIntensity: .2
+      }), false);
+      cloudSea.rotation.x = -Math.PI / 2;
+      cloudSea.position.y = -43;
+      group.add(cloudSea);
+
+      for (let i = 0; i < 40; i++) {
+        const angle = rand(0, TAU);
+        const radius = rand(60, 480);
+        const puff = new THREE.Mesh(cloudGeometry, cloudMaterials[rand(0, 2) | 0]);
+        const size = rand(12, 38);
+        puff.scale.set(size * rand(1.2, 2.2), size * .35, size * rand(1, 1.8));
+        puff.position.set(Math.cos(angle) * radius, -38 + rand(-4, 6), Math.sin(angle) * radius);
+        group.add(puff);
+      }
+
+      const sunLight = new THREE.DirectionalLight(0xffd0a4, 3.4);
+      sunLight.position.set(-120, 150, -180);
+      sunLight.target.position.set(0, 34, 0);
+      group.add(sunLight, sunLight.target);
+
+      const fillLight = new THREE.DirectionalLight(0x8bc1d3, 1.6);
+      fillLight.position.set(140, 90, 150);
+      fillLight.target.position.set(0, 34, 0);
+      group.add(fillLight, fillLight.target);
+
+      const hemi = new THREE.HemisphereLight(0x9dc9d6, 0xa77d62, 1.55);
+      group.add(hemi);
+
+      const warmBounce = new THREE.PointLight(0xffa368, 35, 150, 2);
+      warmBounce.position.set(-40, 8, -40);
+      group.add(warmBounce);
+
+      group.userData.clouds = clouds;
+      group.userData.wisps = wisps;
+      group.userData.sun = sun;
+      group.userData.sunCore = sunCore;
+
+      return group;
+    }
+
+    /* ── aerial target drones ──────────────────────────────── */
+    function createDrone(mats) {
+      const group = new THREE.Group();
+      const body = meshOf(new THREE.OctahedronGeometry(.6, 0), mats.darkMetal);
+      body.scale.set(1.5, .8, .9);
+      group.add(body);
+
+      const wing = meshOf(new THREE.BoxGeometry(2.6, .055, .58), mats.hullDark);
+      wing.position.z = -.05;
+      group.add(wing);
+
+      const wingSweep = meshOf(new THREE.BoxGeometry(1.25, .04, .84), mats.hullPlain);
+      wingSweep.position.set(0, -.01, .35);
+      wingSweep.rotation.y = .1;
+      group.add(wingSweep);
+
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.25, .038, 7, 48), new THREE.MeshBasicMaterial({
+        color: 0xff5b33, transparent: true, opacity: .94, toneMapped: false
+      }));
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+
+      const halo = new THREE.Mesh(new THREE.TorusGeometry(1.02, .012, 5, 48), new THREE.MeshBasicMaterial({
+        color: 0xffc09a, transparent: true, opacity: .45, toneMapped: false
+      }));
+      halo.rotation.y = Math.PI / 2;
+      group.add(halo);
+
+      const core = new THREE.Mesh(new THREE.SphereGeometry(.17, 10, 7), mats.droneCore);
+      group.add(core);
+
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: FX.glow,
+        color: 0xff5b33,
+        transparent: true,
+        opacity: .42,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false
+      }));
+      glow.scale.setScalar(4.2);
+      group.add(glow);
+
+      const tail = meshOf(new THREE.BoxGeometry(.06, .6, .42), mats.darkMetal);
+      tail.position.set(0, .35, -.4);
+      group.add(tail);
+
+      group.traverse(object => {
+        if (object.isMesh) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        }
+      });
+      group.userData.alive = true;
+      group.userData.ring = ring;
+      group.userData.halo = halo;
+      group.userData.glow = glow;
+      return group;
+    }
+
+    function buildDrones(sky, mats) {
+      const positions = [
+        new THREE.Vector3(24, 47, -9),
+        new THREE.Vector3(-28, 27, 11),
+        new THREE.Vector3(19, 21, -27),
+        new THREE.Vector3(-25, 45, -24)
+      ];
+      const drones = positions.map((home, index) => {
+        const drone = createDrone(mats);
+        drone.position.copy(home);
+        drone.userData.home = home.clone();
+        drone.userData.phase = rand(0, TAU);
+        drone.userData.index = index;
+        drone.userData.alive = true;
+        sky.add(drone);
+        return drone;
+      });
+      return drones;
+    }
+
+    function updateEnvironment(dt, elapsed) {
+      if (!showroom || !sky) return;
+      const dust = showroom.userData.dust;
+      if (dust) dust.rotation.y += dt * .016;
+      const arcs = showroom.userData.arcs;
+      if (arcs) arcs.rotation.y += dt * .035;
+      if (sky.userData.clouds) {
+        sky.userData.clouds.children.forEach((cloud) => {
+          cloud.rotation.y += dt * .0035 * cloud.userData.drift;
+          const angle = cloud.userData.startAngle + Math.sin(elapsed * .02 + cloud.userData.drift) * .008;
+          cloud.position.x = Math.cos(angle) * cloud.userData.radius;
+          cloud.position.z = Math.sin(angle) * cloud.userData.radius;
+        });
+      }
+      if (sky.userData.wisps) {
+        sky.userData.wisps.children.forEach((wisp) => {
+          wisp.material.rotation += dt * .0008 * (wisp.userData.drift > .18 ? 1 : -1);
+          wisp.userData.angle += dt * wisp.userData.drift * .0007;
+          wisp.position.x = Math.cos(wisp.userData.angle) * wisp.userData.radius;
+          wisp.position.z = Math.sin(wisp.userData.angle) * wisp.userData.radius;
+        });
+      }
+      if (sky.userData.sun) sky.userData.sun.material.rotation += dt * .001;
+    }
+
+    function updateDrones(dt, elapsed) {
+      targets.forEach((drone, index) => {
+        if (!drone.userData.alive) return;
+        const phase = drone.userData.phase;
+        drone.rotation.y += dt * (.12 + index * .024);
+        drone.rotation.z = Math.sin(elapsed * .46 + phase) * .12;
+        drone.position.y = drone.userData.home.y + Math.sin(elapsed * .52 + phase) * 1.9;
+        drone.position.x = drone.userData.home.x + Math.sin(elapsed * .19 + phase) * 1.2;
+        drone.userData.ring.rotation.z += dt * .5;
+        drone.userData.halo.rotation.x += dt * .28;
+        const pulse = 1 + Math.sin(elapsed * 2.2 + phase) * .07;
+        drone.userData.ring.scale.setScalar(pulse);
+        drone.userData.glow.material.opacity = .3 + Math.sin(elapsed * 2 + phase) * .1;
+      });
+    }
+
+    // ===================== 04 · EXPERIENCE =====================
+    const dom = {
+      loader: document.getElementById('loader'),
+      loadBar: document.getElementById('loadBar'),
+      loadText: document.getElementById('loadText'),
+      fallback: document.getElementById('fallback'),
+      toast: document.getElementById('toast'),
+      toastText: document.getElementById('toastText'),
+      hotspot: document.getElementById('hotspot'),
+      flash: document.getElementById('screenFlash'),
+      stateText: document.getElementById('stateText'),
+      canopyText: document.getElementById('canopyText'),
+      sysStatusText: document.getElementById('sysStatusText'),
+      targetsLeft: document.getElementById('targetsLeft'),
+      targetPips: document.getElementById('targetPips'),
+      weaponPanel: document.getElementById('weaponPanel'),
+      hudManeuver: document.getElementById('hudManeuver'),
+      hudSpeed: document.getElementById('hudSpeed'),
+      hudAltitude: document.getElementById('hudAltitude'),
+      hudG: document.getElementById('hudG'),
+      hudHeading: document.getElementById('hudHeading'),
+      explodeLabel: document.querySelector('[data-action="explode"] strong'),
+      explodeHint: document.querySelector('[data-action="explode"] small'),
+      annihilateLabel: document.querySelector('[data-action="annihilate"] strong'),
+      annihilateHint: document.querySelector('[data-action="annihilate"] small'),
+      cockpitLabel: document.querySelector('[data-action="cockpit"] strong'),
+      cockpitHint: document.querySelector('[data-action="cockpit"] small')
+    };
+
+    const state = {
+      mode: 'showroom',
+      canopyOpen: false,
+      canopyAngle: 0,
+      exploded: false,
+      explodeAge: 0,
+      rebuilding: null,
+      loop: true,
+      loopMix: 1,
+      jiggle: true,
+      autoOrbit: true,
+      flightTime: 0,
+      targetsDown: 0,
+      salvoActive: false,
+      attackFocus: 0,
+      shake: 0,
+      pendingSalvo: false,
+      hudTick: 0,
+      secondaryBurstA: false,
+      secondaryBurstB: false,
+      interactionAt: -10
+    };
+
+    const cameraRig = {
+      az: .63,
+      el: .205,
+      distance: 16.6,
+      flightDistance: 27,
+      dragging: false,
+      pointerX: 0,
+      pointerY: 0,
+      smoothedTarget: new THREE.Vector3(0, 2.6, 0),
+      initialised: false
+    };
+
+    const projectiles = [];
+    const trails = [];
+    const FLIGHT_CENTER = new THREE.Vector3(0, 38, 0);
+    const UP = new THREE.Vector3(0, 1, 0);
+    const Z_AXIS = new THREE.Vector3(0, 0, 1);
+
+    let renderer, scene, camera, composer, renderPass, bloomPass, materials;
+    let showroom, sky, airframe;
+    let targets = [];
+    let baseTransforms = [];
+    let fragmentMotions = [];
+    let clock;
+    let elapsed = 0;
+    let toastTimer = 0;
+    let bootStarted = false;
+    let hudBars = [];
+    let weaponPanelTimer = 0;
+
+    const _loopPos = new THREE.Vector3();
+    const _loopVel = new THREE.Vector3();
+    const _cruisePos = new THREE.Vector3();
+    const _cruiseVel = new THREE.Vector3();
+    const _desiredPosition = new THREE.Vector3();
+    const _desiredQuat = new THREE.Quaternion();
+    const _loopQuat = new THREE.Quaternion();
+    const _cruiseQuat = new THREE.Quaternion();
+    const _jiggleQuat = new THREE.Quaternion();
+    const _forward = new THREE.Vector3();
+    const _up = new THREE.Vector3();
+    const _right = new THREE.Vector3();
+    const _basis = new THREE.Matrix4();
+    const _euler = new THREE.Euler();
+    const _camDesired = new THREE.Vector3();
+    const _camTarget = new THREE.Vector3();
+    const _lookPoint = new THREE.Vector3();
+    const _projection = new THREE.Vector3();
+    const _worldCenter = new THREE.Vector3();
+    const _tempVector = new THREE.Vector3();
+    const _missileStart = new THREE.Vector3();
+    const _missileControl = new THREE.Vector3();
+    const _missilePoint = new THREE.Vector3();
+    const _missileTarget = new THREE.Vector3();
+    const _missilePrevious = new THREE.Vector3();
+    const _missileDirection = new THREE.Vector3();
+    const _bankQuat = new THREE.Quaternion();
+
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function setLoadProgress(percent, text) {
+      if (!dom.loadBar) return;
+      dom.loadBar.style.width = `${clamp(percent, 0, 100)}%`;
+      if (text && dom.loadText) dom.loadText.textContent = text;
+    }
+
+    function screenFlash(danger = false) {
+      if (!dom.flash) return;
+      dom.flash.classList.remove('is-flashing', 'is-danger');
+      // Force a style flush so the animation can retrigger.
+      void dom.flash.offsetWidth;
+      dom.flash.classList.add('is-flashing');
+      if (danger) dom.flash.classList.add('is-danger');
+    }
+
+    function showToast(message, danger = false) {
+      if (!dom.toast) return;
+      dom.toastText.textContent = message;
+      dom.toast.classList.add('is-visible');
+      dom.toast.classList.toggle('is-danger', !!danger);
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => dom.toast.classList.remove('is-visible'), 3200);
+    }
+
+    function setOrientation(forward, up, bank, target) {
+      _forward.copy(forward).normalize();
+      _up.copy(up).normalize();
+      _right.crossVectors(_up, _forward);
+      if (_right.lengthSq() < .00001) _right.set(1, 0, 0);
+      _right.normalize();
+      _up.crossVectors(_forward, _right).normalize();
+      _basis.makeBasis(_right, _up, _forward);
+      target.setFromRotationMatrix(_basis);
+      if (Math.abs(bank) > .00001) {
+        _bankQuat.setFromAxisAngle(Z_AXIS, bank);
+        target.multiply(_bankQuat);
+      }
+      return target;
+    }
+
+    function createRenderer() {
+      const canvas = document.getElementById('stage');
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: false,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.innerWidth < 850 ? 1.5 : 1.8));
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.06;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+
+    function setupComposer() {
+      const canPostProcess = window.innerWidth > 760 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (!canPostProcess) {
+        composer = null;
+        return;
+      }
+      composer = new EffectComposer(renderer);
+      renderPass = new RenderPass(scene, camera);
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        .42,
+        .52,
+        .82
+      );
+      composer.addPass(renderPass);
+      composer.addPass(bloomPass);
+      composer.addPass(new OutputPass());
+      composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
+      composer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    async function init() {
+      if (bootStarted) return;
+      bootStarted = true;
+      try {
+        setLoadProgress(12, 'Initialising renderer');
+        await wait(130);
+        initFXTextures();
+        materials = createMaterials();
+        createRenderer();
+
+        scene = new THREE.Scene();
+        scene.background = materials.textures.studioBackdrop;
+        scene.fog = new THREE.FogExp2(0x080c0d, .021);
+
+        camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, .08, 2400);
+        camera.position.set(9.4, 6.4, 14.7);
+        camera.lookAt(0, 2.6, 0);
+
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const room = new RoomEnvironment();
+        scene.environment = pmrem.fromScene(room, .04).texture;
+        scene.environmentIntensity = .44;
+        room.traverse((object) => {
+          if (object.geometry) object.geometry.dispose();
+          if (object.material) {
+            const materialsArray = Array.isArray(object.material) ? object.material : [object.material];
+            materialsArray.forEach(material => material.dispose());
+          }
+        });
+        pmrem.dispose();
+
+        setLoadProgress(35, 'Lofting airframe geometry');
+        await wait(180);
+        airframe = buildMiG29(materials);
+        airframe.position.set(0, AIRCRAFT.showroomY, 0);
+        airframe.rotation.y = -.24;
+        scene.add(airframe);
+        baseTransforms = [];
+        airframe.userData.parts.forEach((part) => {
+          baseTransforms.push({ obj: part, position: part.position.clone(), quaternion: part.quaternion.clone() });
+        });
+
+        setLoadProgress(61, 'Building showroom environment');
+        await wait(160);
+        showroom = buildShowroom(materials);
+        scene.add(showroom);
+
+        setLoadProgress(79, 'Opening the flight envelope');
+        await wait(160);
+        sky = buildSky(materials);
+        sky.visible = false;
+        scene.add(sky);
+        targets = buildDrones(sky, materials);
+
+        trails.push(new FlightTrail(sky, 0xffdcb0));
+        trails.push(new FlightTrail(sky, 0xffcf9d));
+        trails.forEach(trail => { trail.visible = false; });
+
+        setupComposer();
+        cameraRig.distance = defaultShowroomDistance();
+        cameraRig.flightDistance = defaultFlightDistance();
+        hudBars = Array.from(document.querySelectorAll('.readout .bars'));
+        createTargetPips();
+        bindInterface();
+        applyModeContent('showroom');
+        updateUI();
+        syncTargetUI();
+
+        setLoadProgress(100, 'Airframe ready');
+        setDefaultCamera();
+        clock = new THREE.Clock();
+        renderer.setAnimationLoop(animate);
+        onResize();
+
+        await wait(540);
+        dom.loader.classList.add('is-done');
+        window.__fulcrumBooted = true;
+      } catch (error) {
+        console.error('FULCRUM boot failure:', error);
+        window.__fulcrumBooted = true;
+        if (dom.loader) dom.loader.classList.add('is-done');
+        if (dom.fallback) dom.fallback.classList.add('is-visible');
+      }
+    }
+
+    function defaultShowroomDistance() {
+      const aspect = window.innerWidth / window.innerHeight;
+      if (aspect < .64) return 28;
+      if (aspect < .85) return 23.5;
+      if (window.innerWidth < 900) return 20;
+      return 16.6;
+    }
+
+    function defaultFlightDistance() {
+      const aspect = window.innerWidth / window.innerHeight;
+      if (aspect < .64) return 35;
+      if (aspect < .9) return 31;
+      return 27;
+    }
+
+    function setDefaultCamera() {
+      if (!camera) return;
+      const frameOffset = window.innerWidth > 980 ? -.75 : 0;
+      _camTarget.set(frameOffset, AIRCRAFT.showroomY + .45, 0);
+      _camDesired.set(
+        Math.sin(cameraRig.az) * Math.cos(cameraRig.el) * cameraRig.distance,
+        _camTarget.y + Math.sin(cameraRig.el) * cameraRig.distance,
+        Math.cos(cameraRig.az) * Math.cos(cameraRig.el) * cameraRig.distance
+      );
+      camera.position.copy(_camDesired);
+      cameraRig.smoothedTarget.copy(_camTarget);
+      camera.lookAt(cameraRig.smoothedTarget);
+      cameraRig.initialised = true;
+    }
+
+    function createTargetPips() {
+      if (!dom.targetPips) return;
+      dom.targetPips.innerHTML = targets.map(() => '<span class="pip"></span>').join('');
+      syncTargetUI();
+    }
+
+    function syncTargetUI() {
+      if (!dom.targetsLeft) return;
+      dom.targetsLeft.textContent = String(Math.max(0, targets.length - state.targetsDown)).padStart(2, '0');
+      dom.targetPips?.querySelectorAll('.pip').forEach((pip, index) => {
+        pip.classList.toggle('down', index < state.targetsDown);
+      });
+      dom.weaponPanel?.classList.toggle('panel-hit', state.targetsDown === targets.length);
+    }
+
+    function updateUI() {
+      if (!dom.stateText) return;
+      document.body.classList.toggle('mode-flight', state.mode === 'flight');
+      document.body.classList.toggle('mode-showroom', state.mode === 'showroom');
+
+      document.querySelectorAll('[data-mode]').forEach((button) => {
+        button.classList.toggle('is-active', button.dataset.mode === state.mode);
+      });
+
+      const orbitButton = document.querySelector('[data-action="orbit"]');
+      orbitButton?.classList.toggle('is-active', state.autoOrbit);
+      orbitButton?.setAttribute('aria-pressed', String(state.autoOrbit));
+
+      const cockpitButton = document.querySelector('[data-action="cockpit"]');
+      cockpitButton?.classList.toggle('is-active', state.canopyOpen);
+      cockpitButton?.setAttribute('aria-pressed', String(state.canopyOpen));
+
+      const explodeButton = document.querySelector('[data-action="explode"]');
+      explodeButton?.classList.toggle('is-active', state.exploded || !!state.rebuilding);
+      explodeButton?.setAttribute('aria-pressed', String(state.exploded || !!state.rebuilding));
+
+      const annihilateButton = document.querySelector('[data-action="annihilate"]');
+      annihilateButton?.classList.toggle('is-active', state.salvoActive);
+      annihilateButton?.setAttribute('aria-pressed', String(state.salvoActive));
+
+      if (dom.explodeLabel) dom.explodeLabel.textContent = (state.exploded || state.rebuilding) ? 'Rebuild' : 'Explode';
+      if (dom.explodeHint) dom.explodeHint.textContent = (state.exploded || state.rebuilding) ? 'E · restore airframe' : 'E · fracture airframe';
+      if (dom.cockpitLabel) dom.cockpitLabel.textContent = state.canopyOpen ? 'Close canopy' : 'Canopy';
+      if (dom.cockpitHint) dom.cockpitHint.textContent = state.canopyOpen ? 'C · seal cockpit' : 'C · open cockpit';
+      if (dom.annihilateLabel) dom.annihilateLabel.textContent = state.salvoActive ? 'Salvo away' : 'Annihilate';
+      if (dom.annihilateHint) dom.annihilateHint.textContent = state.targetsDown >= targets.length ? 'A · restore targets' : 'A · launch salvo';
+
+      if (dom.stateText) {
+        dom.stateText.textContent = state.rebuilding ? 'Reconstructing' : state.exploded ? 'Fractured' : state.mode === 'flight' ? 'Airborne' : 'Parked';
+        dom.stateText.classList.toggle('hot', state.exploded || state.mode === 'flight');
+      }
+      if (dom.canopyText) dom.canopyText.textContent = state.canopyOpen ? 'Open' : 'Sealed';
+      if (dom.sysStatusText) dom.sysStatusText.textContent = state.mode === 'flight' ? 'Combat sortie live' : 'Simulation live';
+      if (dom.hudManeuver) dom.hudManeuver.textContent = state.loop ? 'Vertical loop' : 'Banked circuit';
+
+      document.querySelectorAll('[data-toggle]').forEach((button) => {
+        const property = button.dataset.toggle;
+        const active = !!state[property];
+        button.classList.toggle('is-on', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+    }
+
+    function applyModeContent(mode) {
+      state.mode = mode;
+      if (!showroom || !sky || !airframe) return;
+      const isFlight = mode === 'flight';
+      showroom.visible = !isFlight;
+      sky.visible = isFlight;
+      scene.background = isFlight ? new THREE.Color(0x17323b) : materials.textures.studioBackdrop;
+      scene.fog = isFlight ? new THREE.FogExp2(0xc7b3a1, .00135) : new THREE.FogExp2(0x080c0d, .021);
+      renderer.toneMappingExposure = isFlight ? 1.02 : 1.06;
+
+      airframe.userData.gear.forEach(gear => { gear.visible = !isFlight; });
+      airframe.userData.afterburners.forEach(flame => { flame.visible = isFlight; });
+      trails.forEach(trail => { trail.visible = isFlight; });
+      if (isFlight) trails.forEach(trail => trail.reset());
+
+      state.canopyOpen = false;
+      state.canopyAngle = 0;
+      state.attackFocus = 0;
+      resetAirspace();
+
+      // Landing in the gallery is a clean cut: put the airframe back on its
+      // marks immediately, then let the camera perform the transition.
+      if (!isFlight) {
+        airframe.position.set(0, AIRCRAFT.showroomY, 0);
+        _euler.set(0, -.24, 0, 'XYZ');
+        _desiredQuat.setFromEuler(_euler);
+        airframe.quaternion.copy(_desiredQuat);
+        airframe.userData.canopyPivot.rotation.x = 0;
+      }
+      cameraRig.el = isFlight ? clamp(cameraRig.el, .09, .55) : .205;
+      updateUI();
+    }
+
+    function setMode(mode, silent = false) {
+      if (!renderer || !airframe) return;
+      if (state.mode === mode && !silent) return;
+      if (state.exploded || state.rebuilding) reconstructAirframe(true);
+      applyModeContent(mode);
+      if (!silent) {
+        screenFlash(false);
+        showToast(mode === 'flight'
+          ? 'Sortie launched · loop + jiggle active'
+          : 'Showroom restored · airframe stable');
+      }
+    }
+
+    function resetAirspace() {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        scene.remove(projectiles[i].group);
+        projectiles.splice(i, 1);
+      }
+      state.salvoActive = false;
+      state.pendingSalvo = false;
+      state.targetsDown = 0;
+      state.attackFocus = 0;
+      if (!airframe) return;
+      airframe.userData.missiles.forEach(missile => { missile.visible = true; });
+      targets.forEach((drone) => {
+        drone.userData.alive = true;
+        drone.visible = true;
+        drone.scale.setScalar(1);
+        drone.position.copy(drone.userData.home);
+        drone.rotation.set(0, 0, 0);
+      });
+      if (dom.targetPips) {
+        dom.targetPips.querySelectorAll('.pip').forEach(pip => pip.classList.remove('down'));
+      }
+      syncTargetUI();
+      updateUI();
+    }
+
+    function toggleCanopy(force) {
+      if (state.exploded || state.rebuilding) {
+        showToast('Canopy unavailable — airframe fracture active', true);
+        return;
+      }
+      if (state.mode === 'flight' && !state.canopyOpen) {
+        showToast('Canopy locked by flight interlock · return to showroom to inspect', true);
+        return;
+      }
+      state.canopyOpen = typeof force === 'boolean' ? force : !state.canopyOpen;
+      showToast(state.canopyOpen ? 'K-36D canopy unlocked · cockpit live' : 'Canopy sealed · pressurisation nominal');
+      updateUI();
+    }
+
+    function toggleOrbit() {
+      state.autoOrbit = !state.autoOrbit;
+      updateUI();
+      showToast(state.autoOrbit ? 'Orbit camera engaged' : 'Orbit camera parked');
+    }
+
+    function explodeAirframe() {
+      if (state.rebuilding) {
+        showToast('Reconstruction already in progress');
+        return;
+      }
+      if (state.exploded) {
+        reconstructAirframe(false);
+        return;
+      }
+      state.canopyOpen = false;
+      state.canopyAngle = 0;
+      airframe.userData.canopyPivot.rotation.x = 0;
+      state.exploded = true;
+      state.explodeAge = 0;
+      state.secondaryBurstA = false;
+      state.secondaryBurstB = false;
+      state.shake = Math.max(state.shake, 1.15);
+      airframe.userData.afterburners.forEach(flame => { flame.visible = false; });
+      trails.forEach(trail => { trail.visible = false; });
+
+      fragmentMotions = [];
+      airframe.userData.parts.forEach((part, index) => {
+        const box = new THREE.Box3().setFromObject(part);
+        if (box.isEmpty()) return;
+        box.getCenter(_worldCenter);
+        const localCenter = airframe.worldToLocal(_worldCenter.clone());
+        const direction = localCenter.lengthSq() > .02 ? localCenter.clone().normalize() : new THREE.Vector3(rand(-1, 1), 1, rand(-1, 1)).normalize();
+        const speed = rand(2.0, 4.8);
+        const outward = direction.multiplyScalar(speed * (.74 + Math.random() * .55));
+        outward.x += rand(-1.4, 1.4);
+        outward.y = Math.abs(outward.y) + rand(.35, 2.3);
+        outward.z += rand(-1.2, 1.2);
+        fragmentMotions.push({
+          part,
+          basePosition: baseTransforms.find(item => item.obj === part)?.position.clone() || part.position.clone(),
+          baseQuaternion: baseTransforms.find(item => item.obj === part)?.quaternion.clone() || part.quaternion.clone(),
+          startPosition: part.position.clone(),
+          startQuaternion: part.quaternion.clone(),
+          velocity: outward,
+          spin: new THREE.Vector3(rand(-2.0, 2.0), rand(-2.5, 2.5), rand(-2.0, 2.0)),
+          spinBias: new THREE.Vector3(rand(-.4, .4), rand(-.4, .4), rand(-.4, .4)),
+          index
+        });
+      });
+
+      const center = new THREE.Vector3(0, .15, 0);
+      airframe.localToWorld(center);
+      spawnBurst(center, { scale: 2.35, sparks: 135, smoke: 17, color: 0xffbb82, life: 2.15 });
+      screenFlash(true);
+      updateUI();
+      showToast(`Airframe fracture · ${fragmentMotions.length} parts separated`, true);
+    }
+
+    function reconstructAirframe(instant = false) {
+      if (!state.exploded && !state.rebuilding) return;
+      if (instant) {
+        baseTransforms.forEach(({ obj, position, quaternion }) => {
+          obj.position.copy(position);
+          obj.quaternion.copy(quaternion);
+        });
+        state.exploded = false;
+        state.explodeAge = 0;
+        state.rebuilding = null;
+        state.canopyAngle = 0;
+        airframe.userData.gear.forEach(gear => { gear.visible = state.mode === 'showroom'; });
+        airframe.userData.afterburners.forEach(flame => { flame.visible = state.mode === 'flight'; });
+        trails.forEach(trail => { trail.visible = state.mode === 'flight'; });
+        updateUI();
+        return;
+      }
+      state.rebuilding = {
+        t: 0,
+        records: baseTransforms.map(({ obj, position, quaternion }) => ({
+          obj,
+          basePosition: position.clone(),
+          baseQuaternion: quaternion.clone(),
+          startPosition: obj.position.clone(),
+          startQuaternion: obj.quaternion.clone()
+        }))
+      };
+      state.exploded = false;
+      state.explodeAge = 0;
+      state.canopyAngle = 0;
+      screenFlash(false);
+      updateUI();
+      showToast('Airframe reconstruction · magnetic recall engaged');
+    }
+
+    function updateExplosion(dt) {
+      if (!state.exploded) return;
+      state.explodeAge += dt;
+      const age = state.explodeAge;
+      const travel = 1 - Math.exp(-1.5 * age);
+      const floorLimit = .34 - AIRCRAFT.showroomY;
+
+      fragmentMotions.forEach((motion) => {
+        const part = motion.part;
+        part.position.copy(motion.basePosition).addScaledVector(motion.velocity, travel * 1.62);
+        const fall = Math.max(0, age - .5);
+        part.position.y -= fall * fall * .55;
+        if (state.mode === 'showroom') part.position.y = Math.max(part.position.y, floorLimit);
+        part.quaternion.copy(motion.baseQuaternion);
+        part.rotateX(motion.spin.x * age + motion.spinBias.x * age * age);
+        part.rotateY(motion.spin.y * age + motion.spinBias.y * age * age);
+        part.rotateZ(motion.spin.z * age + motion.spinBias.z * age * age);
+      });
+
+      if (!state.secondaryBurstA && age > .12) {
+        state.secondaryBurstA = true;
+        _tempVector.set(rand(-1.5, 1.5), .6, rand(-1.5, 1.5));
+        airframe.localToWorld(_tempVector);
+        spawnBurst(_tempVector, { scale: .9, sparks: 30, smoke: 5, color: 0xffc89c, life: 1.2 });
+      }
+      if (!state.secondaryBurstB && age > .34) {
+        state.secondaryBurstB = true;
+        _tempVector.set(rand(-2, 2), .2, rand(-2, 2));
+        airframe.localToWorld(_tempVector);
+        spawnBurst(_tempVector, { scale: 1.1, sparks: 35, smoke: 6, color: 0xffa86d, life: 1.4 });
+      }
+    }
+
+    function updateReconstruction(dt) {
+      if (!state.rebuilding) return;
+      state.rebuilding.t += dt * 1.25;
+      const t = easeInOut(clamp01(state.rebuilding.t));
+      state.rebuilding.records.forEach((record) => {
+        record.obj.position.lerpVectors(record.startPosition, record.basePosition, t);
+        record.obj.quaternion.copy(record.startQuaternion).slerp(record.baseQuaternion, t);
+      });
+      if (state.rebuilding.t >= 1) {
+        state.rebuilding.records.forEach((record) => {
+          record.obj.position.copy(record.basePosition);
+          record.obj.quaternion.copy(record.baseQuaternion);
+        });
+        state.rebuilding = null;
+        airframe.userData.gear.forEach(gear => { gear.visible = state.mode === 'showroom'; });
+        airframe.userData.afterburners.forEach(flame => { flame.visible = state.mode === 'flight'; });
+        trails.forEach(trail => { trail.visible = state.mode === 'flight'; });
+        screenFlash(false);
+        updateUI();
+        showToast('Airframe reassembled · all stations nominal');
+      }
+    }
+
+    function updateAirframe(dt) {
+      if (!airframe) return;
+      if (state.exploded) {
+        updateExplosion(dt);
+        return;
+      }
+      if (state.rebuilding) {
+        updateReconstruction(dt);
+        return;
+      }
+
+      state.canopyAngle = damp(state.canopyAngle, state.canopyOpen && state.mode === 'showroom' ? -1.08 : 0, 5.0, dt);
+      airframe.userData.canopyPivot.rotation.x = state.canopyAngle;
+
+      if (state.mode === 'showroom') {
+        _desiredPosition.set(0, AIRCRAFT.showroomY, 0);
+        _euler.set(0, -.24, 0, 'XYZ');
+        _desiredQuat.setFromEuler(_euler);
+      } else {
+        state.flightTime += dt;
+        const t = state.flightTime * .54;
+        const loopRadius = 16.6;
+
+        _loopPos.set(
+          Math.sin(t) * loopRadius,
+          FLIGHT_CENTER.y - Math.cos(t) * loopRadius,
+          Math.sin(t * .5) * 3.2
+        );
+        _loopVel.set(
+          Math.cos(t) * loopRadius,
+          Math.sin(t) * loopRadius,
+          Math.cos(t * .5) * 1.6
+        );
+
+        const b = t * .60;
+        _cruisePos.set(
+          Math.sin(b) * 27,
+          FLIGHT_CENTER.y + 4 + Math.sin(b * 2) * 3.2,
+          5 + Math.cos(b) * 16
+        );
+        _cruiseVel.set(
+          Math.cos(b) * 27 * .60,
+          Math.cos(b * 2) * 3.2 * 3 * .60,
+          -Math.sin(b) * 16 * .60
+        );
+
+        state.loopMix = damp(state.loopMix, state.loop ? 1 : 0, 1.9, dt);
+        _desiredPosition.copy(_loopPos).lerp(_cruisePos, 1 - state.loopMix);
+
+        _up.copy(FLIGHT_CENTER).sub(_loopPos).normalize();
+        setOrientation(_loopVel, _up, 0, _loopQuat);
+        _up.set(0, 1, 0);
+        setOrientation(_cruiseVel, _up, Math.sin(b) * .22, _cruiseQuat);
+        _desiredQuat.copy(_loopQuat).slerp(_cruiseQuat, 1 - state.loopMix);
+
+        if (state.jiggle) {
+          _euler.set(
+            Math.sin(elapsed * 31) * .007 + Math.sin(elapsed * 7.1) * .011,
+            Math.sin(elapsed * 27) * .004,
+            Math.sin(elapsed * 19) * .028 + Math.sin(elapsed * 5.4) * .013,
+            'XYZ'
+          );
+          _jiggleQuat.setFromEuler(_euler);
+          _desiredQuat.multiply(_jiggleQuat);
+        }
+
+        airframe.userData.afterburners.forEach((flame, index) => {
+          flame.visible = true;
+          flame.scale.set(
+            .94 + Math.sin(elapsed * 22 + index) * .08 + Math.random() * .04,
+            .94 + Math.cos(elapsed * 17 + index) * .08,
+            .9 + Math.random() * .23
+          );
+        });
+        materials.flameOuter.opacity = .38 + Math.sin(elapsed * 18) * .1;
+        materials.flameInner.opacity = .5 + Math.cos(elapsed * 22) * .16;
+
+        const leftWing = trails[0];
+        const rightWing = trails[1];
+        if (leftWing && rightWing) {
+          _tempVector.set(-3.45, .02, -1.8).applyQuaternion(airframe.quaternion).add(airframe.position);
+          leftWing.push(_tempVector);
+          _tempVector.set(3.45, .02, -1.8).applyQuaternion(airframe.quaternion).add(airframe.position);
+          rightWing.push(_tempVector);
+        }
+      }
+
+      const lambda = state.mode === 'flight' ? 5.4 : 2.8;
+      airframe.position.x = damp(airframe.position.x, _desiredPosition.x, lambda, dt);
+      airframe.position.y = damp(airframe.position.y, _desiredPosition.y, lambda, dt);
+      airframe.position.z = damp(airframe.position.z, _desiredPosition.z, lambda, dt);
+      airframe.quaternion.slerp(_desiredQuat, 1 - Math.exp(-(state.mode === 'flight' ? 7.0 : 3.2) * dt));
+    }
+
+    function fireSalvo() {
+      if (!airframe || !targets.length) return;
+      if (state.exploded || state.rebuilding) {
+        showToast('Airframe unstable — rebuild before launch', true);
+        return;
+      }
+      if (projectiles.length) {
+        showToast('Salvo already in flight');
+        return;
+      }
+      const liveTargets = targets.filter(target => target.userData.alive);
+      if (!liveTargets.length) {
+        resetAirspace();
+        showToast('New target set restored · acquiring lock');
+        setTimeout(() => { if (state.mode === 'flight') fireSalvo(); }, 600);
+        return;
+      }
+      const availableMissiles = airframe.userData.missiles.filter(missile => missile.visible);
+      if (!availableMissiles.length) {
+        airframe.userData.missiles.forEach(missile => { missile.visible = true; });
+        showToast('Pylons rearmed · salvo ready');
+        return;
+      }
+
+      liveTargets.forEach((target, index) => {
+        const source = availableMissiles[index];
+        if (!source) return;
+        source.getWorldPosition(_missileStart);
+        source.visible = false;
+        const missile = createMissile(materials, 1.9, .085);
+        missile.scale.setScalar(.92);
+        missile.position.copy(_missileStart);
+        missile.visible = false;
+        const exhaust = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: FX.glow,
+          color: 0xffc08a,
+          transparent: true,
+          opacity: .9,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          toneMapped: false
+        }));
+        exhaust.scale.setScalar(1.55);
+        exhaust.position.z = -1.2;
+        missile.add(exhaust);
+        scene.add(missile);
+        projectiles.push({
+          group: missile,
+          from: _missileStart.clone(),
+          target,
+          age: 0,
+          delay: .18 + index * .32,
+          duration: 1.18 + index * .06,
+          started: false,
+          previous: _missileStart.clone()
+        });
+      });
+
+      state.salvoActive = true;
+      state.shake = Math.max(state.shake, .35);
+      updateUI();
+      screenFlash(false);
+      showToast(`Missiles away · ${liveTargets.length} targets locked`, true);
+    }
+
+    function destroyTarget(target, index) {
+      if (!target.userData.alive) return;
+      target.userData.alive = false;
+      target.visible = false;
+      target.getWorldPosition(_tempVector);
+      spawnBurst(_tempVector.clone(), { scale: 1.55, sparks: 76, smoke: 10, color: 0xffa468, life: 1.7 });
+      state.targetsDown = Math.min(targets.length, state.targetsDown + 1);
+      state.shake = Math.max(state.shake, .82);
+      screenFlash(true);
+      syncTargetUI();
+      if (dom.weaponPanel) {
+        dom.weaponPanel.classList.remove('panel-hit');
+        void dom.weaponPanel.offsetWidth;
+        dom.weaponPanel.classList.add('panel-hit');
+        clearTimeout(weaponPanelTimer);
+        weaponPanelTimer = setTimeout(() => dom.weaponPanel.classList.remove('panel-hit'), 620);
+      }
+      showToast(`Target 0${target.userData.index + 1} neutralised · ${state.targetsDown} / ${targets.length}`, true);
+      if (state.targetsDown >= targets.length) {
+        state.salvoActive = false;
+        state.attackFocus = 0;
+        setTimeout(() => {
+          if (state.mode === 'flight') showToast('Airspace clear · all targets neutralised', true);
+        }, 430);
+      }
+      updateUI();
+    }
+
+    function updateProjectiles(dt) {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const projectile = projectiles[i];
+        projectile.age += dt;
+        if (projectile.age < projectile.delay) continue;
+        if (!projectile.started) {
+          projectile.started = true;
+          projectile.group.visible = true;
+          spawnBurst(projectile.from.clone(), { scale: .4, sparks: 15, smoke: 2, color: 0xffd0a0, life: .8 });
+        }
+        if (!projectile.target.userData.alive) {
+          scene.remove(projectile.group);
+          projectiles.splice(i, 1);
+          continue;
+        }
+
+        const progress = clamp01((projectile.age - projectile.delay) / projectile.duration);
+        projectile.target.getWorldPosition(_missileTarget);
+        _missileControl.copy(projectile.from).lerp(_missileTarget, .5);
+        _missileControl.y += 5.2 + projectile.from.distanceTo(_missileTarget) * .11;
+        _missileControl.x += rand(-.14, .14);
+
+        const oneMinus = 1 - progress;
+        _missilePrevious.copy(projectile.group.position);
+        _missilePoint.set(
+          oneMinus * oneMinus * projectile.from.x + 2 * oneMinus * progress * _missileControl.x + progress * progress * _missileTarget.x,
+          oneMinus * oneMinus * projectile.from.y + 2 * oneMinus * progress * _missileControl.y + progress * progress * _missileTarget.y,
+          oneMinus * oneMinus * projectile.from.z + 2 * oneMinus * progress * _missileControl.z + progress * progress * _missileTarget.z
+        );
+        projectile.group.position.copy(_missilePoint);
+        _missileDirection.copy(_missilePoint).sub(_missilePrevious);
+        if (_missileDirection.lengthSq() > .00002) {
+          _missileDirection.normalize();
+          projectile.group.quaternion.setFromUnitVectors(Z_AXIS, _missileDirection);
+        }
+
+        if (progress >= 1) {
+          destroyTarget(projectile.target, projectile.target.userData.index);
+          scene.remove(projectile.group);
+          projectiles.splice(i, 1);
+        }
+      }
+      if (!projectiles.length && state.salvoActive && state.targetsDown < targets.length) {
+        state.salvoActive = false;
+        updateUI();
+      }
+    }
+
+    function handleAnnihilate() {
+      if (state.exploded || state.rebuilding) {
+        showToast('Airframe fractured — rebuild before weapons release', true);
+        return;
+      }
+      if (projectiles.length) {
+        showToast('Salvo already in flight');
+        return;
+      }
+      if (state.mode !== 'flight') {
+        setMode('flight');
+        if (!state.pendingSalvo) {
+          state.pendingSalvo = true;
+          showToast('Transit to combat airspace · weapons free');
+          setTimeout(() => {
+            state.pendingSalvo = false;
+            if (state.mode === 'flight') fireSalvo();
+          }, 1050);
+        }
+        return;
+      }
+      fireSalvo();
+    }
+
+    function updateCamera(dt) {
+      if (!camera) return;
+      const now = performance.now();
+      const explosionZoom = state.exploded ? 5.5 : state.rebuilding ? 2.2 : 0;
+      if (state.mode === 'showroom') {
+        if (state.autoOrbit && !cameraRig.dragging && now - state.interactionAt > 1700) cameraRig.az += dt * .055;
+        _camTarget.set(window.innerWidth > 980 ? -.75 : 0, AIRCRAFT.showroomY + .45, 0);
+        const showroomDistance = cameraRig.distance + explosionZoom * .76;
+        _camDesired.set(
+          Math.sin(cameraRig.az) * Math.cos(cameraRig.el) * showroomDistance,
+          _camTarget.y + Math.sin(cameraRig.el) * showroomDistance,
+          Math.cos(cameraRig.az) * Math.cos(cameraRig.el) * showroomDistance
+        );
+      } else {
+        const drift = state.autoOrbit ? Math.sin(state.flightTime * .11) * .13 : 0;
+        const az = cameraRig.az + drift;
+        const distance = cameraRig.flightDistance + state.attackFocus * 17 + explosionZoom;
+        const el = cameraRig.el;
+        _camTarget.copy(airframe.position).lerp(FLIGHT_CENTER, state.attackFocus * .58);
+        _camTarget.y += .8;
+        _camDesired.set(
+          airframe.position.x + Math.sin(az) * Math.cos(el) * distance,
+          airframe.position.y + 2.2 + Math.sin(el) * distance,
+          airframe.position.z + Math.cos(az) * Math.cos(el) * distance
+        );
+        _camDesired.y = Math.max(_camDesired.y, 8);
+      }
+
+      state.attackFocus = damp(state.attackFocus, state.salvoActive || projectiles.length ? 1 : 0, 1.8, dt);
+      cameraRig.smoothedTarget.lerp(_camTarget, 1 - Math.exp(-3.0 * dt));
+      camera.position.lerp(_camDesired, cameraRig.initialised ? 1 - Math.exp(-2.9 * dt) : 1);
+      cameraRig.initialised = true;
+
+      if (state.shake > .001) {
+        const shake = state.shake;
+        camera.position.x += rand(-shake, shake) * .38;
+        camera.position.y += rand(-shake, shake) * .3;
+        camera.position.z += rand(-shake, shake) * .38;
+        state.shake = Math.max(0, state.shake - dt * 1.65);
+      }
+      camera.lookAt(cameraRig.smoothedTarget);
+    }
+
+    function updateHUD(dt) {
+      state.hudTick += dt;
+      if (state.hudTick < .1) return;
+      state.hudTick = 0;
+      if (!dom.hudSpeed) return;
+      const t = state.flightTime;
+      const speed = state.mode === 'flight'
+        ? Math.round(840 + Math.sin(t * .77 + .6) * 170 + state.loopMix * 180)
+        : 0;
+      const altitude = state.mode === 'flight'
+        ? Math.round(2300 + clamp(airframe.position.y, 0, 80) * 138 + Math.sin(t * .42) * 120)
+        : 210;
+      const g = state.mode === 'flight'
+        ? (1.8 + (state.loop ? 3.7 : .9) + Math.sin(t * 1.2 + 2.2) * 1.4)
+        : 1.0;
+      _tempVector.set(0, 0, 1).applyQuaternion(airframe.quaternion);
+      const heading = ((Math.atan2(_tempVector.x, _tempVector.z) * 180 / Math.PI) + 360) % 360;
+      dom.hudSpeed.textContent = String(speed).padStart(3, '0');
+      dom.hudAltitude.textContent = String(Math.max(0, altitude));
+      dom.hudG.textContent = `${g >= 0 ? '+' : ''}${g.toFixed(1)}`;
+      dom.hudHeading.textContent = `${String(Math.round(heading)).padStart(3, '0')}°`;
+
+      hudBars.forEach((barGroup, index) => {
+        const value = index === 0 ? speed / 1320 : index === 1 ? altitude / 10500 : index === 2 ? (g + 2) / 11 : heading / 360;
+        barGroup.querySelectorAll('i').forEach((bar, barIndex) => {
+          bar.classList.toggle('on', barIndex / barGroup.children.length < clamp01(value));
+        });
+      });
+    }
+
+    function updateHotspot() {
+      if (!dom.hotspot || !airframe || !camera) return;
+      const show = state.canopyOpen && state.mode === 'showroom' && !state.exploded && !state.rebuilding;
+      dom.hotspot.classList.toggle('is-visible', show);
+      if (!show) return;
+      _projection.set(0, 1.28, 1.65);
+      airframe.localToWorld(_projection);
+      const distance = _projection.distanceTo(camera.position);
+      _projection.project(camera);
+      if (_projection.z > 1 || distance > 40) {
+        dom.hotspot.classList.remove('is-visible');
+        return;
+      }
+      const x = (_projection.x * .5 + .5) * window.innerWidth;
+      const y = (-_projection.y * .5 + .5) * window.innerHeight;
+      dom.hotspot.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+      dom.hotspot.style.left = '0px';
+      dom.hotspot.style.top = '0px';
+    }
+
+    function animate() {
+      const dt = Math.min(clock.getDelta(), .05);
+      elapsed += dt;
+      updateEnvironment(dt, elapsed);
+      updateDrones(dt, elapsed);
+      updateAirframe(dt);
+      updateProjectiles(dt);
+      updateBursts(dt, camera);
+      updateCamera(dt);
+      updateHUD(dt);
+      updateHotspot();
+      if (composer) composer.render();
+      else renderer.render(scene, camera);
+    }
+
+    function onPointerDown(event) {
+      if (!event.isPrimary) return;
+      cameraRig.dragging = true;
+      cameraRig.pointerX = event.clientX;
+      cameraRig.pointerY = event.clientY;
+      state.interactionAt = performance.now();
+      document.getElementById('stage').setPointerCapture?.(event.pointerId);
+    }
+
+    function onPointerMove(event) {
+      if (!cameraRig.dragging || !event.isPrimary) return;
+      const dx = event.clientX - cameraRig.pointerX;
+      const dy = event.clientY - cameraRig.pointerY;
+      cameraRig.pointerX = event.clientX;
+      cameraRig.pointerY = event.clientY;
+      cameraRig.az -= dx * .005;
+      cameraRig.el = clamp(cameraRig.el + dy * .0032, .03, 1.15);
+      state.interactionAt = performance.now();
+    }
+
+    function onPointerUp(event) {
+      if (event.isPrimary) cameraRig.dragging = false;
+    }
+
+    function onWheel(event) {
+      event.preventDefault();
+      state.interactionAt = performance.now();
+      if (state.mode === 'showroom') {
+        cameraRig.distance = clamp(cameraRig.distance + event.deltaY * .018, 9.5, 34);
+      } else {
+        cameraRig.flightDistance = clamp(cameraRig.flightDistance + event.deltaY * .018, 16, 48);
+      }
+    }
+
+    function bindInterface() {
+      document.querySelectorAll('[data-mode]').forEach((button) => {
+        button.addEventListener('click', () => setMode(button.dataset.mode));
+      });
+
+      document.querySelectorAll('[data-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          switch (button.dataset.action) {
+            case 'orbit': toggleOrbit(); break;
+            case 'cockpit': toggleCanopy(); break;
+            case 'explode': state.exploded ? reconstructAirframe(false) : explodeAirframe(); break;
+            case 'annihilate': handleAnnihilate(); break;
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-toggle]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const property = button.dataset.toggle;
+          state[property] = !state[property];
+          updateUI();
+          showToast(property === 'loop'
+            ? (state.loop ? 'Vertical loop profile engaged' : 'Loop disengaged · banked circuit')
+            : (state.jiggle ? 'Control-surface jiggle engaged' : 'Jiggle trimmed out'));
+        });
+      });
+
+      const canvas = document.getElementById('stage');
+      canvas.addEventListener('pointerdown', onPointerDown);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
+      canvas.addEventListener('wheel', onWheel, { passive: false });
+
+      document.getElementById('fullscreenBtn')?.addEventListener('click', async () => {
+        try {
+          if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+          else await document.exitFullscreen();
+        } catch (error) {
+          showToast('Fullscreen is unavailable in this browser');
+        }
+      });
+
+      document.getElementById('brandHome')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        setMode('showroom');
+      });
+
+      window.addEventListener('keydown', (event) => {
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        const key = event.key.toLowerCase();
+        if (key === '1') setMode('showroom');
+        if (key === '2') setMode('flight');
+        if (key === 'o') toggleOrbit();
+        if (key === 'c') toggleCanopy();
+        if (key === 'e') state.exploded ? reconstructAirframe(false) : explodeAirframe();
+        if (key === 'a') handleAnnihilate();
+        if (key === 'r') {
+          if (state.exploded || state.rebuilding) reconstructAirframe(false);
+          else resetAirspace();
+        }
+      });
+
+      window.addEventListener('resize', onResize);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) clock?.getDelta(); });
+    }
+
+    function onResize() {
+      if (!renderer || !camera) return;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const dpr = Math.min(window.devicePixelRatio || 1, width < 850 ? 1.5 : 1.8);
+      renderer.setPixelRatio(dpr);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      if (composer) {
+        composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
+        composer.setSize(width, height);
+      }
+      if (!cameraRig.dragging && width < 850) {
+        cameraRig.distance = Math.max(cameraRig.distance, defaultShowroomDistance());
+        cameraRig.flightDistance = Math.max(cameraRig.flightDistance, defaultFlightDistance());
+      }
+    }
+
+    // A small classic-script safety net for environments where the module or WebGL fails.
+    setTimeout(() => {
+      if (!window.__fulcrumBooted) {
+        const fallback = document.getElementById('fallback');
+        const loader = document.getElementById('loader');
+        if (fallback) fallback.classList.add('is-visible');
+        if (loader) loader.classList.add('is-done');
+      }
+    }, 15000);
+
+    init();
+  </script>
+</body>
+</html>

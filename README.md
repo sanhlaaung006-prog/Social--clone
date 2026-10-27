@@ -93,6 +93,7 @@ game/
 game/vehicles/
   tankForge.ts        Vendored TankForge ESM module (generated, @ts-nocheck)
   technical.ts        Vendored rebel-technical geometry module (generated)
+  mig29.ts            Compressed/revised MiG-29 airframe, Lambert-only (generated)
   vehicle.ts          Arcade kinematic vehicle: throttle, steering, terrain
   manager.ts          Spawning, vehicle-vs-vehicle push-out, physics upload
 scripts/
@@ -104,6 +105,8 @@ scripts/
   inspect-tank.ts     VM-sandbox vendor runner + extracted-module fidelity
   extract-tank.mjs    Reproducible extractor: vendor HTML -> tankForge.ts
   extract-technical.mjs  Reproducible extractor: vendor HTML -> technical.ts
+  extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts
+  mig.test.ts         MiG material revision, rig hooks and render proofs
   lib/raster.ts       Shared headless triangle rasterizer
   lib/dom-stub.ts     Headless canvas/DOM stub for texture-building modules
 reference/            Supplied vehicle concepts (armed technical, MBT factory)

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>MiG-29 Revised Airframe — Golden Land Royale</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1114; color: #e9edf1; font-family: system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      .panel { position: fixed; top: 14px; left: 14px; z-index: 10; display: flex; flex-direction: column; gap: 8px; }
+      .panel h2 { margin: 0 0 2px; font-size: 15px; letter-spacing: 0.12em; }
+      .panel p { margin: 0; font-size: 12px; opacity: 0.7; max-width: 300px; line-height: 1.5; }
+      button {
+        padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.08); color: #fff; font-weight: 700; cursor: pointer; width: fit-content;
+      }
+      button.active { background: #d7b26a; color: #1d1608; }
+      a { color: #9fd0ff; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div class="panel">
+      <h2>REVISED MIG-29 AIRFRAME</h2>
+      <p>Lambert/Basic materials only — no PBR env map, bloom or postprocessing. Drag to orbit, scroll to zoom.</p>
+      <button id="rotate" class="active">Pause rotation</button>
+      <a href="./"><button>Back to game</button></a>
+    </div>
+    <script type="module" src="/src/jet-viewer.ts"></script>
+  </body>
+</html>
