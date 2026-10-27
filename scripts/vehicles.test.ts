@@ -12,8 +12,11 @@ import { CONFIG } from "../game/config";
 import { VehicleManager } from "../game/vehicles/manager";
 import { Vehicle } from "../game/vehicles/vehicle";
 import { InputState } from "../game/input";
-import { TankForge, TANK_PRESETS } from "../game/vehicles/tankForge";
-import { assembleTechnical } from "../game/vehicles/technical";
+import {
+  buildStylizedTank,
+  buildStylizedTechnical,
+  buildStylizedJet,
+} from "../game/vehicles/stylized";
 import { installDomStub } from "./lib/dom-stub";
 
 installDomStub();
@@ -112,13 +115,65 @@ console.log("Physics-core vehicle obstacles:");
   check("skipVehicle ignores the firing vehicle", skipped?.kind !== "vehicle");
 }
 
-console.log("Independent model builds:");
+console.log("Stylized geometry rules:");
 {
-  const t1 = TankForge.build(TANK_PRESETS.long);
-  const t2 = assembleTechnical();
-  check("factory models are groups", t1 instanceof THREE.Group && t2 instanceof THREE.Group);
-  const standalone = new Vehicle("tank", TankForge.build(TANK_PRESETS.scout), 0);
-  check("vehicle wraps model with turret reference", standalone instanceof Vehicle);
+  const tank = buildStylizedTank();
+  const tech = buildStylizedTechnical();
+  const jet = buildStylizedJet();
+  check("builders return groups", tank instanceof THREE.Group && tech instanceof THREE.Group && jet instanceof THREE.Group);
+
+  // Rule 1: no raw BoxGeometry anywhere in the vehicle family.
+  let boxCount = 0;
+  let flatFailures = 0;
+  const materials = new Set<THREE.Material>();
+  for (const root of [tank, tech, jet]) {
+    root.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        if (o.geometry.type === "BoxGeometry") boxCount++;
+        const list = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of list) {
+          materials.add(m);
+          if (!(m as THREE.MeshStandardMaterial).flatShading) flatFailures++;
+        }
+      }
+    });
+  }
+  check("no raw BoxGeometry (rule 1)", boxCount === 0, `${boxCount} boxes`);
+  check("every material is flat-shaded (rule 3)", flatFailures === 0, `${flatFailures} non-flat`);
+
+  // Rule 3: unified grey chassis + dark-green camo family.
+  const mats = [...materials] as THREE.MeshStandardMaterial[];
+  const grey = mats.find((m) => m.color.getHex() === 0x8d9398 && m.metalness > 0.2);
+  const green = mats.find((m) => m.color.getHex() === 0x3c4a33);
+  check("metallic grey chassis material present", !!grey);
+  check("dark-green camo material present", !!green);
+
+  // Required rig nodes that the Vehicle wrapper resolves by name.
+  check("tank exposes turretPivot and muzzle",
+    !!tank.getObjectByName("turretPivot") && !!tank.getObjectByName("GunMount.MuzzleFlashEffect"));
+  check("technical exposes yaw/pitch gun mount and muzzle",
+    !!tech.getObjectByName("GunMount.TurretYawGroup") &&
+    !!tech.getObjectByName("GunMount.GunPitchGroup") &&
+    !!tech.getObjectByName("GunMount.MuzzleFlashEffect"));
+
+  // Rule 2: jet uses a cone nose and cylinder/cone fuselage primitives.
+  const types: string[] = [];
+  jet.traverse((o) => { if (o instanceof THREE.Mesh) types.push(o.geometry.type); });
+  check("jet nose is a cone", types.includes("ConeGeometry"));
+  check("jet fuselage is a cylinder", types.includes("CylinderGeometry"));
+
+  // Turret proportion: dome width stays well inside the hull footprint.
+  const turret = tank.getObjectByName("turretPivot")!;
+  const dome = turret.children.find((c) => c.name === "turret-dome") as THREE.Mesh;
+  const domeBox = new THREE.Box3().setFromObject(dome);
+  const hullBox = new THREE.Box3().setFromObject(tank.getObjectByName("wedge-hull")!);
+  check("turret narrower than hull (rule 4)",
+    domeBox.max.x - domeBox.min.x < (hullBox.max.x - hullBox.min.x) * 0.75);
+
+  // Independent builds must not share material instances.
+  check("independent builds", buildStylizedTank() !== tank);
+  const standalone = new Vehicle("tank", buildStylizedTank(), 0);
+  check("vehicle wraps stylized model with turret reference", standalone instanceof Vehicle);
 }
 
 console.log(failures === 0 ? "\nAll vehicle tests passed." : `\n${failures} check(s) failed.`);

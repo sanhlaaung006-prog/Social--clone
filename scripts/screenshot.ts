@@ -12,6 +12,7 @@ import { Rng } from "../game/rng";
 import { CONFIG } from "../game/config";
 import { gatherTriangles, makeCamera, renderPng } from "./lib/raster";
 import { VehicleManager } from "../game/vehicles/manager";
+import { buildStylizedJet, buildStylizedTank, buildStylizedTechnical } from "../game/vehicles/stylized";
 import { installDomStub } from "./lib/dom-stub";
 
 installDomStub();
@@ -81,25 +82,82 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
   }
 }
 
-// 5) Vehicle showcase: park one tank and one technical side by side.
+// 5) Stylized vehicle showcase: tank, armed technical and jet in a row.
 {
   const tank = vehicles.vehicles.find((v) => v.kind === "tank");
   const tech = vehicles.vehicles.find((v) => v.kind === "technical");
-  if (tank && tech) {
-    const cx = 6;
-    const cz = -10;
-    const gy = world.heightAt(cx, cz);
-    tank.position.set(cx - 4.5, world.heightAt(cx - 4.5, cz), cz);
-    tech.position.set(cx + 4.5, world.heightAt(cx + 4.5, cz), cz);
-    tank.group.rotation.y = 0.6;
-    tech.group.rotation.y = -0.5;
-    scene.updateMatrixWorld(true);
+  const jet = buildStylizedJet();
+  scene.add(jet);
+
+  const cx = 8;
+  const cz = -12;
+  const place = (group: THREE.Object3D, x: number, rot: number, lift = 0) => {
+    group.position.set(x, world.heightAt(x, cz) + lift, cz);
+    group.rotation.y = rot;
+  };
+  if (tank) place(tank.group, cx - 11, 0.35);
+  if (tech) place(tech.group, cx, -0.25);
+  place(jet, cx + 11, 0.15, 1.0);
+  const gy = world.heightAt(cx, cz);
+  scene.updateMatrixWorld(true);
+  shoot(
+    "05-vehicles",
+    new THREE.Vector3(cx, gy + 6.5, cz + 20),
+    new THREE.Vector3(cx, gy + 1.4, cz)
+  );
+
+  // 6) Three-quarter close-up: wedge glacis plate, oval turret and barrel.
+  if (tank) {
+    const p = tank.position;
     shoot(
-      "05-vehicles",
-      new THREE.Vector3(cx, gy + 5.2, cz + 13),
-      new THREE.Vector3(cx, gy + 1.2, cz)
+      "06-tank-closeup",
+      new THREE.Vector3(p.x + 7.5, p.y + 3.4, p.z + 8.5),
+      new THREE.Vector3(p.x, p.y + 1.3, p.z)
     );
   }
+}
+
+// 7) Clean studio lineup on a plain plane — geometry proof with no trees
+//    or terrain clutter obscuring the silhouettes.
+{
+  const studio = new THREE.Scene();
+  // Hand-wound upward quad (the rasterizer derives normals from winding;
+  // a rotated PlaneGeometry resolves as back-facing in the headless painter).
+  const groundGeo = new THREE.BufferGeometry();
+  groundGeo.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute([
+      -30, 0, -20,
+      30, 0, 20,
+      30, 0, -20,
+      -30, 0, -20,
+      -30, 0, 20,
+      30, 0, 20,
+    ], 3)
+  );
+  const ground = new THREE.Mesh(
+    groundGeo,
+    new THREE.MeshLambertMaterial({ color: 0x8a948c })
+  );
+  studio.add(ground);
+
+  const lineup: Array<[THREE.Group, number]> = [
+    [buildStylizedTank(), -11],
+    [buildStylizedTechnical(), 0],
+    [buildStylizedJet(), 11],
+  ];
+  for (const [g, x] of lineup) {
+    g.position.set(x, 0, 0);
+    g.rotation.y = 0.45;
+    studio.add(g);
+  }
+  studio.updateMatrixWorld(true);
+  renderPng(
+    gatherTriangles(studio),
+    makeCamera(new THREE.Vector3(0, 4.6, 14.5), new THREE.Vector3(0, 1.0, 0)),
+    "screenshots/07-studio-lineup.png",
+    { fogNear: 80, fogFar: 200 }
+  );
 }
 
 console.log("done");

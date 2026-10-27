@@ -11,8 +11,7 @@ import type { InputState } from "../input";
 import type { Physics } from "../wasm/physics";
 import type { World, CircleObstacle } from "../world";
 import { Vehicle, type VehicleKind } from "./vehicle";
-import { TankForge, TANK_PRESETS } from "./tankForge";
-import { assembleTechnical } from "./technical";
+import { buildStylizedTank, buildStylizedTechnical } from "./stylized";
 
 export class VehicleManager {
   readonly vehicles: Vehicle[] = [];
@@ -53,7 +52,7 @@ export class VehicleManager {
       const pos = spawn(kind);
       const yaw = rng.range(0, Math.PI * 2);
       const group =
-        kind === "tank" ? TankForge.build(TANK_PRESETS.long) : assembleTechnical();
+        kind === "tank" ? buildStylizedTank() : buildStylizedTechnical();
       const vehicle = new Vehicle(kind, group, yaw);
       vehicle.group.position.copy(pos);
       vehicle.group.rotation.y = yaw + Math.PI;

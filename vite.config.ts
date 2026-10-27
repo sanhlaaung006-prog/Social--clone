@@ -19,7 +19,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
-        tank: fileURLToPath(new URL("./tank.html", import.meta.url)),
         jet: fileURLToPath(new URL("./jet.html", import.meta.url)),
       },
       output: {

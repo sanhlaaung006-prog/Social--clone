@@ -91,8 +91,9 @@ game/
     loadModule.ts           Shared WASM instantiation
     noise.ts / physics.ts   WASM bridges + bit-identical TS fallbacks
 game/vehicles/
-  tankForge.ts        Vendored TankForge ESM module (generated, @ts-nocheck)
-  technical.ts        Vendored rebel-technical geometry module (generated)
+  stylized.ts         Hand-authored stylized factory: wedge-hull tank,
+                      extruded technical and cone-nose jet (no BoxGeometry,
+                      flat-shaded metallic-grey/dark-green materials)
   mig29.ts            Compressed/revised MiG-29 airframe, Lambert-only (generated)
   vehicle.ts          Arcade kinematic vehicle: throttle, steering, terrain
   manager.ts          Spawning, vehicle-vs-vehicle push-out, physics upload
@@ -101,26 +102,24 @@ scripts/
   physics.test.ts     Collision + raycast tests (mirrors the C algorithms)
   integration.ts      30-second headless simulated match
   screenshot.ts       CPU rasterizer: real scene geometry -> PNG (no GPU)
-  vehicles.test.ts    Driving, steering, vehicle collision and ray tests
-  inspect-tank.ts     VM-sandbox vendor runner + extracted-module fidelity
-  extract-tank.mjs    Reproducible extractor: vendor HTML -> tankForge.ts
-  extract-technical.mjs  Reproducible extractor: vendor HTML -> technical.ts
+  vehicles.test.ts    Driving, steering, collision, stylized-geometry rules
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts
   mig.test.ts         MiG material revision, rig hooks and render proofs
   lib/raster.ts       Shared headless triangle rasterizer
   lib/dom-stub.ts     Headless canvas/DOM stub for texture-building modules
-reference/            Supplied vehicle concepts (armed technical, MBT factory)
+reference/            Supplied vehicle and terrain concepts (not shipped)
 ```
 
-## Tank inspector
+## Stylized vehicle factory
 
-The faithful TankForge extraction (owner-approved: original vehicle names and
-flag/star decals preserved) is viewable in a browser at the **/tank.html**
-route — three presets, orbit controls, rotation toggle. It is a debug surface,
-not part of the game loop. `npm run inspect:tank` verifies the extracted ESM
-module produces identical mesh counts (207/192/177) to the vendor original and
-renders proof PNGs. Re-run `npm run extract:tank` after changing the vendor
-file. The module is not yet spawned inside matches.
+`game/vehicles/stylized.ts` replaces the earlier voxel-style vendor models with
+hand-authored Quaternius/PUBG-style geometry. House rules, enforced by
+`scripts/vehicles.test.ts`: no raw `BoxGeometry` anywhere; hulls are custom
+`BufferGeometry` wedges (sloped glacis, angled side belts) or `ExtrudeGeometry`
+profiles; turrets are faceted 12-segment cylinders; barrels are horizontal
+8-segment cylinders; the jet has a cone nose and swept tapered-slab wings;
+every material is `flatShading: true` in a unified metallic-grey chassis /
+dark-green camo palette. The MiG airframe remains viewable at **/jet.html**.
 
 ### C/WASM and the Rapier question
 

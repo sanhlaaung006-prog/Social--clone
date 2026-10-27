@@ -1,7 +1,7 @@
 /*
  * Shared headless CPU rasterizer: walks a real THREE.Scene and paints its
  * triangles to a PNG without a browser/GPU. Used by screenshot.ts (game world)
- * and inspect-tank.ts (vendor model inspection).
+ *.
  */
 
 import * as THREE from "three";

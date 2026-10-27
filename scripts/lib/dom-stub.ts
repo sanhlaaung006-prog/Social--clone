@@ -1,6 +1,6 @@
 /*
  * Minimal DOM/canvas stub so headless Node scripts can import modules that
- * create CanvasTextures on demand (the vendored TankForge factory).
+ * create CanvasTextures on demand (canvas-texture vehicle modules).
  */
 
 const noop = () => {};
