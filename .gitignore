@@ -1,0 +1,8 @@
+node_modules/
+dist/
+android/
+*.tsbuildinfo
+.DS_Store
+public/wasm/*.wasm
+.vercel
+screenshots/

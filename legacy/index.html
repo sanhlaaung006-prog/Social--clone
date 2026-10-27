@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SocialClone</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="description" content="A multi-database social media clone powered by Cloudflare Workers, Supabase, and MongoDB Atlas.">
+</head>
+<body>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       NAVIGATION BAR
+       ═══════════════════════════════════════════════════════════════════ -->
+  <nav id="main-nav">
+    <div class="nav-inner">
+      <a href="/" class="nav-brand">SocialClone</a>
+
+      <!-- Search bar -->
+      <form id="search-form" class="nav-search" onsubmit="return false;">
+        <input type="text" id="search-input" placeholder="Search posts, users…" autocomplete="off">
+        <button type="submit" aria-label="Search">&#128269;</button>
+      </form>
+
+      <div class="nav-actions">
+        <!-- Feed mode toggle -->
+        <button id="feed-mode-btn" class="nav-btn" title="Switch feed mode">Chronological</button>
+        <!-- Auth buttons (shown when logged out) -->
+        <button id="login-btn" class="nav-btn btn-outline" onclick="showAuthModal('login')">Log In</button>
+        <button id="signup-btn" class="nav-btn btn-primary" onclick="showAuthModal('signup')">Sign Up</button>
+        <!-- Profile (shown when logged in) -->
+        <div id="user-menu" class="user-menu hidden">
+          <img id="user-avatar" class="avatar-sm" src="" alt="avatar">
+          <span id="user-display-name"></span>
+          <button class="nav-btn btn-outline" onclick="handleLogout()">Log Out</button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       AUTH MODAL (Login / Sign-up)
+       ═══════════════════════════════════════════════════════════════════ -->
+  <div id="auth-modal" class="modal hidden" onclick="closeAuthModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="hideAuthModal()">&times;</button>
+
+      <!-- Login Form -->
+      <form id="login-form" class="auth-form hidden" onsubmit="handleLogin(event)">
+        <h2>Log In</h2>
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" required placeholder="you@example.com">
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" required placeholder="••••••••" minlength="6">
+        <button type="submit" class="btn-primary btn-full">Log In</button>
+        <p class="auth-switch">Don't have an account? <a href="#" onclick="showAuthModal('signup')">Sign up</a></p>
+      </form>
+
+      <!-- Signup Form -->
+      <form id="signup-form" class="auth-form hidden" onsubmit="handleSignup(event)">
+        <h2>Create Account</h2>
+        <label for="signup-username">Username</label>
+        <input type="text" id="signup-username" required placeholder="cooluser42" minlength="3" maxlength="30" pattern="[a-zA-Z0-9_]+">
+        <label for="signup-email">Email</label>
+        <input type="email" id="signup-email" required placeholder="you@example.com">
+        <label for="signup-password">Password</label>
+        <input type="password" id="signup-password" required placeholder="••••••••" minlength="6">
+        <button type="submit" class="btn-primary btn-full">Sign Up</button>
+        <p class="auth-switch">Already have an account? <a href="#" onclick="showAuthModal('login')">Log in</a></p>
+      </form>
+
+      <div id="auth-error" class="error-msg hidden"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       MAIN CONTENT AREA
+       ═══════════════════════════════════════════════════════════════════ -->
+  <main id="app-main" class="container">
+    <div class="layout-two-col">
+      <!-- ── Left / Center Column: Feed ──────────────────────────────── -->
+      <section id="feed-section">
+        <!-- Post Composer -->
+        <div id="post-composer" class="card hidden">
+          <textarea id="composer-text" placeholder="What's on your mind?" rows="3" maxlength="2000"></textarea>
+          <div class="composer-actions">
+            <label class="composer-upload" title="Attach an image URL">
+              &#128247;
+              <input type="url" id="composer-image" placeholder="https://example.com/photo.jpg">
+            </label>
+            <button class="btn-primary btn-sm" onclick="handleCreatePost()">Post</button>
+          </div>
+        </div>
+
+        <!-- Feed List -->
+        <div id="feed-list"></div>
+
+        <!-- Load More -->
+        <div id="load-more-wrap" class="hidden">
+          <button id="load-more-btn" class="btn-outline btn-full" onclick="loadMorePosts()">Load More</button>
+        </div>
+
+        <!-- Empty State -->
+        <div id="feed-empty" class="empty-state hidden">
+          <h3>No posts yet</h3>
+          <p>Be the first to share something!</p>
+        </div>
+      </section>
+
+      <!-- ── Right Sidebar ──────────────────────────────────────────── -->
+      <aside id="sidebar" class="sidebar">
+        <!-- Trending Posts (from MongoDB feed_signals) -->
+        <div class="card">
+          <h3>Trending</h3>
+          <div id="trending-list">
+            <p class="muted">Loading trending posts…</p>
+          </div>
+        </div>
+
+        <!-- Quick Stats (per-user analytics) -->
+        <div class="card" id="user-stats-card" style="display:none;">
+          <h3>Your Stats</h3>
+          <dl id="user-stats-dl"></dl>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TOAST NOTIFICATIONS
+       ═══════════════════════════════════════════════════════════════════ -->
+  <div id="toast-container"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       APPLICATION LOGIC  (inline – single-file SPA)
+       ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+  // ====================================================================
+  // CONFIGURATION
+  // ====================================================================
+  const API_BASE = "";   // same origin – the Cloudflare Worker proxies everything
+  const SUPABASE_URL = 'https://bnmusqhrcrclqmhzsjpg.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_XzgMKHxQdVGA3KCM_dXA6Q_6v0uAdqN';
+
+  // ====================================================================
+  // STATE
+  // ====================================================================
+  let currentUser = null;       // { user, session }
+  let feedCursor = null;        // pagination cursor (ISO timestamp)
+  let feedMode = "chronological"; // "chronological" | "trending"
+  let isLoading = false;
+
+  // ====================================================================
+  // INIT
+  // ====================================================================
+  (function init() {
+    // Restore session from localStorage
+    const stored = localStorage.getItem("socialclone_session");
+    if (stored) {
+      try {
+        currentUser = JSON.parse(stored);
+        onLoginSuccess();
+      } catch { /* ignore corrupt data */ }
+    }
+    fetchFeed();
+
+    // Page-view analytics (fire-and-forget)
+    sendAnalytics("pageview", { path: location.pathname });
+  })();
+
+  // ====================================================================
+  // API HELPER
+  // ====================================================================
+  async function api(path, options = {}) {
+    const headers = { "Content-Type": "application/json" };
+    if (currentUser?.session?.access_token) {
+      headers["Authorization"] = `Bearer ${currentUser.session.access_token}`;
+    }
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data.error || "Request failed");
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  // ====================================================================
+  // AUTH
+  // ====================================================================
+  function showAuthModal(mode) {
+    document.getElementById("auth-modal").classList.remove("hidden");
+    document.getElementById("login-form").classList.toggle("hidden", mode !== "login");
+    document.getElementById("signup-form").classList.toggle("hidden", mode !== "signup");
+    document.getElementById("auth-error").classList.add("hidden");
+  }
+
+  function hideAuthModal() {
+    document.getElementById("auth-modal").classList.add("hidden");
+  }
+
+  function closeAuthModal(e) {
+    if (e.target === e.currentTarget) hideAuthModal();
+  }
+
+  function showAuthError(msg) {
+    const el = document.getElementById("auth-error");
+    el.textContent = msg;
+    el.classList.remove("hidden");
+  }
+
+  async function handleSignup(e) {
+    e.preventDefault();
+    const email = document.getElementById("signup-email").value.trim();
+    const password = document.getElementById("signup-password").value;
+    const username = document.getElementById("signup-username").value.trim();
+
+    try {
+      const data = await api("/api/auth/signup", {
+        method: "POST",
+        body: JSON.stringify({ email, password, username }),
+      });
+      currentUser = data;
+      localStorage.setItem("socialclone_session", JSON.stringify(data));
+      hideAuthModal();
+      onLoginSuccess();
+      showToast("Account created! Welcome aboard.");
+      fetchFeed();
+    } catch (err) {
+      showAuthError(err.message);
+    }
+  }
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    const email = document.getElementById("login-email").value.trim();
+    const password = document.getElementById("login-password").value;
+
+    try {
+      const data = await api("/api/auth/signin", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      currentUser = data;
+      localStorage.setItem("socialclone_session", JSON.stringify(data));
+      hideAuthModal();
+      onLoginSuccess();
+      showToast("Welcome back!");
+      fetchFeed();
+    } catch (err) {
+      showAuthError(err.message);
+    }
+  }
+
+  function handleLogout() {
+    currentUser = null;
+    localStorage.removeItem("socialclone_session");
+    onLogout();
+    showToast("You have been logged out.");
+    fetchFeed();
+  }
+
+  function onLoginSuccess() {
+    document.getElementById("login-btn").classList.add("hidden");
+    document.getElementById("signup-btn").classList.add("hidden");
+    document.getElementById("user-menu").classList.remove("hidden");
+    document.getElementById("post-composer").classList.remove("hidden");
+    document.getElementById("user-stats-card").style.display = "";
+
+    const meta = currentUser.user?.user_metadata || {};
+    const displayName = meta.username || currentUser.user?.email || "User";
+    document.getElementById("user-display-name").textContent = displayName;
+
+    const avatarUrl = meta.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random`;
+    document.getElementById("user-avatar").src = avatarUrl;
+
+    // Record session in MongoDB
+    sendAnalytics("session", {});
+  }
+
+  function onLogout() {
+    document.getElementById("login-btn").classList.remove("hidden");
+    document.getElementById("signup-btn").classList.remove("hidden");
+    document.getElementById("user-menu").classList.add("hidden");
+    document.getElementById("post-composer").classList.add("hidden");
+    document.getElementById("user-stats-card").style.display = "none";
+  }
+
+  // ====================================================================
+  // FEED
+  // ====================================================================
+  async function fetchFeed(reset = true) {
+    if (isLoading) return;
+    isLoading = true;
+
+    if (reset) {
+      feedCursor = null;
+      document.getElementById("feed-list").innerHTML = "";
+    }
+
+    try {
+      let url = `/api/posts?limit=10&mode=${feedMode}`;
+      if (feedCursor) url += `&cursor=${encodeURIComponent(feedCursor)}`;
+
+      const data = await api(url);
+      const posts = data.posts || [];
+
+      if (posts.length === 0 && reset) {
+        document.getElementById("feed-empty").classList.remove("hidden");
+      } else {
+        document.getElementById("feed-empty").classList.add("hidden");
+      }
+
+      const feedList = document.getElementById("feed-list");
+      posts.forEach(post => {
+        feedList.insertAdjacentHTML("beforeend", renderPostCard(post));
+      });
+
+      // Update cursor for next page
+      if (posts.length > 0) {
+        feedCursor = posts[posts.length - 1].created_at;
+      }
+
+      // Show/hide load-more
+      document.getElementById("load-more-wrap").classList.toggle("hidden", posts.length < 10);
+    } catch (err) {
+      console.error("Feed error:", err);
+      showToast("Failed to load feed.");
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function loadMorePosts() {
+    fetchFeed(false);
+  }
+
+  // ====================================================================
+  // POST RENDERING
+  // ====================================================================
+  function renderPostCard(post) {
+    const author = post.author || {};
+    const avatar = author.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(author.username || "?")}&background=random`;
+    const likes = post.likes_count?.[0]?.count ?? 0;
+    const comments = post.comments_count?.[0]?.count ?? 0;
+    const timeAgo = formatTimeAgo(post.created_at);
+
+    const imageHtml = post.image_url
+      ? `<img class="post-image" src="${escapeHtml(post.image_url)}" alt="Post image" loading="lazy">`
+      : "";
+
+    return `
+      <article class="card post-card" data-post-id="${post.id}">
+        <div class="post-header">
+          <img class="avatar-sm" src="${escapeHtml(avatar)}" alt="${escapeHtml(author.username || "user")}">
+          <div class="post-meta">
+            <span class="post-author">${escapeHtml(author.username || "anonymous")}</span>
+            <time class="post-time" datetime="${post.created_at}">${timeAgo}</time>
+          </div>
+        </div>
+        <div class="post-body">
+          <p>${escapeHtml(post.content || "")}</p>
+        </div>
+        ${imageHtml}
+        <div class="post-actions">
+          <button class="action-btn like-btn" onclick="handleToggleLike('${post.id}', this)">
+            &#10084; <span class="like-count">${likes}</span>
+          </button>
+          <button class="action-btn" onclick="toggleComments('${post.id}')">
+            &#128172; <span>${comments}</span>
+          </button>
+          <button class="action-btn" onclick="handleShare('${post.id}')">&#128279; Share</button>
+          <button class="action-btn" onclick="handleBookmark('${post.id}')">&#128278; Save</button>
+        </div>
+        <!-- Comment section (collapsed by default) -->
+        <div class="comments-section hidden" id="comments-${post.id}">
+          <div class="comment-input-row">
+            <input type="text" id="comment-input-${post.id}" placeholder="Write a comment…" maxlength="500">
+            <button class="btn-primary btn-sm" onclick="handleAddComment('${post.id}')">Send</button>
+          </div>
+          <div class="comments-list" id="comments-list-${post.id}"></div>
+        </div>
+      </article>
+    `;
+  }
+
+  // ====================================================================
+  // POST CREATION
+  // ====================================================================
+  async function handleCreatePost() {
+    const textEl = document.getElementById("composer-text");
+    const imageEl = document.getElementById("composer-image");
+    const content = textEl.value.trim();
+    const image_url = imageEl.value.trim();
+
+    if (!content && !image_url) {
+      showToast("Write something or attach an image.");
+      return;
+    }
+
+    try {
+      const data = await api("/api/posts", {
+        method: "POST",
+        body: JSON.stringify({ content, image_url: image_url || null }),
+      });
+
+      // Prepend the new post to the feed
+      const feedList = document.getElementById("feed-list");
+      feedList.insertAdjacentHTML("afterbegin", renderPostCard(data));
+
+      // Clear composer
+      textEl.value = "";
+      imageEl.value = "";
+
+      document.getElementById("feed-empty").classList.add("hidden");
+      showToast("Post published!");
+    } catch (err) {
+      showToast(err.message || "Failed to create post.");
+    }
+  }
+
+  // ====================================================================
+  // LIKES
+  // ====================================================================
+  async function handleToggleLike(postId, btnEl) {
+    if (!currentUser) {
+      showAuthModal("login");
+      return;
+    }
+
+    try {
+      const result = await api(`/api/posts/${postId}/like`, { method: "POST" });
+      const countEl = btnEl.querySelector(".like-count");
+      let count = parseInt(countEl.textContent, 10);
+      count += result.liked ? 1 : -1;
+      countEl.textContent = count;
+      btnEl.classList.toggle("liked", result.liked);
+    } catch (err) {
+      showToast("Could not toggle like.");
+    }
+  }
+
+  // ====================================================================
+  // COMMENTS
+  // ====================================================================
+  function toggleComments(postId) {
+    const section = document.getElementById(`comments-${postId}`);
+    const isHidden = section.classList.toggle("hidden");
+
+    if (!isHidden) {
+      loadComments(postId);
+    }
+  }
+
+  async function loadComments(postId) {
+    try {
+      const data = await api(`/api/posts/${postId}/comments`);
+      const listEl = document.getElementById(`comments-list-${postId}`);
+      listEl.innerHTML = data.comments.map(renderComment).join("");
+    } catch (err) {
+      console.error("Comments error:", err);
+    }
+  }
+
+  function renderComment(c) {
+    const author = c.author || {};
+    const avatar = author.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(author.username || "?")}&background=random`;
+    return `
+      <div class="comment">
+        <img class="avatar-xs" src="${escapeHtml(avatar)}" alt="">
+        <div class="comment-body">
+          <span class="comment-author">${escapeHtml(author.username || "anonymous")}</span>
+          <p>${escapeHtml(c.content)}</p>
+          <time class="comment-time">${formatTimeAgo(c.created_at)}</time>
+        </div>
+      </div>
+    `;
+  }
+
+  async function handleAddComment(postId) {
+    if (!currentUser) {
+      showAuthModal("login");
+      return;
+    }
+
+    const input = document.getElementById(`comment-input-${postId}`);
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+      const comment = await api(`/api/posts/${postId}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      });
+
+      const listEl = document.getElementById(`comments-list-${postId}`);
+      listEl.insertAdjacentHTML("beforeend", renderComment(comment));
+      input.value = "";
+    } catch (err) {
+      showToast("Failed to post comment.");
+    }
+  }
+
+  // ====================================================================
+  // SHARE / BOOKMARK (fire-and-forget analytics)
+  // ====================================================================
+  function handleShare(postId) {
+    if (navigator.share) {
+      navigator.share({ title: "Check out this post", url: `${location.origin}/post/${postId}` });
+    } else {
+      navigator.clipboard.writeText(`${location.origin}/post/${postId}`);
+      showToast("Link copied to clipboard!");
+    }
+    sendAnalytics("engagement", { postId, type: "share" });
+    sendFeedSignal(postId, "shares", 4);
+  }
+
+  function handleBookmark(postId) {
+    sendAnalytics("engagement", { postId, type: "save" });
+    sendFeedSignal(postId, "saves", 1);
+    showToast("Post saved!");
+  }
+
+  // ====================================================================
+  // FEED MODE TOGGLE
+  // ====================================================================
+  document.getElementById("feed-mode-btn").addEventListener("click", () => {
+    feedMode = feedMode === "chronological" ? "trending" : "chronological";
+    document.getElementById("feed-mode-btn").textContent =
+      feedMode === "chronological" ? "Chronological" : "Trending";
+    fetchFeed(true);
+  });
+
+  // ====================================================================
+  // ANALYTICS HELPERS (fire-and-forget)
+  // ====================================================================
+  function sendAnalytics(type, payload) {
+    const endpoints = {
+      pageview: "/api/analytics/pageview",
+      impression: "/api/analytics/impression",
+      engagement: "/api/analytics/engagement",
+      session: "/api/sessions",
+    };
+
+    const url = endpoints[type];
+    if (!url) return;
+
+    const body = type === "pageview"
+      ? { path: payload.path, referrer: document.referrer }
+      : type === "engagement"
+        ? { post_id: payload.postId, type: payload.type }
+        : type === "impression"
+          ? { post_id: payload.postId }
+          : {};
+
+    fetch(`${API_BASE}${url}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(currentUser?.session?.access_token
+          ? { Authorization: `Bearer ${currentUser.session.access_token}` }
+          : {}),
+      },
+      body: JSON.stringify(body),
+    }).catch(() => { /* analytics must never block the UI */ });
+  }
+
+  function sendFeedSignal(postId, action, weight) {
+    fetch(`${API_BASE}/api/analytics/signal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ post_id: postId, action, weight }),
+    }).catch(() => {});
+  }
+
+  // ====================================================================
+  // TRENDING SIDEBAR
+  // ====================================================================
+  async function loadTrending() {
+    try {
+      const data = await api("/api/posts?mode=trending&limit=5");
+      const list = document.getElementById("trending-list");
+      const posts = data.posts || [];
+
+      if (posts.length === 0) {
+        list.innerHTML = '<p class="muted">No trending posts yet.</p>';
+        return;
+      }
+
+      list.innerHTML = posts
+        .map(
+          (p) => `
+        <div class="trending-item">
+          <img class="avatar-xs" src="${escapeHtml(p.author?.avatar_url || "")}" alt="">
+          <div>
+            <span class="trending-author">${escapeHtml(p.author?.username || "user")}</span>
+            <p class="trending-snippet">${escapeHtml((p.content || "").slice(0, 80))}</p>
+          </div>
+        </div>`
+        )
+        .join("");
+    } catch {
+      document.getElementById("trending-list").innerHTML =
+        '<p class="muted">Could not load trending posts.</p>';
+    }
+  }
+  loadTrending();
+
+  // ====================================================================
+  // UTILITY FUNCTIONS
+  // ====================================================================
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str || "";
+    return div.innerHTML;
+  }
+
+  function formatTimeAgo(isoStr) {
+    if (!isoStr) return "";
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const seconds = Math.floor(diff / 1000);
+    if (seconds < 60) return "just now";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    return `${months}mo ago`;
+  }
+
+  // ====================================================================
+  // TOAST NOTIFICATIONS
+  // ====================================================================
+  function showToast(message, duration = 3000) {
+    const container = document.getElementById("toast-container");
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.classList.add("show"), 10);
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+  </script>
+</body>
+</html>

@@ -1,20 +1,43 @@
 {
-  "name": "social-media-clone",
-  "version": "1.0.0",
+  "name": "golden-land-royale",
+  "version": "0.3.0",
   "private": true,
+  "description": "Myanmar-inspired low-poly 3D battle royale (Vite + Three.js + React + C/WASM physics, WebGL, Android APK via Capacitor)",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "tsx scripts/smoke.ts && tsx scripts/physics.test.ts && tsx scripts/integration.ts",
+    "test:smoke": "tsx scripts/smoke.ts",
+    "test:physics": "tsx scripts/physics.test.ts",
+    "test:integration": "tsx scripts/integration.ts",
+    "screenshot": "tsx scripts/screenshot.ts",
+    "inspect:tank": "tsx scripts/inspect-tank.ts",
+    "extract:tank": "node scripts/extract-tank.mjs",
+    "build:wasm": "bash game/wasm/build-wasm.sh",
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:apk": "cap sync android && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "mongodb": "^6.12.0"
+    "@capacitor/android": "6.1.2",
+    "@capacitor/core": "6.1.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "three": "0.170.0"
   },
   "devDependencies": {
-    "wrangler": "^3.101.0",
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "typescript": "^5.7.3"
+    "@capacitor/cli": "6.1.2",
+    "@types/node": "20.14.10",
+    "@types/pngjs": "6.0.5",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/three": "0.170.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "pngjs": "7.0.0",
+    "tsx": "4.19.2",
+    "typescript": "5.5.3",
+    "vite": "5.4.11"
   }
 }

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang + lld (WebAssembly toolchain)
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile C cores (noise + physics) to WASM
+        run: npm run build:wasm
+
+      - name: Headless game-logic tests
+        run: npm test
+
+      - name: Type-check and Vite production build
+        run: npm run build
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: math-core-wasm
+          path: public/wasm/math_core.wasm
+
+      - name: Upload static web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/

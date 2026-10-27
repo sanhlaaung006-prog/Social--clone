@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>TankForge Inspector — Golden Land Royale</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #141a1e;
+        color: #e9edf1;
+        font-family: system-ui, sans-serif;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      .panel {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 10;
+      }
+      .panel h2 {
+        margin: 0 0 4px;
+        font-size: 15px;
+        letter-spacing: 0.12em;
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+      }
+      button {
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.active {
+        background: #d7b26a;
+        color: #1d1608;
+      }
+      #meta {
+        position: fixed;
+        bottom: 12px;
+        left: 14px;
+        font-size: 12px;
+        opacity: 0.75;
+      }
+      a {
+        color: #9fd0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div class="panel">
+      <h2>TANKFORGE INSPECTOR</h2>
+      <div class="row" id="presets"></div>
+      <div class="row">
+        <button id="rotate" class="active">Pause rotation</button>
+        <a href="./"><button>Back to game</button></a>
+      </div>
+    </div>
+    <div id="meta"></div>
+    <script type="module" src="/src/tank-viewer.ts"></script>
+  </body>
+</html>

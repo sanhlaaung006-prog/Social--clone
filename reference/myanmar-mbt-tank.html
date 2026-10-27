@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Myanmar MBT — Long Structure | Reusable Tank Factory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #e9edf1;
+    --muted: #8b949e;
+    --line: rgba(233, 237, 241, 0.14);
+    --line-soft: rgba(233, 237, 241, 0.07);
+    --accent: #d7b26a;
+    --gold: #fecb00;
+    --green: #34b233;
+    --red: #ea2839;
+    --panel: rgba(11, 14, 18, 0.6);
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'Space Grotesk', 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0a0d10;
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  canvas { display: block; }
+
+  .hud {
+    position: fixed;
+    inset: 0;
+    padding: 26px 30px 24px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  .hud-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 500px;
+    animation: rise 0.9s cubic-bezier(.19,1,.22,1) both;
+  }
+
+  .brand-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .flag {
+    width: 26px;
+    height: 17px;
+    flex: none;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.22);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .flag::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom,
+      var(--gold) 0 33.33%, var(--green) 33.33% 66.66%, var(--red) 66.66% 100%);
+  }
+  .flag::after {
+    content: '★';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    text-shadow: 0 0 3px rgba(0,0,0,0.25);
+  }
+
+  .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(215, 178, 106, 0.13);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+
+  .sep { color: rgba(233,237,241,0.25); }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(28px, 4vw, 50px);
+    line-height: 0.93;
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    text-transform: uppercase;
+  }
+
+  h1 .accent { color: var(--accent); }
+
+  .tagline {
+    margin: 12px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .tagline .rule {
+    display: inline-block;
+    width: 30px;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .hud-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    animation: rise 0.9s 0.1s cubic-bezier(.19,1,.22,1) both;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    pointer-events: auto;
+  }
+
+  .seg {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  .seg button {
+    height: 27px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .seg button:hover { color: var(--ink); }
+
+  .seg button.is-active {
+    background: rgba(215,178,106,0.12);
+    border-color: rgba(215,178,106,0.35);
+    color: var(--ink);
+  }
+
+  .speed {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 35px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 68px;
+    height: 2px;
+    background: rgba(233,237,241,0.2);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(215,178,106,0.18);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+  }
+
+  #speedVal { min-width: 27px; color: var(--ink); letter-spacing: 0.02em; }
+
+  button.ctrl {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 35px;
+    padding: 0 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: border-color 0.25s ease, color 0.25s ease, background 0.25s ease;
+  }
+  button.ctrl:hover {
+    border-color: rgba(215,178,106,0.55);
+    color: var(--accent);
+    background: rgba(20,24,29,0.75);
+  }
+
+  button.ctrl .glyph { width: 8px; height: 8px; display: inline-block; position: relative; }
+  button.ctrl .glyph::before,
+  button.ctrl .glyph::after {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 2px;
+    background: currentColor; transition: all 0.2s ease;
+  }
+  button.ctrl .glyph::before { left: 0; }
+  button.ctrl .glyph::after { right: 0; }
+  button.ctrl.is-paused .glyph::before {
+    width: 0; height: 0; left: 1px; top: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 7px solid currentColor;
+    background: transparent;
+  }
+  button.ctrl.is-paused .glyph::after { display: none; }
+
+  .specs {
+    width: 310px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    overflow: hidden;
+    pointer-events: auto;
+  }
+
+  .specs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 13px;
+    border-bottom: 1px solid var(--line-soft);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .specs-head .tag {
+    color: var(--accent);
+    padding: 2px 6px;
+    border: 1px solid rgba(215,178,106,0.28);
+    border-radius: 2px;
+    font-size: 7.5px;
+    letter-spacing: 0.12em;
+  }
+
+  .spec-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 13px;
+    border-bottom: 1px solid var(--line-soft);
+    font-family: var(--mono);
+    font-size: 9px;
+  }
+  .spec-row:last-of-type { border-bottom: none; }
+  .spec-row .name { color: var(--ink); display: flex; align-items: baseline; gap: 8px; }
+  .spec-row .idx { font-size: 7.5px; color: var(--accent); opacity: 0.8; }
+  .spec-row .val { color: var(--muted); font-size: 8px; text-align: right; white-space: nowrap; }
+  .spec-row .val.hl { color: var(--accent); }
+
+  .livery-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 13px;
+    border-top: 1px solid var(--line-soft);
+    background: rgba(255,255,255,0.02);
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .swatches { display: flex; gap: 4px; }
+  .swatches i { width: 13px; height: 6px; display: block; border-radius: 1px; }
+
+  .specs-foot {
+    display: flex;
+    justify-content: space-between;
+    padding: 9px 13px;
+    border-top: 1px solid var(--line-soft);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .specs-foot b { color: var(--ink); font-weight: 500; }
+
+  .hud-bottom {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+    animation: rise 0.9s 0.22s cubic-bezier(.19,1,.22,1) both;
+  }
+
+  .meta {
+    font-family: var(--mono);
+    font-size: 8.5px;
+    line-height: 1.9;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 400; }
+  .meta .bar { display: block; width: 38px; height: 1px; background: var(--line); margin-bottom: 8px; }
+  .status { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--accent); font-size: 8px; letter-spacing: 0.14em; }
+  .status .led { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+
+  .angle {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    font-family: var(--mono);
+  }
+  .angle-label { font-size: 8.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  .angle-readout {
+    display: flex;
+    align-items: flex-start;
+    line-height: 0.85;
+    font-size: clamp(32px, 3.8vw, 46px);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+  }
+  .angle-readout sup { font-size: 0.38em; color: var(--accent); margin-left: 4px; margin-top: 5px; }
+  .angle-track { width: 128px; height: 1px; background: rgba(233,237,241,0.16); position: relative; overflow: hidden; }
+  .angle-fill { position: absolute; inset: 0 auto 0 0; width: 0%; background: var(--accent); transition: width 0.12s linear; }
+
+  .hint {
+    position: fixed;
+    left: 50%;
+    bottom: 15px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--line-soft);
+    background: rgba(10,13,16,0.45);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    font-family: var(--mono);
+    font-size: 7.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+    z-index: 6;
+    pointer-events: none;
+    animation: rise 1.1s 0.4s cubic-bezier(.19,1,.22,1) both;
+  }
+  .hint .key { color: var(--ink); }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 58px;
+    transform: translate(-50%, 10px);
+    padding: 9px 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(215,178,106,0.4);
+    background: rgba(14,18,22,0.94);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s ease;
+    z-index: 20;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  .frame-corner { position: fixed; width: 18px; height: 18px; z-index: 4; pointer-events: none; opacity: 0.32; }
+  .frame-corner::before, .frame-corner::after { content: ''; position: absolute; background: var(--muted); }
+  .frame-corner::before { width: 100%; height: 1px; }
+  .frame-corner::after { width: 1px; height: 100%; }
+  .fc-tl { top: 14px; left: 14px; }
+  .fc-tr { top: 14px; right: 14px; transform: scaleX(-1); }
+  .fc-bl { bottom: 14px; left: 14px; transform: scaleY(-1); }
+  .fc-br { bottom: 14px; right: 14px; transform: scale(-1); }
+
+  .loader {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: #0a0d10;
+    transition: opacity 0.6s ease, visibility 0.6s ease;
+  }
+  .loader.is-hidden { opacity: 0; visibility: hidden; }
+  .loader .mark {
+    width: 26px; height: 26px;
+    border: 1px solid rgba(215,178,106,0.3);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  .loader span { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.26em; text-transform: uppercase; color: var(--muted); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+  @media (max-width: 1020px) {
+    .specs { width: 276px; }
+    .brand { max-width: 400px; }
+    .speed { display: none; }
+  }
+
+  @media (max-width: 860px) {
+    .hud { padding: 18px; }
+    .specs { display: none; }
+    .tagline { font-size: 8px; }
+    .hint { display: none; }
+    .frame-corner { display: none; }
+    .angle-track { width: 92px; }
+  }
+
+  @media (max-width: 620px) {
+    h1 { font-size: 30px; }
+    .brand-line .hide-sm { display: none; }
+    .meta { font-size: 7.5px; }
+    .angle-label { font-size: 7.5px; }
+    .seg button { padding: 0 7px; font-size: 7.5px; }
+    .hud-top { flex-direction: column; align-items: flex-start; }
+    .brand { max-width: 100%; }
+    .hud-right { align-items: flex-start; width: 100%; }
+    .actions { justify-content: flex-start; }
+    .tagline { gap: 8px; }
+    .angle-readout { font-size: 30px; }
+  }
+
+  @media (max-height: 620px) and (max-width: 860px) {
+    .tagline { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="loader" id="loader">
+  <div class="mark"></div>
+  <span>Forging asset · MM-MBT</span>
+</div>
+
+<div class="frame-corner fc-tl"></div>
+<div class="frame-corner fc-tr"></div>
+<div class="frame-corner fc-bl"></div>
+<div class="frame-corner fc-br"></div>
+
+<div class="hud">
+  <div class="hud-top">
+    <div class="brand">
+      <div class="brand-line">
+        <span class="flag" aria-label="Flag of Myanmar"></span>
+        <span class="dot"></span>
+        Tatmadaw · Armoured Corps
+        <span class="sep">/</span>
+        <span class="hide-sm">Asset MM-01</span>
+      </div>
+      <div>
+        <h1>Myanmar<br><span class="accent">MBT · Long</span></h1>
+        <div class="tagline">
+          <span class="rule"></span>
+          Generic long structure
+          <span class="sep">·</span>
+          <span id="variantTag">MBT-2000</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hud-right">
+      <div class="actions">
+        <div class="seg" id="presets" role="group" aria-label="Tank structure preset">
+          <button type="button" data-preset="long" class="is-active">Long</button>
+          <button type="button" data-preset="standard">Standard</button>
+          <button type="button" data-preset="scout">Compact</button>
+        </div>
+        <label class="speed" for="speed">
+          Speed
+          <input type="range" id="speed" min="20" max="200" value="100" aria-label="Rotation speed">
+          <span id="speedVal">1.0×</span>
+        </label>
+        <button class="ctrl" id="toggle" type="button" title="Pause or resume (Space)">
+          <span class="glyph"></span>
+          <span id="toggleLabel">Pause</span>
+        </button>
+        <button class="ctrl" id="exportBtn" type="button" title="Copy current spec as JSON">Spec</button>
+      </div>
+
+      <aside class="specs">
+        <div class="specs-head">
+          <span>Structure parameters</span>
+          <span class="tag" id="presetTag">LONG</span>
+        </div>
+        <div class="spec-row">
+          <span class="name"><span class="idx">01</span>hull</span>
+          <span class="val hl" id="specHull">7.2 m</span>
+        </div>
+        <div class="spec-row">
+          <span class="name"><span class="idx">02</span>turret</span>
+          <span class="val" id="specTurret">2.3 × 2.9 m</span>
+        </div>
+        <div class="spec-row">
+          <span class="name"><span class="idx">03</span>barrel</span>
+          <span class="val" id="specBarrel">4.2 m</span>
+        </div>
+        <div class="spec-row">
+          <span class="name"><span class="idx">04</span>tracks</span>
+          <span class="val" id="specWheels">6 wheels / side</span>
+        </div>
+        <div class="livery-row">
+          <span>Livery · Myanmar</span>
+          <span class="swatches">
+            <i style="background:#fecb00"></i>
+            <i style="background:#34b233"></i>
+            <i style="background:#ea2839"></i>
+            <i style="background:#e9edf1"></i>
+          </span>
+        </div>
+        <div class="specs-foot">
+          <span>Triangles <b id="tris">—</b></span>
+          <span>Meshes <b id="meshes">—</b></span>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="hud-bottom">
+    <div class="meta">
+      <span class="bar"></span>
+      <span id="unitTitle">Myanmar MBT-2000 · long hull</span><br>
+      Factory <b>buildTank(spec)</b> · <b>window.TankForge</b><br>
+      Mesh keys <b>hull · turret · barrel · tracks</b>
+      <span class="status"><span class="led"></span><span id="statusText">Rotating</span></span>
+    </div>
+
+    <div class="angle">
+      <span class="angle-label">Y-axis rotation</span>
+      <div class="angle-readout"><span id="angle">000</span><sup>°</sup></div>
+      <div class="angle-track"><div class="angle-fill" id="angleFill"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="hint">
+  <span class="key">Drag</span> orbit
+  <span class="sep">·</span>
+  <span class="key">Scroll</span> zoom
+  <span class="sep">·</span>
+  <span class="key">Space</span> pause
+  <span class="sep">·</span>
+  <span class="key">1–3</span> presets
+</div>
+
+<div class="toast" id="toast">Spec copied</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   MYANMAR MBT · REUSABLE LONG-STRUCTURE TANK FACTORY
+   ----------------------------------------------------------------------------
+   Everything below the FACTORY header is data-driven:
+     - PRESETS describes hull / turret / gun / running-gear dimensions only.
+     - buildTank(spec) returns a fresh, fully detailed THREE.Group.
+     - Named handles: 'hull', 'turret', 'barrel', 'tracks'.
+   Public API (from console or another script):
+     TankForge.build(customSpec)   -> THREE.Group (does not mount)
+     TankForge.load('long'|'standard'|'scout')
+     TankForge.presets             -> dimension presets
+     TankForge.tank                -> live group
+   ========================================================================== */
+
+/* ------------------------------ RENDERER ---------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = makeBackdrop();
+scene.fog = new THREE.Fog(0x141a1e, 34, 68);
+
+const camera = new THREE.PerspectiveCamera(39, window.innerWidth / window.innerHeight, 0.1, 220);
+const isMobile = () => window.innerWidth / window.innerHeight < 0.85;
+camera.position.set(isMobile() ? 12 : 9.6, isMobile() ? 9 : 6.7, isMobile() ? 18 : 13.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.8, 0.4);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.enablePan = false;
+controls.minDistance = 7;
+controls.maxDistance = 28;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* --------------------------- CANVAS UTILITIES ---------------------------- */
+function makeCanvas(w, h) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  return { canvas, ctx: canvas.getContext('2d') };
+}
+
+function drawStar(ctx, cx, cy, outer, inner, points = 5, rotation = -Math.PI / 2) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const radius = i % 2 === 0 ? outer : inner;
+    const angle = rotation + (i * Math.PI) / points;
+    const x = cx + Math.cos(angle) * radius;
+    const y = cy + Math.sin(angle) * radius;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function makeBackdrop() {
+  const { canvas, ctx } = makeCanvas(1024, 1024);
+  const grad = ctx.createLinearGradient(0, 0, 0, 1024);
+  grad.addColorStop(0, '#303a41');
+  grad.addColorStop(0.36, '#20282e');
+  grad.addColorStop(0.7, '#141a1e');
+  grad.addColorStop(1, '#090c0e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 1024, 1024);
+
+  const glow = ctx.createRadialGradient(512, 315, 20, 512, 315, 680);
+  glow.addColorStop(0, 'rgba(158, 178, 195, 0.26)');
+  glow.addColorStop(0.5, 'rgba(112, 132, 148, 0.08)');
+  glow.addColorStop(1, 'rgba(112, 132, 148, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 1024, 1024);
+
+  for (let i = 0; i < 4200; i++) {
+    ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.022})`;
+    ctx.fillRect(Math.random() * 1024, Math.random() * 1024, 1, 1);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* Myanmar flag + white star decal textures — shared by every rebuild. */
+function makeFlagTexture() {
+  const { canvas, ctx } = makeCanvas(256, 170);
+  const band = 170 / 3;
+  const colors = ['#fecb00', '#34b233', '#ea2839'];
+  colors.forEach((color, i) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, Math.round(i * band), 256, Math.ceil(band));
+  });
+  ctx.fillStyle = '#ffffff';
+  drawStar(ctx, 128, 85, 40, 16, 5);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function makeStarTexture() {
+  const { canvas, ctx } = makeCanvas(256, 256);
+  ctx.clearRect(0, 0, 256, 256);
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.45)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  drawStar(ctx, 128, 128, 104, 42, 5);
+  ctx.restore();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+const FLAG_TEX = makeFlagTexture();
+const STAR_TEX = makeStarTexture();
+
+/* ------------------------------- LIGHTING -------------------------------- */
+scene.add(new THREE.HemisphereLight(0xd6e0e8, 0x262a24, 0.95));
+
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.4);
+sun.position.set(9, 14, 9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -12;
+sun.shadow.camera.right = 12;
+sun.shadow.camera.top = 12;
+sun.shadow.camera.bottom = -12;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 45;
+sun.shadow.bias = -0.0008;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x9db4c9, 0.8);
+fill.position.set(-10, 6, -8);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdde7f1, 0.5);
+rim.position.set(-2, 4, -12);
+scene.add(rim);
+
+/* -------------------------------- STAGE ---------------------------------- */
+const stage = new THREE.Mesh(
+  new THREE.CylinderGeometry(10.2, 10.5, 0.4, 80),
+  new THREE.MeshStandardMaterial({ color: 0x2b3134, roughness: 0.95, metalness: 0.05 })
+);
+stage.position.y = -0.2;
+stage.receiveShadow = true;
+scene.add(stage);
+
+function addRing(inner, outer, color, opacity) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(inner, outer, 140),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.012;
+  scene.add(ring);
+}
+addRing(9.55, 9.62, 0x6d7880, 0.5);
+addRing(5.1, 5.13, 0x59626a, 0.28);
+
+const tickLong = new THREE.BoxGeometry(0.035, 0.012, 0.46);
+const tickShort = new THREE.BoxGeometry(0.028, 0.012, 0.22);
+const tickMatA = new THREE.MeshStandardMaterial({ color: 0x6d7880, roughness: 0.8 });
+const tickMatB = new THREE.MeshStandardMaterial({ color: 0x3e464d, roughness: 0.9 });
+for (let i = 0; i < 72; i++) {
+  const major = i % 6 === 0;
+  const angle = (i / 72) * Math.PI * 2;
+  const tick = new THREE.Mesh(major ? tickLong : tickShort, major ? tickMatA : tickMatB);
+  tick.position.set(Math.sin(angle) * 9.2, 0.015, Math.cos(angle) * 9.2);
+  tick.rotation.y = angle;
+  scene.add(tick);
+}
+
+/* soft contact shadow, re-scaled for each preset */
+const shadowTex = (() => {
+  const { canvas, ctx } = makeCanvas(256, 256);
+  const grad = ctx.createRadialGradient(128, 128, 6, 128, 128, 126);
+  grad.addColorStop(0, 'rgba(0,0,0,0.66)');
+  grad.addColorStop(0.5, 'rgba(0,0,0,0.32)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(canvas);
+})();
+const shadowPivot = new THREE.Group();
+shadowPivot.position.y = 0.014;
+scene.add(shadowPivot);
+
+const blobShadow = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.72, depthWrite: false })
+);
+blobShadow.rotation.x = -Math.PI / 2;
+shadowPivot.add(blobShadow);
+
+/* stage lettering */
+(function stageMarking() {
+  const { canvas, ctx } = makeCanvas(1024, 128);
+  ctx.clearRect(0, 0, 1024, 128);
+  ctx.fillStyle = 'rgba(226,232,236,0.30)';
+  ctx.font = '600 34px JetBrains Mono, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('MYANMAR  ·  ARMOURED CORPS  ·  MM-01', 512, 64);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.2, 0.78),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.7, depthWrite: false })
+  );
+  plate.rotation.x = -Math.PI / 2;
+  plate.position.set(0, 0.013, 7.1);
+  scene.add(plate);
+})();
+
+/* ============================================================================
+   FACTORY · helpers
+   ========================================================================== */
+const flat = (color, roughness = 0.72, metalness = 0.16) =>
+  new THREE.MeshStandardMaterial({ color, roughness, metalness, flatShading: true });
+
+function box(w, h, d, mat, name) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  if (name) mesh.name = name;
+  return mesh;
+}
+
+function cyl(rTop, rBottom, h, segments, mat, name) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBottom, h, segments), mat);
+  if (name) mesh.name = name;
+  return mesh;
+}
+
+function put(mesh, x, y, z, rx = 0, ry = 0, rz = 0) {
+  mesh.position.set(x, y, z);
+  mesh.rotation.set(rx, ry, rz);
+  return mesh;
+}
+
+function decal(texture, w, h, name) {
+  const isStar = texture === STAR_TEX;
+  const mat = new THREE.MeshStandardMaterial({
+    map: texture,
+    roughness: 0.78,
+    metalness: 0.04,
+    side: THREE.DoubleSide,
+    transparent: isStar,
+    alphaTest: isStar ? 0.35 : 0,
+    depthWrite: !isStar
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  mesh.name = name;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  return mesh;
+}
+
+/* ============================================================================
+   PRESETS · dimension-only data. Every preset runs through the same factory.
+   ========================================================================== */
+const PRESETS = {
+  long: {
+    id: 'MM-LONG',
+    label: 'LONG',
+    variant: 'MBT-2000',
+    unit: 'Myanmar MBT-2000 · long hull',
+    hullLength: 7.2, hullWidth: 2.9,
+    turretWidth: 2.3, turretHeight: 0.72, turretLength: 2.9, turretYaw: 8,
+    barrelLength: 4.2, barrelRadius: 0.085,
+    wheels: 6, wheelRadius: 0.34, trackWidth: 0.58,
+    skirtPanels: 3
+  },
+  standard: {
+    id: 'MM-STD',
+    label: 'STANDARD',
+    variant: 'T-72S',
+    unit: 'Myanmar T-72S · standard hull',
+    hullLength: 6.3, hullWidth: 2.7,
+    turretWidth: 2.15, turretHeight: 0.68, turretLength: 2.65, turretYaw: 6,
+    barrelLength: 3.6, barrelRadius: 0.08,
+    wheels: 5, wheelRadius: 0.33, trackWidth: 0.55,
+    skirtPanels: 2
+  },
+  scout: {
+    id: 'MM-LT',
+    label: 'COMPACT',
+    variant: 'Type-63',
+    unit: 'Myanmar Type-63 · compact hull',
+    hullLength: 5.4, hullWidth: 2.4,
+    turretWidth: 1.9, turretHeight: 0.62, turretLength: 2.15, turretYaw: 12,
+    barrelLength: 2.9, barrelRadius: 0.072,
+    wheels: 4, wheelRadius: 0.31, trackWidth: 0.5,
+    skirtPanels: 1
+  }
+};
+
+/* ============================================================================
+   FACTORY · assembly functions
+   ========================================================================== */
+function makeMaterials() {
+  return {
+    hull: flat(0x8b9182, 0.72, 0.18),
+    upper: flat(0x969c8d, 0.69, 0.2),
+    hullDark: flat(0x686e60, 0.8, 0.16),
+    turret: flat(0x898f80, 0.66, 0.22),
+    gun: flat(0x6f7568, 0.56, 0.3),
+    track: flat(0x454a41, 0.92, 0.1),
+    wheel: flat(0x585e52, 0.82, 0.18),
+    metal: flat(0x767c6e, 0.6, 0.28),
+    light: flat(0xc9ccbf, 0.5, 0.24),
+    stripeY: flat(0xe9c349, 0.8, 0.04),
+    stripeG: flat(0x4b7a4f, 0.8, 0.04),
+    stripeR: flat(0xb0403f, 0.8, 0.04)
+  };
+}
+
+function resolveDimensions(spec) {
+  const L = spec.hullLength;
+  const W = spec.hullWidth;
+  return {
+    L, W,
+    hullH: 0.62,
+    upperH: 0.55,
+    upperLen: L * 0.8,
+    upperZ: -L * 0.045,
+    trackW: spec.trackWidth,
+    trackH: 0.98,
+    trackY: 0.54,
+    trackLen: L + 0.35,
+    trackX: W / 2 + spec.trackWidth / 2 - 0.03,
+    wheels: spec.wheels,
+    wheelR: spec.wheelRadius,
+    turretW: spec.turretWidth,
+    turretH: spec.turretHeight,
+    turretL: spec.turretLength,
+    turretYaw: spec.turretYaw,
+    turretY: 1.88,
+    turretZ: -L * 0.035,
+    barrelLen: spec.barrelLength,
+    barrelR: spec.barrelRadius,
+    skirtPanels: spec.skirtPanels
+  };
+}
+
+/* --------------------------------- TRACKS -------------------------------- */
+function buildTrack(d, M, side) {
+  const group = new THREE.Group();
+  group.name = side < 0 ? 'trackLeft' : 'trackRight';
+  const x = side * d.trackX;
+  const top = d.trackY + d.trackH / 2;
+
+  // primary track band — the required 'tracks' mesh
+  const band = box(d.trackW, d.trackH, d.trackLen, M.track, 'tracks');
+  put(band, x, d.trackY, 0);
+  group.add(band);
+
+  // inner frame rail
+  group.add(put(
+    box(d.trackW * 0.5, 0.2, d.trackLen * 0.88, M.hullDark, 'trackFrame'),
+    x, top - 0.08, 0
+  ));
+
+  // road wheels follow the preset count
+  const usable = d.trackLen - 1.35;
+  for (let i = 0; i < d.wheels; i++) {
+    const z = d.wheels === 1 ? 0 : -usable / 2 + (usable / (d.wheels - 1)) * i;
+    group.add(put(
+      cyl(d.wheelR, d.wheelR, d.trackW * 1.08, 12, M.wheel, 'roadWheel'),
+      x, d.trackY - 0.02, z, 0, 0, Math.PI / 2
+    ));
+    group.add(put(
+      cyl(d.wheelR * 0.38, d.wheelR * 0.38, d.trackW * 1.16, 8, M.metal, 'wheelHub'),
+      x, d.trackY - 0.02, z, 0, 0, Math.PI / 2
+    ));
+  }
+
+  // drive sprockets / idlers
+  [-1, 1].forEach((end) => {
+    const z = end * (d.trackLen / 2 - 0.42);
+    group.add(put(
+      cyl(0.4, 0.4, d.trackW * 1.02, 12, M.wheel, 'sprocket'),
+      x, d.trackY + 0.02, z, 0, 0, Math.PI / 2
+    ));
+    group.add(put(
+      cyl(0.16, 0.16, d.trackW * 1.1, 8, M.metal, 'sprocketHub'),
+      x, d.trackY + 0.02, z, 0, 0, Math.PI / 2
+    ));
+  });
+
+  // tread cleats — count derived from track length
+  const cleats = Math.max(7, Math.round(d.trackLen / 0.44));
+  for (let i = 0; i < cleats; i++) {
+    const z = -d.trackLen / 2 + 0.22 + i * ((d.trackLen - 0.44) / (cleats - 1));
+    group.add(put(box(d.trackW + 0.02, 0.075, 0.26, M.track, 'tread'), x, top + 0.03, z));
+    group.add(put(box(d.trackW + 0.02, 0.075, 0.26, M.track, 'tread'), x, d.trackY - d.trackH / 2 - 0.03, z));
+  }
+
+  // upper guard rail
+  group.add(put(box(0.1, 0.15, d.trackLen * 0.8, M.hullDark, 'trackRail'), x + side * 0.27, top - 0.05, 0));
+
+  // mud flaps
+  group.add(put(box(d.trackW + 0.08, 0.3, 0.09, M.hullDark, 'mudFlap'), x, top + 0.12, d.trackLen / 2 - 0.06, 0.2, 0, 0));
+  group.add(put(box(d.trackW + 0.08, 0.3, 0.09, M.hullDark, 'mudFlap'), x, top + 0.12, -d.trackLen / 2 + 0.06, -0.2, 0, 0));
+
+  return group;
+}
+
+/* ---------------------------------- HULL --------------------------------- */
+function buildHull(d, M) {
+  const group = new THREE.Group();
+  group.name = 'hullGroup';
+
+  // primary hull volume — the required 'hull' mesh
+  group.add(put(box(d.W, d.hullH, d.L, M.hull, 'hull'), 0, 1.02, 0));
+
+  // lower side sponsons
+  [-1, 1].forEach((side) => {
+    group.add(put(box(0.16, 0.32, d.L * 0.88, M.hullDark, 'sideSponson'), side * (d.W / 2 + 0.05), 0.94, 0));
+  });
+
+  // upper superstructure (long, generic deck)
+  group.add(put(box(d.W * 0.9, d.upperH, d.upperLen, M.upper, 'superstructure'), 0, 1.6, d.upperZ));
+
+  // glacis plate
+  group.add(put(
+    box(d.W * 0.9, 0.18, 1.65, M.hull, 'glacis'),
+    0, 1.38, d.L / 2 - 1.06, 0.58, 0, 0
+  ));
+
+  // nose + rear plates + transmission
+  group.add(put(box(d.W * 0.94, 0.46, 0.2, M.hullDark, 'nosePlate'), 0, 0.95, d.L / 2 - 0.03));
+  group.add(put(box(d.W * 0.9, 0.5, 0.16, M.hullDark, 'rearPlate'), 0, 1.05, -d.L / 2 + 0.03));
+  group.add(put(box(d.W * 0.7, 0.38, 0.26, M.metal, 'transmission'), 0, 0.9, -d.L / 2 - 0.1));
+
+  // fenders
+  [-1, 1].forEach((side) => {
+    group.add(put(box(0.8, 0.12, d.L * 0.9, M.hull, 'fender'), side * (d.W / 2 + 0.02), 1.4, 0));
+  });
+
+  // modular side skirts demonstrate the long-structure theme
+  [-1, 1].forEach((side) => {
+    const panelLen = (d.L * 0.72) / d.skirtPanels;
+    for (let i = 0; i < d.skirtPanels; i++) {
+      const z = -d.L * 0.36 + panelLen * (i + 0.5);
+      group.add(put(
+        box(0.07, 0.44, panelLen * 0.9, M.hullDark, 'skirtPanel'),
+        side * (d.trackX + d.trackW / 2 + 0.02), 1.03, z
+      ));
+    }
+  });
+
+  // side stowage rails
+  [-1, 1].forEach((side) => {
+    group.add(put(box(0.2, 0.3, d.L * 0.3, M.hullDark, 'sideStowage'), side * (d.W / 2 - 0.04), 1.62, -d.L * 0.2));
+    group.add(put(cyl(0.028, 0.028, d.L * 0.26, 6, M.metal, 'towCable'), side * (d.W / 2 - 0.02), 1.82, -d.L * 0.15, Math.PI / 2, 0, 0));
+  });
+
+  // engine deck + grille slats
+  const deckLen = d.L * 0.27;
+  const deckZ = -d.L * 0.27;
+  group.add(put(box(d.W * 0.74, 0.08, deckLen, M.hullDark, 'engineDeck'), 0, 1.9, deckZ));
+  const slats = Math.max(5, Math.round(deckLen / 0.24));
+  for (let i = 0; i < slats; i++) {
+    group.add(put(
+      box(d.W * 0.62, 0.035, 0.1, M.metal, 'grilleSlat'),
+      0, 1.95, deckZ - deckLen / 2 + 0.18 + i * ((deckLen - 0.36) / Math.max(1, slats - 1))
+    ));
+  }
+  [-0.85, 0.85].forEach((x) => {
+    group.add(put(cyl(0.09, 0.09, 0.24, 8, M.hullDark, 'exhaust'), x, 1.97, -d.L / 2 + 0.42, 0.28, 0, 0));
+  });
+  [-0.55, 0.55].forEach((x) => {
+    group.add(put(cyl(0.16, 0.16, 0.05, 10, M.metal, 'fuelCap'), x, 1.96, -d.L * 0.18));
+  });
+
+  // headlights + guards
+  [-0.98, 0.98].forEach((x) => {
+    group.add(put(box(0.32, 0.1, 0.24, M.hullDark, 'lightGuard'), x, 1.7, d.L / 2 - 0.28));
+    group.add(put(cyl(0.12, 0.12, 0.1, 10, M.light, 'headlight'), x, 1.56, d.L / 2 - 0.22, Math.PI / 2, 0, 0));
+  });
+
+  // driver periscopes
+  for (let i = 0; i < 3; i++) {
+    group.add(put(box(0.16, 0.1, 0.1, M.metal, 'periscope'), -0.4 + i * 0.4, 1.89, d.L * 0.2));
+  }
+
+  // tow hooks + spare track links on the nose
+  [-1.0, 1.0].forEach((x) => {
+    group.add(put(box(0.18, 0.2, 0.24, M.metal, 'towHook'), x, 0.86, d.L / 2 + 0.12));
+  });
+  for (let i = 0; i < 3; i++) {
+    group.add(put(box(0.55, 0.07, 0.22, M.track, 'spareTrack'), -0.7, 1.08 + i * 0.085, d.L / 2 + 0.1, 0.42, 0, 0));
+  }
+
+  // lifting eyes along the long deck
+  [-1, 1].forEach((side) => {
+    [-1, 1].forEach((end) => {
+      group.add(put(box(0.12, 0.12, 0.06, M.metal, 'liftingEye'), side * 0.65, 1.9, end * d.L * 0.17));
+    });
+  });
+
+  // Myanmar recognition flag panels on the hull flanks
+  const flagW = Math.min(0.9, d.L * 0.14);
+  const flagH = flagW * 0.66;
+  [-1, 1].forEach((side) => {
+    const flag = decal(FLAG_TEX, flagW, flagH, 'flagDecal');
+    put(flag, side * (d.W * 0.45 + 0.012), 1.63, d.L * 0.16, 0, side * Math.PI / 2, 0);
+    group.add(flag);
+  });
+
+  return group;
+}
+
+/* -------------------------------- TURRET --------------------------------- */
+function buildTurret(d, M) {
+  const pivot = new THREE.Group();
+  pivot.name = 'turretPivot';
+  pivot.position.set(0, d.turretY, d.turretZ);
+  pivot.rotation.y = THREE.MathUtils.degToRad(d.turretYaw);
+
+  const tw = d.turretW;
+  const th = d.turretH;
+  const tl = d.turretL;
+
+  // primary turret body — the required 'turret' mesh
+  const turret = box(tw, th, tl, M.turret, 'turret');
+  put(turret, 0, th / 2, 0);
+  pivot.add(turret);
+
+  // low turret ring
+  pivot.add(put(box(tw * 0.74, 0.12, tl * 0.72, M.hullDark, 'turretRing'), 0, 0.03, -0.05));
+
+  // sloped front wedge
+  pivot.add(put(box(tw * 0.86, 0.4, 0.7, M.upper, 'turretFront'), 0, th * 0.42, tl / 2 - 0.22, -0.14, 0, 0));
+
+  // angled side cheeks
+  [-1, 1].forEach((side) => {
+    pivot.add(put(
+      box(0.22, 0.48, tl * 0.72, M.upper, 'turretCheek'),
+      side * (tw / 2 - 0.03), th * 0.45, -0.1, 0, 0, side * 0.1
+    ));
+  });
+
+  // roof
+  pivot.add(put(box(tw * 0.84, 0.08, tl * 0.82, M.hull, 'turretRoof'), 0, th + 0.03, -0.02));
+
+  // rear bustle + stowage basket
+  pivot.add(put(box(tw * 0.8, 0.42, 0.6, M.hullDark, 'bustleRack'), 0, th * 0.44, -tl / 2 - 0.25));
+  pivot.add(put(box(tw * 0.7, 0.06, 0.5, M.metal, 'bustleFloor'), 0, th * 0.2, -tl / 2 - 0.27));
+  [-0.72, 0.72].forEach((x) => {
+    pivot.add(put(cyl(0.024, 0.024, 0.46, 6, M.metal, 'bustleRail'), x, th * 0.5, -tl / 2 - 0.55));
+  });
+  [-0.55, 0.55].forEach((x) => {
+    pivot.add(put(box(0.4, 0.26, 0.34, M.upper, 'turretStowage'), x, th + 0.12, -tl * 0.36));
+  });
+
+  // commander cupola + hatch + pintle MG
+  pivot.add(put(cyl(0.33, 0.35, 0.22, 12, M.hullDark, 'cupola'), 0.52, th + 0.14, -tl * 0.12));
+  pivot.add(put(cyl(0.28, 0.28, 0.06, 12, M.upper, 'cupolaHatch'), 0.52, th + 0.27, -tl * 0.12));
+  pivot.add(put(cyl(0.04, 0.04, 0.2, 8, M.metal, 'pintle'), 0.52, th + 0.36, -tl * 0.18));
+  pivot.add(put(box(0.1, 0.1, 0.38, M.metal, 'cupolaMG'), 0.52, th + 0.44, -tl * 0.12 + 0.2));
+  pivot.add(put(cyl(0.02, 0.02, 0.7, 6, M.gun, 'cupolaMGbarrel'), 0.52, th + 0.46, -tl * 0.12 + 0.72, Math.PI / 2, 0, 0));
+
+  // loader hatch
+  pivot.add(put(cyl(0.26, 0.26, 0.06, 12, M.upper, 'loaderHatch'), -0.5, th + 0.09, tl * 0.1));
+
+  // sight heads
+  [-0.3, 0.3].forEach((x) => {
+    pivot.add(put(box(0.18, 0.12, 0.1, M.metal, 'turretSight'), x, th + 0.09, tl * 0.3));
+  });
+
+  // smoke-grenade launchers
+  [-1, 1].forEach((side) => {
+    pivot.add(put(box(0.26, 0.1, 0.62, M.metal, 'smokeBank'), side * (tw / 2 - 0.12), th * 0.55, tl * 0.2));
+    for (let i = 0; i < 3; i++) {
+      pivot.add(put(
+        cyl(0.052, 0.052, 0.36, 8, M.hullDark, 'smokeLauncher'),
+        side * (tw / 2 - 0.1), th * 0.66, tl * 0.1 + i * 0.17, 0.42, 0, side * 0.32
+      ));
+    }
+  });
+
+  // antenna + Myanmar pennant
+  pivot.add(put(cyl(0.05, 0.06, 0.1, 8, M.metal, 'antennaBase'), -0.78, th + 0.11, -tl * 0.28));
+  pivot.add(put(cyl(0.012, 0.016, 1.6, 5, M.metal, 'antenna'), -0.8, th + 0.95, -tl * 0.29, 0, 0, 0.06));
+  const pennant = decal(FLAG_TEX, 0.5, 0.32, 'flagDecal');
+  put(pennant, -0.8, th + 1.42, -tl * 0.29 + 0.25, 0, Math.PI / 2, 0);
+  pivot.add(pennant);
+
+  // Myanmar flag plates on both turret flanks
+  const flagW = Math.min(0.92, tl * 0.34);
+  const flagH = flagW * 0.66;
+  [-1, 1].forEach((side) => {
+    const flag = decal(FLAG_TEX, flagW, flagH, 'flagDecal');
+    put(flag, side * (tw / 2 + 0.008), th * 0.55, tl * 0.02, 0, side * Math.PI / 2, 0);
+    pivot.add(flag);
+  });
+
+  // white star on the turret roof
+  const star = decal(STAR_TEX, tw * 0.52, tw * 0.52, 'starInsignia');
+  put(star, -0.16, th + 0.075, -tl * 0.02, -Math.PI / 2, 0, 0);
+  pivot.add(star);
+
+  // mantlet + collar
+  pivot.add(put(box(0.68, 0.44, 0.36, M.gun, 'mantlet'), 0, th * 0.5, tl / 2 + 0.05));
+  pivot.add(put(cyl(0.25, 0.28, 0.44, 14, M.gun, 'barrelCollar'), 0, th * 0.5, tl / 2 + 0.32, Math.PI / 2, 0, 0));
+
+  // MAIN GUN — required 'barrel' mesh
+  const barrelStart = tl / 2 + 0.52;
+  const barrel = cyl(d.barrelR, d.barrelR * 1.38, d.barrelLen, 14, M.gun, 'barrel');
+  put(barrel, 0, th * 0.5, barrelStart + d.barrelLen / 2, Math.PI / 2, 0, 0);
+  pivot.add(barrel);
+
+  // Myanmar recognition bands wrapped around the barrel
+  [0.72, 0.86, 1.0].forEach((offset, i) => {
+    const ring = cyl(d.barrelR * 1.55, d.barrelR * 1.55, 0.07, 14,
+      [M.stripeY, M.stripeG, M.stripeR][i], 'recognitionBand');
+    put(ring, 0, th * 0.5, barrelStart + offset, Math.PI / 2, 0, 0);
+    pivot.add(ring);
+  });
+
+  // thermal sleeve segments
+  [1.55, 2.15].forEach((offset) => {
+    pivot.add(put(
+      cyl(d.barrelR * 1.32, d.barrelR * 1.32, 0.5, 12, M.hullDark, 'thermalSleeve'),
+      0, th * 0.5, barrelStart + offset, Math.PI / 2, 0, 0
+    ));
+  });
+
+  // muzzle brake + ridge
+  const muzzleZ = barrelStart + d.barrelLen + 0.22;
+  pivot.add(put(cyl(0.16, 0.16, 0.44, 14, M.gun, 'muzzleBrake'), 0, th * 0.5, muzzleZ, Math.PI / 2, 0, 0));
+  pivot.add(put(cyl(0.185, 0.185, 0.06, 14, M.metal, 'muzzleRidge'), 0, th * 0.5, muzzleZ - 0.14, Math.PI / 2, 0, 0));
+  pivot.add(put(cyl(0.185, 0.185, 0.06, 14, M.metal, 'muzzleRidge'), 0, th * 0.5, muzzleZ + 0.14, Math.PI / 2, 0, 0));
+
+  // co-axial machine gun
+  pivot.add(put(cyl(0.03, 0.03, 1.15, 8, M.metal, 'coaxMG'), 0.42, th * 0.58, tl / 2 + 0.85, Math.PI / 2, 0, 0));
+
+  return pivot;
+}
+
+/* ------------------------- FACTORY · public entry ------------------------ */
+function buildTank(spec) {
+  const d = resolveDimensions(spec);
+  const M = makeMaterials();
+  const root = new THREE.Group();
+  root.name = 'tank';
+
+  root.add(buildTrack(d, M, -1));
+  root.add(buildTrack(d, M, 1));
+  root.add(buildHull(d, M));
+  root.add(buildTurret(d, M));
+
+  root.traverse((obj) => {
+    if (!obj.isMesh) return;
+    if (obj.name === 'flagDecal' || obj.name === 'starInsignia') return;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+  });
+
+  root.userData.spec = spec;
+  root.userData.dimensions = d;
+  return root;
+}
+
+/* ============================================================================
+   MOUNT / STATE / UI
+   ========================================================================== */
+const master = new THREE.Group();
+scene.add(master);
+
+let currentKey = 'long';
+let currentSpec = PRESETS.long;
+let tank = null;
+let rotation = 0.32;
+let rotating = true;
+let speedMultiplier = 1;
+let lastWholeAngle = -1;
+
+const angleEl = document.getElementById('angle');
+const angleFill = document.getElementById('angleFill');
+const statusText = document.getElementById('statusText');
+const toggleBtn = document.getElementById('toggle');
+const toggleLabel = document.getElementById('toggleLabel');
+const speedInput = document.getElementById('speed');
+const speedVal = document.getElementById('speedVal');
+const toastEl = document.getElementById('toast');
+
+function disposeTree(root) {
+  root.traverse((obj) => {
+    if (!obj.isMesh) return;
+    if (obj.geometry) obj.geometry.dispose();
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    materials.forEach((mat) => mat.dispose());
+  });
+}
+
+function updateSpecPanel(spec) {
+  document.getElementById('specHull').textContent = spec.hullLength.toFixed(1) + ' m';
+  document.getElementById('specTurret').textContent =
+    spec.turretWidth.toFixed(2) + ' × ' + spec.turretLength.toFixed(2) + ' m';
+  document.getElementById('specBarrel').textContent = spec.barrelLength.toFixed(1) + ' m';
+  document.getElementById('specWheels').textContent = spec.wheels + ' wheels / side';
+  document.getElementById('presetTag').textContent = spec.label || 'CUSTOM';
+  document.getElementById('variantTag').textContent = spec.variant || spec.id || 'Custom hull';
+  document.getElementById('unitTitle').textContent = spec.unit || 'Custom structure specification';
+  document.getElementById('speed').setAttribute('aria-label', 'Rotation speed');
+}
+
+function updateStats() {
+  let triangles = 0;
+  let meshes = 0;
+  tank.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry) return;
+    meshes += 1;
+    const geo = obj.geometry;
+    const count = geo.index ? geo.index.count : geo.attributes.position.count;
+    triangles += count / 3;
+  });
+  document.getElementById('tris').textContent = Math.round(triangles).toLocaleString('en-US');
+  document.getElementById('meshes').textContent = String(meshes);
+}
+
+/* Rebuild pipeline shared by presets and custom specs. */
+function rebuild(spec, presetKey = null) {
+  if (tank) {
+    master.remove(tank);
+    disposeTree(tank);
+  }
+
+  currentKey = presetKey || spec.id || 'custom';
+  currentSpec = spec;
+  tank = buildTank(spec);
+  tank.rotation.y = rotation;
+  master.add(tank);
+
+  blobShadow.scale.set(spec.hullWidth + 4.6, spec.hullLength + 2.4, 1);
+
+  updateSpecPanel(spec);
+  updateStats();
+
+  document.querySelectorAll('#presets button').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.preset === presetKey);
+  });
+  document.title = (spec.variant || 'Custom') + ' — ' + (spec.label || 'HULL') + ' | Myanmar Tank Factory';
+}
+
+function mount(key) {
+  const spec = PRESETS[key];
+  if (!spec) return;
+  rebuild(spec, key);
+}
+
+function setRotating(value) {
+  rotating = value;
+  toggleBtn.classList.toggle('is-paused', !rotating);
+  toggleLabel.textContent = rotating ? 'Pause' : 'Resume';
+  statusText.textContent = rotating ? 'Rotating' : 'Paused';
+}
+
+let toastTimer = 0;
+function toast(message) {
+  toastEl.textContent = message;
+  toastEl.classList.add('show');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+document.querySelectorAll('#presets button').forEach((btn) => {
+  btn.addEventListener('click', () => mount(btn.dataset.preset));
+});
+
+toggleBtn.addEventListener('click', () => setRotating(!rotating));
+
+speedInput.addEventListener('input', () => {
+  speedMultiplier = Number(speedInput.value) / 100;
+  speedVal.textContent = speedMultiplier.toFixed(1) + '×';
+});
+
+document.getElementById('exportBtn').addEventListener('click', async () => {
+  const payload = JSON.stringify({ preset: currentKey, spec: currentSpec }, null, 2);
+  try {
+    await navigator.clipboard.writeText(payload);
+    toast('Spec JSON copied to clipboard');
+  } catch (err) {
+    console.log(payload);
+    toast('Spec JSON logged to console');
+  }
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.code === 'Space' || event.key === ' ') {
+    event.preventDefault();
+    setRotating(!rotating);
+    return;
+  }
+  const order = ['long', 'standard', 'scout'];
+  const index = Number(event.key) - 1;
+  if (index >= 0 && index < order.length) mount(order[index]);
+});
+
+/* reusable public API */
+window.TankForge = {
+  presets: PRESETS,
+  build: buildTank,
+  load: mount,
+  apply: (spec) => rebuild(spec),
+  get tank() { return tank; },
+  get spec() { return currentSpec; }
+};
+
+/* ------------------------------- BOOT ------------------------------------ */
+mount('long');
+setRotating(true);
+
+/* ------------------------------ RENDER LOOP ------------------------------ */
+const clock = new THREE.Clock();
+const BASE_SPEED = 0.42;
+let loaderDismissed = false;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  if (rotating) rotation += dt * BASE_SPEED * speedMultiplier;
+  if (tank) tank.rotation.y = rotation;
+  shadowPivot.rotation.y = rotation;
+
+  const degrees = ((rotation * 180) / Math.PI % 360 + 360) % 360;
+  const whole = Math.floor(degrees);
+  if (whole !== lastWholeAngle) {
+    lastWholeAngle = whole;
+    angleEl.textContent = String(whole).padStart(3, '0');
+    angleFill.style.width = ((degrees / 360) * 100).toFixed(2) + '%';
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+
+  if (!loaderDismissed) {
+    loaderDismissed = true;
+    const loader = document.getElementById('loader');
+    loader.classList.add('is-hidden');
+    setTimeout(() => loader.remove(), 700);
+  }
+}
+
+animate();
+</script>
+</body>
+</html>
