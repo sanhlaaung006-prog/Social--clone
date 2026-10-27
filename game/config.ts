@@ -10,6 +10,7 @@ export const CONFIG = {
     fogColor: 0xbfd4c0,
     fogNear: 45,
     fogFar: 150,
+    fogDensity: 0.0062,
     treeCount: 140,
     rockCount: 70,
     hutCount: 7,

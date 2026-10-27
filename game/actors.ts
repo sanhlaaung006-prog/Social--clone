@@ -1,6 +1,7 @@
 /*
- * Low-poly humanoid actors: shared box-built character, third-person player
- * controller and state-machine bots. All geometry is procedural primitives.
+ * Low-poly humanoid actors: shared rounded stylized character (tapered
+ * cylinders and sphere primitives — no box geometry), third-person player
+ * controller and state-machine bots. All geometry is procedural.
  */
 
 import * as THREE from "three";
@@ -23,8 +24,15 @@ export interface HumanoidParts {
   barGroup: THREE.Group;
 }
 
-function mat(color: number): THREE.MeshLambertMaterial {
-  return new THREE.MeshLambertMaterial({ color, flatShading: true });
+function mat(color: number): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.05, flatShading: true });
+}
+
+/** Horizontal cylinder along Z, for rifle barrels and similar details. */
+function zCylinder(rTop: number, rBottom: number, length: number, segments = 8): THREE.CylinderGeometry {
+  const geo = new THREE.CylinderGeometry(rTop, rBottom, length, segments, 1);
+  geo.rotateX(Math.PI / 2);
+  return geo;
 }
 
 export function buildHumanoid(uniform: number, accent: number): HumanoidParts {
@@ -34,53 +42,71 @@ export function buildHumanoid(uniform: number, accent: number): HumanoidParts {
   const dark = mat(0x3a3f38);
   const metal = mat(0x2c3138);
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.15, 0.55), cloth);
-  body.position.y = 1.75;
+  // Torso: tapered faceted cylinder with a subtle chest.
+  const torsoGeo = new THREE.CylinderGeometry(0.34, 0.44, 1.15, 8, 1);
+  const body = new THREE.Mesh(torsoGeo, cloth);
+  body.position.y = 1.78;
   body.castShadow = true;
   g.add(body);
 
-  const vest = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.55, 0.62), mat(accent));
-  vest.position.y = 1.85;
+  // Armor vest: a wider, shorter tapered band over the chest.
+  const vestGeo = new THREE.CylinderGeometry(0.4, 0.46, 0.6, 8, 1);
+  const vest = new THREE.Mesh(vestGeo, mat(accent));
+  vest.position.y = 1.9;
   vest.castShadow = true;
   g.add(vest);
 
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), skin);
-  head.position.y = 2.62;
+  // Sphere head with a hemisphere helmet and a small neck.
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.18, 7), skin);
+  neck.position.y = 2.42;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), skin);
+  head.position.y = 2.66;
   head.castShadow = true;
-  g.add(head);
-
-  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.28, 0.64), dark);
-  helmet.position.y = 2.92;
+  const helmetGeo = new THREE.SphereGeometry(0.35, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2);
+  const helmet = new THREE.Mesh(helmetGeo, dark);
+  helmet.position.y = 2.7;
   helmet.castShadow = true;
-  g.add(helmet);
+  g.add(neck, head, helmet);
 
-  const legGeo = new THREE.BoxGeometry(0.32, 1.05, 0.36);
+  // Limbs: tapered cylinders translated so the mesh origin is the
+  // hip/shoulder pivot — walk swings rotate around the joint, not the middle.
+  const legGeo = new THREE.CylinderGeometry(0.13, 0.18, 1.0, 7, 1);
+  legGeo.translate(0, -0.5, 0);
   const leftLeg = new THREE.Mesh(legGeo, dark);
-  leftLeg.position.set(-0.26, 0.62, 0);
+  leftLeg.position.set(-0.24, 1.18, 0);
   const rightLeg = new THREE.Mesh(legGeo, dark);
-  rightLeg.position.set(0.26, 0.62, 0);
+  rightLeg.position.set(0.24, 1.18, 0);
   leftLeg.castShadow = rightLeg.castShadow = true;
   g.add(leftLeg, rightLeg);
 
-  const armGeo = new THREE.BoxGeometry(0.26, 1.0, 0.3);
+  const armGeo = new THREE.CylinderGeometry(0.11, 0.15, 0.95, 7, 1);
+  armGeo.translate(0, -0.47, 0);
   const leftArm = new THREE.Mesh(armGeo, cloth);
-  leftArm.position.set(-0.62, 1.78, 0);
+  leftArm.position.set(-0.52, 2.22, 0);
   const rightArm = new THREE.Mesh(armGeo, cloth);
-  rightArm.position.set(0.62, 1.78, 0.12);
+  rightArm.position.set(0.52, 2.22, 0.1);
   leftArm.castShadow = rightArm.castShadow = true;
   g.add(leftArm, rightArm);
 
-  // Simple low-poly rifle held across the body.
-  const rifle = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 1.15), metal);
-  rifle.position.set(0.55, 1.7, 0.55);
-  rifle.castShadow = true;
+  // Low-poly rifle assembled from cylinders: receiver, barrel, magazine.
+  const rifle = new THREE.Group();
+  rifle.name = "rifle";
+  const receiver = new THREE.Mesh(zCylinder(0.09, 0.1, 0.7, 8), metal);
+  receiver.castShadow = true;
+  const barrel = new THREE.Mesh(zCylinder(0.045, 0.055, 0.7, 8), metal);
+  barrel.position.z = 0.62;
+  barrel.castShadow = true;
+  const mag = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.28, 6), metal);
+  mag.position.set(0, -0.16, -0.05);
+  mag.rotation.x = 0.25;
+  const stock = new THREE.Mesh(zCylinder(0.08, 0.1, 0.34, 7), metal);
+  stock.position.z = -0.48;
+  rifle.add(receiver, barrel, mag, stock);
+  rifle.position.set(0.46, 1.72, 0.45);
   g.add(rifle);
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.28, 0.32), metal);
-  stock.position.set(0.55, 1.72, 0.02);
-  g.add(stock);
 
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0.55, 1.7, 1.2);
+  muzzle.position.set(0.46, 1.72, 1.42);
   g.add(muzzle);
 
   // World-space health bar (billboarded by the engine).

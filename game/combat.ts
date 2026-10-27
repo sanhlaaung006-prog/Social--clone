@@ -106,31 +106,31 @@ export class Pickup {
     this.home = new THREE.Vector3(x, y, z);
 
     if (kind === "medkit") {
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 0.55, 0.7),
-        new THREE.MeshLambertMaterial({ color: 0xf2f2ee, flatShading: true })
-      );
-      const crossV = new THREE.Mesh(
-        new THREE.BoxGeometry(0.16, 0.4, 0.04),
-        new THREE.MeshBasicMaterial({ color: 0xd83b3b })
-      );
-      const crossH = new THREE.Mesh(
-        new THREE.BoxGeometry(0.4, 0.16, 0.04),
-        new THREE.MeshBasicMaterial({ color: 0xd83b3b })
-      );
-      crossV.position.z = 0.37;
-      crossH.position.z = 0.37;
-      this.group.add(box, crossV, crossH);
+      // Rounded medical canister with a lid and a red cross on top.
+      const white = new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.7, flatShading: true });
+      const canister = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.46, 0.42, 10), white);
+      const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.42, 0.1, 10), white);
+      lid.position.y = 0.26;
+      const red = new THREE.MeshBasicMaterial({ color: 0xd83b3b });
+      const barV = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.34, 6), red);
+      barV.rotation.x = Math.PI / 2;
+      barV.position.y = 0.33;
+      const barH = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.34, 6), red);
+      barH.rotation.z = Math.PI / 2;
+      barH.position.y = 0.33;
+      this.group.add(canister, lid, barV, barH);
     } else {
-      const crate = new THREE.Mesh(
-        new THREE.BoxGeometry(0.85, 0.7, 0.85),
-        new THREE.MeshLambertMaterial({ color: 0x6b7256, flatShading: true })
+      // Hexagonal ammo tin with a gold band around the middle.
+      const tin = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.44, 0.48, 0.62, 6),
+        new THREE.MeshStandardMaterial({ color: 0x6b7256, roughness: 0.8, flatShading: true })
       );
       const band = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 0.18, 0.9),
+        new THREE.TorusGeometry(0.46, 0.05, 6, 12),
         new THREE.MeshBasicMaterial({ color: 0xc9a23c })
       );
-      this.group.add(crate, band);
+      band.rotation.x = Math.PI / 2;
+      this.group.add(tin, band);
     }
 
     this.group.position.set(x, y + 0.8, z);

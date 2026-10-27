@@ -81,12 +81,17 @@ export class Engine {
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Filmic tone mapping gives the Standard materials soft, stylized
+    // highlights instead of clipped Lambert bands.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.setClearColor(FOG_HEX);
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.style.touchAction = "none";
 
-    this.scene.fog = new THREE.Fog(FOG_HEX, CONFIG.world.fogNear, CONFIG.world.fogFar);
+    // Exponential mist fades distant jungle naturally (no hard fog plane).
+    this.scene.fog = new THREE.FogExp2(FOG_HEX, CONFIG.world.fogDensity);
     this.scene.background = new THREE.Color(FOG_HEX);
 
     this.rig = new CameraRig(
