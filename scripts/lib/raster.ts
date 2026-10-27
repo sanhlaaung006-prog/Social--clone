@@ -62,6 +62,11 @@ export function gatherTriangles(scene: THREE.Object3D): Tri[] {
 
       const index = geo.getIndex();
       const count = index ? index.count : pos.count;
+      // InstancedMesh per-instance colors (setColorAt) override the base.
+      const instanceColors =
+        obj instanceof THREE.InstancedMesh ? obj.instanceColor : null;
+      const instanceTint = new THREE.Color();
+      if (instanceColors) instanceTint.fromBufferAttribute(instanceColors, inst);
       for (let t = 0; t < count; t += 3) {
         const i0 = index ? index.getX(t) : t;
         const i1 = index ? index.getX(t + 1) : t + 1;
@@ -82,6 +87,7 @@ export function gatherTriangles(scene: THREE.Object3D): Tri[] {
         } else {
           color = new THREE.Color(0xaaaaaa);
         }
+        if (instanceColors) color.multiply(instanceTint);
         tris.push({ a: va.clone(), b: vb.clone(), c: vc.clone(), color, unlit });
       }
     }

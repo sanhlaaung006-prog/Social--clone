@@ -5,7 +5,7 @@ export const CONFIG = {
 
   world: {
     size: 220, // playable square edge (units)
-    terrainSegments: 96, // low-poly heightfield resolution
+    terrainSegments: 128, // smooth stylized heightfield resolution
     waterLevel: 0.6,
     fogColor: 0xbfd4c0,
     fogNear: 45,

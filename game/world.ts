@@ -1,13 +1,25 @@
 /*
- * Procedural low-poly Myanmar-inspired world: faceted heightfield terrain,
- * monsoon mist, teak/dipterocarp jungle (instanced), boulders, a golden
- * pagoda landmark and stilt village huts. No texture assets needed.
+ * Procedural stylized low-poly Myanmar-inspired world.
+ *
+ * Art direction: smooth, rounded low-poly (Quaternius / PUBG-mobile feel),
+ * explicitly anti-voxel. The terrain is an indexed heightfield with smooth
+ * normals and blended color ramps; props use lofts, jittered polyhedra,
+ * tapered cylinders and lathe geometry — never raw box stacks. Props stay
+ * flat-shaded for the stylized faceted read; the ground itself is smooth.
+ * No texture assets or downloads are required.
  */
 
 import * as THREE from "three";
 import { CONFIG } from "./config";
 import type { NoiseImpl } from "./wasm/noise";
 import { Rng } from "./rng";
+import {
+  gabledHouseGeometry,
+  hash3,
+  jitteredBlobGeometry,
+  mergeNonIndexed,
+  varyPalette,
+} from "./geometry/kit";
 
 export interface CircleObstacle {
   x: number;
@@ -15,13 +27,20 @@ export interface CircleObstacle {
   r: number;
 }
 
-const COLORS = {
-  sand: new THREE.Color(0xd9c896),
-  grass: new THREE.Color(0x6f9e4e),
-  grassDark: new THREE.Color(0x4d7d3a),
-  dirt: new THREE.Color(0x8a6b46),
-  rock: new THREE.Color(0x7d7a72),
-  underwater: new THREE.Color(0x5d7f73),
+/* Muted, naturalistic palette (Quaternius-style desaturation). */
+const T = {
+  silt: new THREE.Color(0x4a6b63),
+  sand: new THREE.Color(0xd6c48f),
+  grassLow: new THREE.Color(0x7aa85a),
+  grassHigh: new THREE.Color(0x5e8c46),
+  olive: new THREE.Color(0x6b7d43),
+  dirt: new THREE.Color(0x8a6f4c),
+  rock: new THREE.Color(0x8a8a86),
+};
+
+const smooth = (a: number, b: number, v: number) => {
+  const t = THREE.MathUtils.clamp((v - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
 };
 
 export class World {
@@ -51,10 +70,10 @@ export class World {
   /* ------------------------------ lighting ------------------------------ */
 
   private buildLights() {
-    const hemi = new THREE.HemisphereLight(0xdfeee0, 0x55603f, 1.05);
+    const hemi = new THREE.HemisphereLight(0xdfeee0, 0x55603f, 1.15);
     this.group.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xfff2d6, 1.7);
+    const sun = new THREE.DirectionalLight(0xfff2d6, 2.1);
     sun.position.set(60, 90, 35);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -69,6 +88,11 @@ export class World {
     this.group.add(sun);
     this.group.add(sun.target);
     this.sun = sun;
+
+    // Cool fill from the opposite side lifts shadow detail without bloom.
+    const fill = new THREE.DirectionalLight(0x9db8d6, 0.45);
+    fill.position.set(-50, 35, -45);
+    this.group.add(fill);
   }
 
   private sun!: THREE.DirectionalLight;
@@ -83,11 +107,31 @@ export class World {
   /* -------------------------------- sky --------------------------------- */
 
   private buildSky() {
-    const geo = new THREE.SphereGeometry(380, 16, 12);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xaecfb8,
+    const geo = new THREE.SphereGeometry(380, 24, 16);
+    const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
+      depthWrite: false,
       fog: false,
+      uniforms: {
+        top: { value: new THREE.Color(0x86b3d4) },
+        horizon: { value: new THREE.Color(0xd6e1cc) },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        varying vec3 vDir;
+        uniform vec3 top;
+        uniform vec3 horizon;
+        void main() {
+          float h = smoothstep(-0.08, 0.55, vDir.y);
+          gl_FragColor = vec4(mix(horizon, top, h), 1.0);
+        }
+      `,
     });
     this.group.add(new THREE.Mesh(geo, mat));
   }
@@ -96,41 +140,60 @@ export class World {
 
   private buildTerrain() {
     const { size, terrainSegments, waterLevel } = CONFIG.world;
-    const plane = new THREE.PlaneGeometry(size, size, terrainSegments, terrainSegments);
-    const geo = plane.toNonIndexed();
-    plane.dispose();
-    geo.rotateX(-Math.PI / 2); // lie flat in XZ first, then displace Y
+    // Indexed geometry: shared vertices give smooth stylized normals,
+    // instead of the non-indexed faceted voxel look.
+    const geo = new THREE.PlaneGeometry(size, size, terrainSegments, terrainSegments);
+    geo.rotateX(-Math.PI / 2);
 
     const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, this.heightAt(pos.getX(i), pos.getZ(i)));
+    }
+    geo.computeVertexNormals();
+    const normals = geo.getAttribute("normal") as THREE.BufferAttribute;
+
     const colors = new Float32Array(pos.count * 3);
     const c = new THREE.Color();
+    const tmp = new THREE.Color();
+    const wl = waterLevel;
 
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      const h = this.heightAt(x, z);
-      pos.setY(i, h);
+      const h = pos.getY(i);
+      const ny = normals.getY(i);
 
-      if (h < waterLevel - 0.25) c.copy(COLORS.underwater);
-      else if (h < waterLevel + 0.55) c.copy(COLORS.sand);
-      else if (h < 3.2) c.copy(COLORS.grass);
-      else if (h < 7.5) c.copy(COLORS.grassDark);
-      else if (h < 10.5) c.copy(COLORS.dirt);
-      else c.copy(COLORS.rock);
+      // Height ramp with soft transitions — no hard band seams.
+      if (h < wl - 0.3) c.copy(T.silt);
+      else if (h < wl + 0.55) {
+        c.copy(T.silt).lerp(T.sand, smooth(wl - 0.3, wl + 0.1, h));
+        tmp.copy(T.sand).lerp(T.grassLow, smooth(wl + 0.1, wl + 0.55, h));
+        c.lerp(tmp, smooth(wl + 0.1, wl + 0.55, h));
+      } else {
+        c.copy(T.grassLow);
+        c.lerp(T.grassHigh, smooth(wl + 0.55, 4.5, h));
+        c.lerp(T.olive, smooth(4.5, 8, h));
+        c.lerp(T.dirt, smooth(8, 10.5, h));
+        c.lerp(T.rock, smooth(10.5, 13, h));
+      }
 
-      // subtle per-face brightness variation for a hand-painted feel
-      const v = 0.92 + ((i * 7919) % 100) / 100 * 0.16;
+      // Steep faces become exposed rock regardless of altitude.
+      const rockMix = smooth(0.78, 0.55, ny);
+      c.lerp(T.rock, rockMix * 0.8);
+
+      // Deterministic per-vertex brightness variation (hand-painted feel).
+      const v = 0.93 + hash3(x * 3.1, h * 5.7, z * 2.3) * 0.14;
       colors[i * 3] = c.r * v;
       colors[i * 3 + 1] = c.g * v;
       colors[i * 3 + 2] = c.b * v;
     }
-
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    geo.computeVertexNormals(); // flat facets from non-indexed geometry
 
-    const mat = new THREE.MeshLambertMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      flatShading: true,
+      roughness: 0.96,
+      metalness: 0.0,
+      flatShading: false, // smooth rolling hills
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
@@ -142,10 +205,12 @@ export class World {
 
   private buildWater() {
     const geo = new THREE.PlaneGeometry(CONFIG.world.size * 1.4, CONFIG.world.size * 1.4);
-    const mat = new THREE.MeshLambertMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       color: 0x3f7d8c,
       transparent: true,
       opacity: 0.72,
+      roughness: 0.22,
+      metalness: 0.12,
     });
     const water = new THREE.Mesh(geo, mat);
     water.rotation.x = -Math.PI / 2;
@@ -156,34 +221,44 @@ export class World {
   /* -------------------------- landmark: pagoda -------------------------- */
 
   private buildPagoda() {
-    // Put it on the highest ground near the map centre.
     const spot = this.findHighGround(0, 0, 40);
     const g = new THREE.Group();
-    const gold = new THREE.MeshLambertMaterial({ color: 0xd9a93b, flatShading: true });
-    const stone = new THREE.MeshLambertMaterial({ color: 0xb9b2a0, flatShading: true });
+    const gold = new THREE.MeshStandardMaterial({
+      color: 0xd9a93b,
+      metalness: 0.45,
+      roughness: 0.42,
+      flatShading: true,
+    });
+    const stone = new THREE.MeshStandardMaterial({
+      color: 0xb9b2a0,
+      roughness: 0.9,
+      metalness: 0.05,
+      flatShading: true,
+    });
 
-    const base = new THREE.Mesh(new THREE.BoxGeometry(10, 1.2, 10), stone);
-    base.position.y = 0.6;
-    g.add(base);
+    // Octagonal plinths (faceted cylinders, not boxes).
+    const plinth1 = new THREE.Mesh(new THREE.CylinderGeometry(6.4, 7.0, 0.9, 8), stone);
+    plinth1.position.y = 0.45;
+    const plinth2 = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 5.9, 0.8, 8), stone);
+    plinth2.position.y = 1.3;
+    g.add(plinth1, plinth2);
 
-    // Stepped terraces + bell + spire: the classic zedi silhouette.
-    let y = 1.2;
-    for (let i = 0; i < 4; i++) {
-      const w = 8.4 - i * 1.5;
-      const tier = new THREE.Mesh(new THREE.BoxGeometry(w, 0.8, w), gold);
-      tier.position.y = y + 0.4;
-      g.add(tier);
-      y += 0.8;
-    }
-    const bell = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.6, 3.2, 8), gold);
-    bell.position.y = y + 1.6;
-    g.add(bell);
-    const spire = new THREE.Mesh(new THREE.ConeGeometry(1.5, 4.5, 8), gold);
-    spire.position.y = y + 3.2 + 2.25;
-    g.add(spire);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.8, 6), gold);
-    tip.position.y = y + 3.2 + 4.5 + 0.9;
-    g.add(tip);
+    // Lathe-turned zedi body: stepped terraces flow into the bell and neck.
+    const profile = [
+      [4.6, 1.7], [4.6, 2.15], [4.0, 2.15], [4.0, 2.55],
+      [3.45, 2.55], [3.45, 2.95], [2.95, 2.95], [2.95, 3.3],
+      [2.55, 3.6], [3.05, 4.15], [2.7, 4.9], [2.0, 5.5],
+      [1.25, 5.95], [0.75, 6.25], [0.5, 6.45],
+    ].map(([x, y]) => new THREE.Vector2(x, y));
+    const body = new THREE.Mesh(new THREE.LatheGeometry(profile, 8), gold);
+    g.add(body);
+
+    // Tapering spire + finial.
+    const spire = new THREE.Mesh(new THREE.ConeGeometry(0.55, 3.4, 8), gold);
+    spire.position.y = 8.1;
+    const finial = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 6), gold);
+    finial.position.y = 9.9;
+    g.add(spire, finial);
 
     g.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -200,33 +275,39 @@ export class World {
 
   private buildHuts() {
     const rng = new Rng(CONFIG.seed + 41);
-    const wood = new THREE.MeshLambertMaterial({ color: 0x9c7448, flatShading: true });
-    const wall = new THREE.MeshLambertMaterial({ color: 0xc8b184, flatShading: true });
-    const leaf = new THREE.MeshLambertMaterial({ color: 0x4f7a3c, flatShading: true });
+    const wood = new THREE.MeshStandardMaterial({ color: 0x9c7448, roughness: 0.85, flatShading: true });
+    const wall = new THREE.MeshStandardMaterial({ color: 0xc8b184, roughness: 0.9, flatShading: true });
+    const leaf = new THREE.MeshStandardMaterial({ color: 0x4f7a3c, roughness: 0.85, flatShading: true });
+
+    // Square prism from a 4-segment cylinder and a matching pyramid roof —
+    // a gabled silhouette without a single box.
+    const wallGeo = new THREE.CylinderGeometry(1.85, 1.95, 2.0, 4, 1);
+    wallGeo.rotateY(Math.PI / 4);
+    const roofGeo = new THREE.ConeGeometry(2.9, 1.9, 4);
+    roofGeo.rotateY(Math.PI / 4);
+    const legGeo = new THREE.CylinderGeometry(0.13, 0.17, 2.4, 6);
+    legGeo.translate(0, 1.2, 0);
 
     const makeHut = (): THREE.Group => {
       const g = new THREE.Group();
-      const legGeo = new THREE.CylinderGeometry(0.14, 0.18, 2.4, 5);
       for (const [lx, lz] of [
-        [-1.6, -1.6],
-        [1.6, -1.6],
-        [-1.6, 1.6],
-        [1.6, 1.6],
+        [-1.5, -1.5],
+        [1.5, -1.5],
+        [-1.5, 1.5],
+        [1.5, 1.5],
       ]) {
         const leg = new THREE.Mesh(legGeo, wood);
-        leg.position.set(lx, 1.2, lz);
+        leg.position.set(lx, 0, lz);
         g.add(leg);
       }
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, 4), wood);
-      floor.position.y = 2.35;
-      g.add(floor);
-      const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2, 3.6), wall);
-      body.position.y = 3.5;
-      g.add(body);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(3.1, 1.9, 4), leaf);
-      roof.position.y = 5.45;
-      roof.rotation.y = Math.PI / 4;
-      g.add(roof);
+      const bodyMesh = new THREE.Mesh(wallGeo, wall);
+      bodyMesh.position.y = 3.4;
+      const roof = new THREE.Mesh(roofGeo, leaf);
+      roof.position.y = 5.3;
+      // A gabled prism variant is kept available for porch extensions.
+      const gable = new THREE.Mesh(gabledHouseGeometry(1.4, 1.1, 1.0), wood);
+      gable.position.set(0, 2.3, 2.05);
+      g.add(bodyMesh, roof, gable);
       g.traverse((o) => {
         if (o instanceof THREE.Mesh) {
           o.castShadow = true;
@@ -257,52 +338,107 @@ export class World {
 
   private buildForest() {
     const rng = new Rng(CONFIG.seed + 7);
-    const count = CONFIG.world.treeCount;
     const dummy = new THREE.Object3D();
 
-    const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 2.6, 5);
-    trunkGeo.translate(0, 1.3, 0);
-    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x7a5636, flatShading: true });
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
-    trunks.castShadow = true;
+    // Broadleaf: tapered trunk + a crown of merged jittered blobs.
+    const broadTrunkGeo = new THREE.CylinderGeometry(0.2, 0.34, 2.8, 7);
+    broadTrunkGeo.translate(0, 1.4, 0);
+    const broadCrownGeo = mergeNonIndexed([
+      jitteredBlobGeometry(1.55, 0, 0.12, 11).translate(0, 3.5, 0),
+      jitteredBlobGeometry(1.1, 0, 0.12, 23).translate(0.35, 4.55, 0.15),
+      jitteredBlobGeometry(0.82, 0, 0.12, 37).translate(-0.25, 5.35, -0.1),
+    ]);
 
-    const leafGeo = new THREE.ConeGeometry(1.7, 4.4, 6);
-    leafGeo.translate(0, 4.6, 0);
-    const leafMat = new THREE.MeshLambertMaterial({ color: 0x3f6e35, flatShading: true });
-    const leaves = new THREE.InstancedMesh(leafGeo, leafMat, count);
-    leaves.castShadow = true;
+    // Conifer: tapered trunk + two stacked, softly faceted cones.
+    const coneTrunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 2.2, 7);
+    coneTrunkGeo.translate(0, 1.1, 0);
+    const lowerCone = new THREE.ConeGeometry(1.7, 2.7, 7);
+    lowerCone.translate(0, 3.1, 0);
+    const upperCone = new THREE.ConeGeometry(1.25, 2.3, 7);
+    upperCone.translate(0, 4.55, 0);
+    const coniferCrownGeo = mergeNonIndexed([lowerCone, upperCone]);
 
-    let placed = 0;
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true });
+    const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
+    const trunkPalette = varyPalette(0x7a5636, 3, 0.1);
+    const greenPalette = varyPalette(0x4d7d3a, 4, 0.12);
+    const coniferPalette = varyPalette(0x355e2c, 4, 0.1);
+    const tint = new THREE.Color();
+
+    interface Placement {
+      x: number;
+      z: number;
+      scale: number;
+      rot: number;
+      conifer: boolean;
+    }
+    const placements: Placement[] = [];
     let attempts = 0;
-    while (placed < count && attempts++ < count * 6) {
+    while (placements.length < CONFIG.world.treeCount && attempts++ < CONFIG.world.treeCount * 6) {
       const x = rng.range(-this.half + 6, this.half - 6);
       const z = rng.range(-this.half + 6, this.half - 6);
       const h = this.heightAt(x, z);
       if (h < CONFIG.world.waterLevel + 0.4) continue;
       if (this.obstacles.some((o) => Math.hypot(o.x - x, o.z - z) < o.r + 2.2)) continue;
-
-      const scale = rng.range(0.8, 1.5);
-      dummy.position.set(x, h, z);
-      dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
-      dummy.scale.set(scale, scale, scale);
-      dummy.updateMatrix();
-      trunks.setMatrixAt(placed, dummy.matrix);
-      leaves.setMatrixAt(placed, dummy.matrix);
-      this.obstacles.push({ x, z, r: 0.55 * scale });
-      placed++;
+      placements.push({
+        x,
+        z,
+        scale: rng.range(0.8, 1.5),
+        rot: rng.range(0, Math.PI * 2),
+        conifer: hash3(x, z, 7) < 0.4,
+      });
+      this.obstacles.push({ x, z, r: 0.55 * placements[placements.length - 1].scale });
     }
-    trunks.count = placed;
-    leaves.count = placed;
-    this.group.add(trunks, leaves);
+
+    const broad = placements.filter((p) => !p.conifer);
+    const conifers = placements.filter((p) => p.conifer);
+
+    const addSpecies = (
+      list: Placement[],
+      trunkGeo: THREE.BufferGeometry,
+      crownGeo: THREE.BufferGeometry,
+      crownColors: THREE.Color[]
+    ) => {
+      const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, list.length);
+      const crowns = new THREE.InstancedMesh(crownGeo, crownMat, list.length);
+      trunks.castShadow = true;
+      crowns.castShadow = true;
+      list.forEach((p, i) => {
+        dummy.position.set(p.x, this.heightAt(p.x, p.z), p.z);
+        dummy.rotation.set(0, p.rot, 0);
+        dummy.scale.setScalar(p.scale);
+        dummy.updateMatrix();
+        trunks.setMatrixAt(i, dummy.matrix);
+        crowns.setMatrixAt(i, dummy.matrix);
+        trunks.setColorAt(i, trunkPalette[i % trunkPalette.length]);
+        tint.copy(crownColors[i % crownColors.length]);
+        // Slight lightness variance per instance.
+        tint.offsetHSL(0, 0, (hash3(p.x, i, p.z) - 0.5) * 0.06);
+        crowns.setColorAt(i, tint);
+      });
+      trunks.instanceMatrix.needsUpdate = true;
+      crowns.instanceMatrix.needsUpdate = true;
+      if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
+      if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
+      trunks.computeBoundingSphere();
+      crowns.computeBoundingSphere();
+      this.group.add(trunks, crowns);
+    };
+
+    addSpecies(broad, broadTrunkGeo, broadCrownGeo, greenPalette);
+    addSpecies(conifers, coneTrunkGeo, coniferCrownGeo, coniferPalette);
   }
 
   private buildRocks() {
     const rng = new Rng(CONFIG.seed + 99);
     const count = CONFIG.world.rockCount;
-    const geo = new THREE.DodecahedronGeometry(1, 0);
-    const mat = new THREE.MeshLambertMaterial({ color: 0x827d72, flatShading: true });
+    // One jittered polyhedron, varied per instance by non-uniform scale,
+    // random rotation and palette shade — organic, never identical clones.
+    const geo = jitteredBlobGeometry(1, 0, 0.28, 101);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true });
     const rocks = new THREE.InstancedMesh(geo, mat, count);
     rocks.castShadow = true;
+    const palette = varyPalette(0x827d72, 4, 0.1);
     const dummy = new THREE.Object3D();
 
     for (let i = 0; i < count; i++) {
@@ -315,8 +451,11 @@ export class World {
       dummy.scale.set(s, s * rng.range(0.6, 0.9), s);
       dummy.updateMatrix();
       rocks.setMatrixAt(i, dummy.matrix);
+      rocks.setColorAt(i, palette[i % palette.length]);
       this.obstacles.push({ x, z, r: s * 0.8 });
     }
+    rocks.instanceMatrix.needsUpdate = true;
+    if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
     this.group.add(rocks);
   }
 
