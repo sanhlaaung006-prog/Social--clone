@@ -201,6 +201,7 @@ export class Engine {
     this.raf = requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.elapsed += dt;
+    this.world.updateAmbient(dt);
 
     if (this.status === "playing") {
       this.updatePlaying(dt);

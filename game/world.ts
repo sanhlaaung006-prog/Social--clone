@@ -49,6 +49,10 @@ export class World {
   readonly spawnPoints: THREE.Vector3[] = [];
   terrainMesh!: THREE.Mesh;
 
+  private cloudMesh: THREE.InstancedMesh | null = null;
+  private cloudData: Array<{
+    x: number; y: number; z: number; speed: number; scale: number; rot: number;
+  }> = [];
   private readonly half = CONFIG.world.size / 2;
 
   constructor(private readonly noise: NoiseImpl) {
@@ -60,6 +64,8 @@ export class World {
     this.buildHuts();
     this.buildForest();
     this.buildRocks();
+    this.buildGrassTufts();
+    this.buildClouds();
     this.buildSpawnPoints();
   }
 
@@ -457,6 +463,110 @@ export class World {
     rocks.instanceMatrix.needsUpdate = true;
     if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
     this.group.add(rocks);
+  }
+
+  /* --------------------------- grass and clouds -------------------------- */
+
+  private buildGrassTufts() {
+    const rng = new Rng(CONFIG.seed + 314);
+    const count = 260;
+    // Three-blade tuft: merged tiny cones, one draw call via instancing.
+    const blade = new THREE.ConeGeometry(0.16, 0.7, 3);
+    blade.translate(0, 0.35, 0);
+    const tuftGeo = mergeNonIndexed([
+      blade,
+      blade.clone().rotateY(Math.PI / 3).translate(0.08, 0, 0),
+      blade.clone().rotateY(-Math.PI / 3).translate(-0.08, 0, 0),
+    ]);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 1,
+      flatShading: true,
+    });
+    const tufts = new THREE.InstancedMesh(tuftGeo, mat, count);
+    const palette = varyPalette(0x6f9e4e, 4, 0.14);
+    const dummy = new THREE.Object3D();
+    let placed = 0;
+    for (let i = 0; i < count * 3 && placed < count; i++) {
+      const x = rng.range(-this.half + 4, this.half - 4);
+      const z = rng.range(-this.half + 4, this.half - 4);
+      const h = this.heightAt(x, z);
+      // Tufts only on open grassland — not underwater, not on bare rock.
+      if (h < CONFIG.world.waterLevel + 0.7 || h > 8.5) continue;
+      if (this.obstacles.some((o) => Math.hypot(o.x - x, o.z - z) < o.r + 0.6)) continue;
+      const s = rng.range(0.7, 1.4);
+      dummy.position.set(x, h, z);
+      dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      tufts.setMatrixAt(placed, dummy.matrix);
+      tufts.setColorAt(placed, palette[placed % palette.length]);
+      placed++;
+    }
+    tufts.count = placed;
+    tufts.instanceMatrix.needsUpdate = true;
+    if (tufts.instanceColor) tufts.instanceColor.needsUpdate = true;
+    tufts.receiveShadow = true;
+    this.group.add(tufts);
+  }
+
+  private buildClouds() {
+    const rng = new Rng(CONFIG.seed + 271);
+    const count = 14;
+    // A cloud is a cluster of flattened jittered blobs in one geometry.
+    const blobs: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 4; i++) {
+      const b = jitteredBlobGeometry(2.6 + i * 0.7, 0, 0.18, 71 + i * 13);
+      b.scale(1, 0.42, 1);
+      b.translate((i - 1.5) * 2.4, 0, (hash3(i, 2, 9) - 0.5) * 2);
+      blobs.push(b);
+    }
+    const cloudGeo = mergeNonIndexed(blobs);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xf2f4ee,
+      roughness: 1,
+      flatShading: true,
+      transparent: true,
+      opacity: 0.92,
+    });
+    this.cloudMesh = new THREE.InstancedMesh(cloudGeo, mat, count);
+    const dummy = new THREE.Object3D();
+    const cloudPalette = varyPalette(0xf2f4ee, 3, 0.05);
+    this.cloudData = [];
+    for (let i = 0; i < count; i++) {
+      const x = rng.range(-this.half, this.half);
+      const z = rng.range(-this.half, this.half);
+      const y = rng.range(58, 82);
+      const s = rng.range(1.6, 3.4);
+      const rot = rng.range(0, Math.PI * 2);
+      dummy.position.set(x, y, z);
+      dummy.rotation.set(0, rot, 0);
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      this.cloudMesh.setMatrixAt(i, dummy.matrix);
+      this.cloudMesh.setColorAt(i, cloudPalette[i % cloudPalette.length]);
+      this.cloudData.push({ x, y, z, speed: rng.range(0.6, 1.6), scale: s, rot });
+    }
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
+    this.cloudMesh.frustumCulled = false;
+    this.group.add(this.cloudMesh);
+  }
+
+  /** Slow cloud drift, called once per frame from the engine. */
+  updateAmbient(dt: number) {
+    if (!this.cloudMesh) return;
+    const dummy = new THREE.Object3D();
+    const limit = this.half + 30;
+    this.cloudData.forEach((c, i) => {
+      c.x += c.speed * dt;
+      if (c.x > limit) c.x = -limit;
+      dummy.position.set(c.x, c.y, c.z);
+      dummy.rotation.set(0, c.rot, 0);
+      dummy.scale.setScalar(c.scale);
+      dummy.updateMatrix();
+      this.cloudMesh!.setMatrixAt(i, dummy.matrix);
+    });
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
   }
 
   /* ------------------------------ helpers ------------------------------- */
