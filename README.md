@@ -90,6 +90,10 @@ game/
                       memory); ?quality=low|high URL override
   instancedCuller.ts  Per-instance frustum + distance culling with order-
                       preserving matrix compaction for InstancedMesh
+  wasm/physicsWorkerCore.ts  Environment-agnostic worker physics core
+  wasm/physicsWorker.ts      Vite module-worker entry (postMessage glue)
+  wasm/rayService.ts   Main-thread facade: off-thread raycasts with
+                      frame-deferred drain and synchronous local fallback
   input.ts            Unified touch + keyboard/mouse input state
   config.ts           All gameplay tuning constants
   wasm/
@@ -114,6 +118,7 @@ scripts/
   vehicles.test.ts    Driving, steering, collision, stylized-geometry rules
   art-style.test.ts   Anti-voxel gate: zero boxes, smooth terrain, curved humans
   quality.test.ts     Tier decision table, culler compaction, low/high World
+  worker.test.ts      Worker/core ray parity, deferred drain, fallback
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts
   mig.test.ts         MiG material revision, rig hooks and render proofs
   lib/raster.ts       Shared headless triangle rasterizer
@@ -166,5 +171,10 @@ dynamics become necessary.
   shadow light with a player-following frustum
 - Distance fog doubles as draw-distance masking; water normal recompute
   was removed (flat shading derives normals in-shader)
+- Weapon raycasts run in a Web Worker (`wasm/`): the worker owns a full
+  physics instance (WASM when it compiles, bit-mirrored JS otherwise) and
+  resolves terrain/cover/vehicle/actor rays off the main thread; results
+  drain at the next frame boundary, with an automatic synchronous local
+  fallback if workers are unavailable
 - Procedural everything — zero texture downloads; three.js/react split
   into separate cacheable vendor chunks

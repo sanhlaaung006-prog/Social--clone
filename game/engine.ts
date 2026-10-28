@@ -7,7 +7,8 @@ import * as THREE from "three";
 import { CONFIG } from "./config";
 import { InputState, attachDesktopInput } from "./input";
 import { loadNoise, type NoiseImpl } from "./wasm/noise";
-import { loadPhysics, bindJsPhysicsHeight, type Physics } from "./wasm/physics";
+import { loadPhysics, bindJsPhysicsHeight, type Physics, type RayHit } from "./wasm/physics";
+import { RayService } from "./wasm/rayService";
 import { Rng, BOT_CALLSIGNS } from "./rng";
 import { World } from "./world";
 import { Player, Bot } from "./actors";
@@ -44,6 +45,8 @@ export class Engine {
 
   private noise!: NoiseImpl;
   private physics!: Physics;
+  /** Off-thread WASM ray service; falls back to local physics when inactive. */
+  private readonly rayService = new RayService();
   private world!: World;
   private player!: Player;
   private bots: Bot[] = [];
@@ -117,6 +120,14 @@ export class Engine {
     bindJsPhysicsHeight((x, z) => engine.noise.terrainHeight(x, z, CONFIG.seed));
     engine.buildPermanentWorld();
     engine.physics.setObstacles(engine.world.obstacles);
+    // Best-effort worker startup; RayService silently stays inactive on
+    // failure and all rays then resolve on the local physics instance.
+    const wasmUrl = new URL(
+      `${import.meta.env.BASE_URL}wasm/math_core.wasm`,
+      window.location.href
+    ).href;
+    await engine.rayService.init(wasmUrl);
+    engine.rayService.setObstacles(engine.world.obstacles);
     engine.detached = attachDesktopInput(engine.input, engine.renderer.domElement, (locked) => {
       engine.pointerLocked = locked;
     });
@@ -195,11 +206,14 @@ export class Engine {
     this.gunCooldown = 0;
     this.activeVehicle = null;
     this.activeSeat = null;
+    this.rayService.clearPending();
   }
 
   private endMatch(won: boolean) {
     this.status = won ? "won" : "dead";
     this.input.firing = false;
+    // Do not resolve shots fired just before death into the next match.
+    this.rayService.clearPending();
     if (document.pointerLockElement) document.exitPointerLock?.();
   }
 
@@ -233,6 +247,8 @@ export class Engine {
   };
 
   private updatePlaying(dt: number) {
+    // Resolve off-thread ray results from previous frames before new shots.
+    this.rayService.drain();
     this.fireCooldown -= dt;
     this.gunCooldown -= dt;
 
@@ -243,6 +259,15 @@ export class Engine {
     }
     this.input.resetTransient();
     this.syncActorCylinders();
+    // Mirror vehicle volumes to the worker for its own sphere tests.
+    this.rayService.setVehicles(
+      this.vehicles.vehicles.map((v) => ({
+        x: v.position.x,
+        y: v.position.y,
+        z: v.position.z,
+        r: v.radius,
+      }))
+    );
 
     // --- bots ---
     for (const bot of this.bots) {
@@ -371,53 +396,72 @@ export class Engine {
     const origin = vehicle.muzzleWorld(new THREE.Vector3());
     const dir = this.rig.getForward(new THREE.Vector3());
     const vehicleIndex = this.vehicles.indexOf(vehicle);
+    const aliveBots = this.aliveBotCylinders();
+    this.flash.flash(origin);
 
-    const aliveBots = this.bots.filter((b) => b.alive);
-    this.physics.setActors(
-      aliveBots.map((b) => ({
-        x: b.position.x,
-        y: b.position.y,
-        z: b.position.z,
-        r: b.radius,
-        h: CONFIG.player.height,
-      }))
-    );
-    const hit = this.physics.raycast(origin, dir, CONFIG.vehicles.gunRange, vehicleIndex);
-    const endPoint = hit
-      ? origin.clone().addScaledVector(dir, hit.t)
-      : origin.clone().addScaledVector(dir, CONFIG.vehicles.gunRange);
+    this.dispatchRay(origin, dir, CONFIG.vehicles.gunRange, vehicleIndex, (hit) => {
+      const endPoint = hit
+        ? origin.clone().addScaledVector(dir, hit.t)
+        : origin.clone().addScaledVector(dir, CONFIG.vehicles.gunRange);
 
-    if (hit?.kind === "actor" && hit.actorIndex !== undefined) {
-      const target = aliveBots[hit.actorIndex];
-      if (target) {
-        const died = target.applyDamage(CONFIG.vehicles.gunDamage);
-        this.hitMarkerAt = this.elapsed;
-        if (died) {
-          this.kills++;
-          this.pushFeed(`Mounted gun eliminated ${target.callsign}`);
+      if (hit?.kind === "actor" && hit.actorIndex !== undefined) {
+        const target = aliveBots[hit.actorIndex];
+        if (target) {
+          const died = target.applyDamage(CONFIG.vehicles.gunDamage);
+          this.hitMarkerAt = this.elapsed;
+          if (died) {
+            this.kills++;
+            this.pushFeed(`Mounted gun eliminated ${target.callsign}`);
+          }
         }
       }
-    }
 
-    this.flash.flash(origin);
-    this.tracers.spawn(origin, endPoint, 0xffb347);
+      this.tracers.spawn(origin, endPoint, 0xffb347);
+    });
   }
 
   /* --------------------------------- shooting --------------------------------- */
 
   /** Upload alive bots as physics hit cylinders for this frame's raycasts. */
   private syncActorCylinders() {
-    this.physics.setActors(
-      this.bots
-        .filter((b) => b.alive)
-        .map((b) => ({
-          x: b.position.x,
-          y: b.position.y,
-          z: b.position.z,
-          r: b.radius,
-          h: CONFIG.player.height,
-        }))
+    const actors = this.bots
+      .filter((b) => b.alive)
+      .map((b) => ({
+        x: b.position.x,
+        y: b.position.y,
+        z: b.position.z,
+        r: b.radius,
+        h: CONFIG.player.height,
+      }));
+    this.physics.setActors(actors);
+    this.rayService.setActors(actors);
+  }
+
+  /** Alive-bot snapshot in the stable index order ray results refer to. */
+  private aliveBotCylinders() {
+    return this.bots.filter((b) => b.alive);
+  }
+
+  /**
+   * Run a ray on the worker when available, else synchronously on the
+   * local physics core. The callback receives the same RayHit shape either
+   * way; worker results arrive one frame later through RayService.drain().
+   */
+  private dispatchRay(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number,
+    skipVehicle: number,
+    onHit: (hit: RayHit | null) => void
+  ) {
+    const offloaded = this.rayService.request(
+      [origin.x, origin.y, origin.z],
+      [dir.x, dir.y, dir.z],
+      maxT,
+      skipVehicle,
+      onHit
     );
+    if (!offloaded) onHit(this.physics.raycast(origin, dir, maxT, skipVehicle));
   }
 
   private handlePlayerShooting() {
@@ -436,37 +480,31 @@ export class Engine {
     dir.z += (this.rng.next() - 0.5) * 2 * s;
     dir.normalize();
 
-    // All ray tests (heightfield, cover spheres, actor cylinders) run in
-    // the clang/WASM physics core — or the identical JS fallback.
-    const aliveBots = this.bots.filter((b) => b.alive);
-    this.physics.setActors(
-      aliveBots.map((b) => ({
-        x: b.position.x,
-        y: b.position.y,
-        z: b.position.z,
-        r: b.radius,
-        h: CONFIG.player.height,
-      }))
-    );
-    const hit = this.physics.raycast(origin, dir, CONFIG.weapon.range);
-    const endPoint = hit
-      ? origin.clone().addScaledVector(dir, hit.t)
-      : origin.clone().addScaledVector(dir, CONFIG.weapon.range);
+    // Ray tests run on the physics worker when available (heightfield
+    // raymarch off the main thread), else the identical local core.
+    const aliveBots = this.aliveBotCylinders();
+    const muzzle = this.player.muzzleWorld; // capture now; deferred callback
+    this.flash.flash(muzzle);
 
-    if (hit?.kind === "actor" && hit.actorIndex !== undefined) {
-      const target = aliveBots[hit.actorIndex];
-      if (target) {
-        const died = target.applyDamage(CONFIG.weapon.damage);
-        this.hitMarkerAt = this.elapsed;
-        if (died) {
-          this.kills++;
-          this.pushFeed(`You eliminated ${target.callsign}`);
+    this.dispatchRay(origin, dir, CONFIG.weapon.range, -1, (hit) => {
+      const endPoint = hit
+        ? origin.clone().addScaledVector(dir, hit.t)
+        : origin.clone().addScaledVector(dir, CONFIG.weapon.range);
+
+      if (hit?.kind === "actor" && hit.actorIndex !== undefined) {
+        const target = aliveBots[hit.actorIndex];
+        if (target) {
+          const died = target.applyDamage(CONFIG.weapon.damage);
+          this.hitMarkerAt = this.elapsed;
+          if (died) {
+            this.kills++;
+            this.pushFeed(`You eliminated ${target.callsign}`);
+          }
         }
       }
-    }
 
-    this.flash.flash(this.player.muzzleWorld);
-    this.tracers.spawn(this.player.muzzleWorld, endPoint, 0xffe2a1);
+      this.tracers.spawn(muzzle, endPoint, 0xffe2a1);
+    });
   }
 
   private resolveBotShot(bot: Bot, shot: { origin: THREE.Vector3; dir: THREE.Vector3 }) {
@@ -478,21 +516,28 @@ export class Engine {
     );
 
     // Cover check: terrain, trees, rocks and huts can block bot fire.
-    const blocker = this.physics.raycast(shot.origin, shot.dir, dist);
-    const end = blocker
-      ? shot.origin.clone().addScaledVector(shot.dir, blocker.t)
-      : shot.origin.clone().addScaledVector(shot.dir, CONFIG.weapon.range);
-    this.tracers.spawn(shot.origin, end, 0xff7a5c);
-    if (blocker) return;
+    // Runs on the physics worker when available (result resolves next
+    // frame); clone the shot vectors since the bot reuses its allocations.
+    const origin = shot.origin.clone();
+    const dir = shot.dir.clone();
+    const callsign = bot.callsign;
+    this.dispatchRay(origin, dir, dist, -1, (blocker) => {
+      const end = blocker
+        ? origin.clone().addScaledVector(dir, blocker.t)
+        : origin.clone().addScaledVector(dir, CONFIG.weapon.range);
+      this.tracers.spawn(origin, end, 0xff7a5c);
+      if (blocker) return;
+      if (!this.player.alive) return;
 
-    if (this.rng.next() < bot.hitChanceAgainst(dist)) {
-      const died = this.player.applyDamage(CONFIG.bot.burstDamage);
-      this.damageAt = this.elapsed;
-      if (died) {
-        this.pushFeed(`${bot.callsign} eliminated you`);
-        this.endMatch(false);
+      if (this.rng.next() < bot.hitChanceAgainst(dist)) {
+        const died = this.player.applyDamage(CONFIG.bot.burstDamage);
+        this.damageAt = this.elapsed;
+        if (died) {
+          this.pushFeed(`${callsign} eliminated you`);
+          this.endMatch(false);
+        }
       }
-    }
+    });
   }
 
   /* ---------------------------------- pickups --------------------------------- */

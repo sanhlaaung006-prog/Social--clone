@@ -74,7 +74,7 @@ interface PhysExports {
   memory: WebAssembly.Memory;
 }
 
-class WasmPhysics implements Physics {
+export class WasmPhysics implements Physics {
   readonly wasm = true;
   private readonly e: PhysExports;
   private obsPtr = 0;
