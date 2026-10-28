@@ -11,7 +11,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/browser",
-  timeout: 60_000,
+  // Software-GL (SwiftShader) canvas captures are slow; allow headroom
+  // for four screenshots plus the walk sequence on GPU-less runners.
+  timeout: 180_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
