@@ -69,7 +69,9 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   });
 
   // Enter first-person mode and capture a walk view with the crosshair.
-  await page.getByRole("button", { name: /walk the map/i }).click();
+  // force: the perpetual rAF render loop keeps Playwright's stability
+  // heuristic from settling even though the button is fixed-position.
+  await page.getByRole("button", { name: /walk the map/i }).click({ force: true });
   await page.waitForTimeout(1200);
   const crosshair = page.locator(".crosshair");
   await expect(crosshair).toBeAttached();
@@ -92,7 +94,7 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   });
 
   // Back to orbit for the exit transition.
-  await page.getByRole("button", { name: /orbit view/i }).click();
+  await page.getByRole("button", { name: /orbit view/i }).click({ force: true });
   await page.waitForTimeout(1000);
   await expect(crosshair).toHaveCount(0);
   await canvas.screenshot({
