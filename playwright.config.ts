@@ -19,9 +19,30 @@ export default defineConfig({
   use: {
     viewport: { width: 1280, height: 720 },
     headless: true,
-    actionTimeout: 15_000
+    actionTimeout: 15_000,
+    screenshot: "only-on-failure",
+    trace: "retain-on-failure"
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        // Headless CI has no GPU: force software WebGL via ANGLE +
+        // SwiftShader. Recent Chrome builds refuse SwiftShader unless
+        // the unsafe flag is present.
+        launchOptions: {
+          args: [
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--ignore-gpu-blocklist",
+            "--disable-gpu-sandbox"
+          ]
+        }
+      }
+    }
+  ],
   webServer: {
     command: "npm run dev -- --port 5173 --host 127.0.0.1",
     url: "http://127.0.0.1:5173/",

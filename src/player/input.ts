@@ -46,7 +46,16 @@ export class InputBus {
     };
     const onCanvasClick = () => {
       if (this.active && !this.isTouchDevice() && document.pointerLockElement !== this.target) {
-        this.target.requestPointerLock?.();
+        // Headless browsers and iframes can reject pointer lock; that is
+        // a UX limitation, never a fatal error.
+        try {
+          const p = this.target.requestPointerLock?.() as unknown as
+            | Promise<void>
+            | undefined;
+          p?.catch?.(() => undefined);
+        } catch {
+          /* pointer lock unavailable — keyboard/touch input still works */
+        }
       }
     };
 
