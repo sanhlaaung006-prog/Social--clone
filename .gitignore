@@ -5,3 +5,4 @@ android/
 .DS_Store
 screenshots/
 .vercel
+ci-diag/
