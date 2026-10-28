@@ -23,10 +23,17 @@ body,
   inset: 0;
 }
 
-.game-canvas {
+.game-canvas,
+.terrain-wrap,
+.terrain-wrap canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.terrain-wrap {
+  position: fixed;
+  inset: 0;
 }
 
 .hud {

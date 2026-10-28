@@ -3,6 +3,16 @@
 This project re-uses techniques and re-authored code from open-source
 projects. Original copyright notices and license text are preserved below.
 
+## "Myanmar, in Relief" terrain engine (user-supplied)
+
+The frozen modules under `src/terrain/locked/` (`noise.ts`,
+`ReliefTerrain.ts`, `structures.ts`) are TypeScript ports of the
+standalone web piece **"Myanmar, in Relief — One Continuous Terrain"**
+(`index.html`, provided by the project owner on 2026-10-28). No license
+was declared in the file; it is treated as a project-owned work product.
+The code is frozen by checksum (`tests/lib/terrain-lock.json`, enforced
+by `tests/terrain-lock.test.ts`); see `src/terrain/locked/LOCKED.md`.
+
 ## SANDLINE (sandline-threejs-fps)
 
 Source: https://github.com/xilinnihao-afk/sandline-threejs-fps

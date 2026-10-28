@@ -2,14 +2,15 @@
   "name": "golden-land-royale",
   "version": "0.4.0",
   "private": true,
-  "description": "Myanmar-inspired mobile 3D battle royale (React + Vite + Three.js r170, in-house WASM physics, WebGL, Android APK via Capacitor). Rebuilt on sandline-MIT renderer techniques.",
+  "description": "Myanmar-inspired mobile 3D battle royale (React + Vite + Three.js r170, in-house WASM physics, WebGL, Android APK via Capacitor). Locked relief terrain foundation.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "tsx tests/render-core.test.ts"
+    "test": "tsx tests/render-core.test.ts && tsx tests/terrain-lock.test.ts",
+    "screenshot": "tsx tests/terrain-shot.ts"
   },
   "dependencies": {
     "react": "18.3.1",
@@ -18,10 +19,12 @@
   },
   "devDependencies": {
     "@types/node": "20.14.10",
+    "@types/pngjs": "6.0.5",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "@types/three": "0.170.0",
     "@vitejs/plugin-react": "4.3.4",
+    "pngjs": "7.0.0",
     "tsx": "4.19.2",
     "typescript": "5.5.3",
     "vite": "5.4.11"

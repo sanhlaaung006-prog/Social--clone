@@ -1,17 +1,16 @@
 /**
- * Minimal React HUD overlay for the visual-rebuild milestone.
- * Gameplay HUD elements (crosshair, health, touch controls) return as
- * their respective modules are ported from the v1 build.
+ * Minimal React HUD overlay for the locked terrain milestone.
+ * Gameplay HUD returns in later bricks; terrain code stays untouched.
  */
 export function Hud(): JSX.Element {
   return (
     <div className="hud" aria-hidden="true">
       <div className="hud-panel hud-title">
         <div className="hud-eyebrow">GOLDEN LAND ROYALE</div>
-        <div className="hud-sub">renderer rebuild · milestone 1 · visual baseline</div>
+        <div className="hud-sub">Myanmar relief · locked terrain foundation</div>
       </div>
       <div className="hud-panel hud-hint">
-        procedural materials · ACES tone mapping · soft shadows · IBL
+        one continuous height field · 130 × 210 m · sea level 0 · drift orbit
       </div>
     </div>
   );
