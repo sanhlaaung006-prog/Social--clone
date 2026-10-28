@@ -42,6 +42,7 @@ const shippedModules = [
   "game/vehicles/stylized.ts",
   "game/vehicles/aircraft.ts",
   "game/vehicles/aircraftManager.ts",
+  "game/vehicles/warthog.ts",
   "game/flightModel.ts",
   "game/geometry/kit.ts",
   "game/cameraRig.ts",

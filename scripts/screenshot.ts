@@ -15,6 +15,7 @@ import { VehicleManager } from "../game/vehicles/manager";
 import { CameraRig } from "../game/cameraRig";
 import { buildStylizedJet, buildStylizedTank, buildStylizedTechnical } from "../game/vehicles/stylized";
 import { Aircraft } from "../game/vehicles/aircraft";
+import { buildWarthog } from "../game/vehicles/warthog";
 import { installDomStub } from "./lib/dom-stub";
 
 installDomStub();
@@ -171,6 +172,32 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
   scene.remove(jet.group);
 }
 
+// 6c) Airborne A-10: banked pass over the pagoda valley proves the warthog
+//     uses the same flight transform chain as the jet.
+{
+  const hog = new Aircraft(
+    "warthog",
+    buildWarthog(),
+    new THREE.Vector3(10, 20, -10),
+    0.7
+  );
+  hog.flight.onGround = false;
+  hog.flight.y = 20;
+  hog.flight.speed = 36;
+  hog.flight.pitch = 0.22;
+  hog.flight.roll = -0.55;
+  hog.flight.throttle = 1;
+  hog.flight.yaw = 0.7;
+  hog.update(0, null, physics, world);
+  scene.add(hog.group);
+  shoot(
+    "06c-airborne-warthog",
+    new THREE.Vector3(-16, 28, 18),
+    new THREE.Vector3(10, 20, -10)
+  );
+  scene.remove(hog.group);
+}
+
 // 7) Clean studio lineup on a plain plane — geometry proof with no trees
 //    or terrain clutter obscuring the silhouettes.
 {
@@ -196,19 +223,20 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
   studio.add(ground);
 
   const lineup: Array<[THREE.Group, number]> = [
-    [buildStylizedTank(), -11],
-    [buildStylizedTechnical(), 0],
-    [buildStylizedJet(), 11],
+    [buildStylizedTank(), -13],
+    [buildStylizedTechnical(), -4.4],
+    [buildStylizedJet(), 4.4],
+    [buildWarthog(), 13],
   ];
   for (const [g, x] of lineup) {
     g.position.set(x, 0, 0);
-    g.rotation.y = 0.45;
+    g.rotation.y = 0.25;
     studio.add(g);
   }
   studio.updateMatrixWorld(true);
   renderPng(
     gatherTriangles(studio),
-    makeCamera(new THREE.Vector3(0, 4.6, 14.5), new THREE.Vector3(0, 1.0, 0)),
+    makeCamera(new THREE.Vector3(0, 5.6, 20), new THREE.Vector3(0, 1.1, 0)),
     "screenshots/07-studio-lineup.png",
     { fogNear: 80, fogFar: 200 }
   );

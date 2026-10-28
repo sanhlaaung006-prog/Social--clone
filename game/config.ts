@@ -148,7 +148,7 @@ export const CONFIG = {
 
   flight: {
     jetCount: 1,
-    warthogCount: 0, // enabled when the A-10 airframe lands
+    warthogCount: 1,
     radius: 2.4,
     groundOffset: 1.1,
     maxSpeed: 62,

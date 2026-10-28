@@ -17,6 +17,9 @@ import {
   buildStylizedTechnical,
   buildStylizedJet,
 } from "../game/vehicles/stylized";
+import { buildWarthog } from "../game/vehicles/warthog";
+import { Aircraft } from "../game/vehicles/aircraft";
+import { triangleCount } from "../game/geometry/kit";
 import { installDomStub } from "./lib/dom-stub";
 
 installDomStub();
@@ -174,6 +177,75 @@ console.log("Stylized geometry rules:");
   check("independent builds", buildStylizedTank() !== tank);
   const standalone = new Vehicle("tank", buildStylizedTank(), 0);
   check("vehicle wraps stylized model with turret reference", standalone instanceof Vehicle);
+}
+
+console.log("A-10 Warthog airframe:");
+{
+  const hog = buildWarthog();
+  check("builder returns a group", hog instanceof THREE.Group);
+
+  let boxCount = 0;
+  let flatFailures = 0;
+  let tris = 0;
+  hog.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      if (o.geometry.type === "BoxGeometry") boxCount++;
+      tris += triangleCount(o.geometry);
+      const list = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of list) {
+        if (!(m as THREE.MeshStandardMaterial).flatShading) flatFailures++;
+      }
+    }
+  });
+  check("warthog contains no raw BoxGeometry", boxCount === 0, `${boxCount} boxes`);
+  check("warthog materials are all flat-shaded", flatFailures === 0);
+  check("warthog triangle budget respected", tris > 500 && tris < 9000, `${tris} tris`);
+
+  // Signature A-10 parts must exist by name.
+  for (const part of [
+    "fuselage",
+    "gau8-barrel",
+    "gun-fairing",
+    "canopy",
+    "main-wing-port",
+    "main-wing-starboard",
+    "engine-nacelle-port",
+    "engine-nacelle-starboard",
+    "tail-fin-port",
+    "tail-fin-starboard",
+  ]) {
+    check(`warthog part present: ${part}`, !!hog.getObjectByName(part));
+  }
+  check("warthog has tricycle gear (three wheel meshes)",
+    hog.children.filter((o) => o.name === "gear-wheel").length === 3);
+
+  // The A-10 signature: a broad straight wing spanning wider than the
+  // fuselage is long, with the twin engines mounted high above it.
+  const box = new THREE.Box3().setFromObject(hog);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  check("wing span exceeds fuselage length", size.x > size.z,
+    `span ${size.x.toFixed(1)} vs length ${size.z.toFixed(1)}`);
+  const engineY = hog.getObjectByName("engine-nacelle-port")!.position.y;
+  const wingY = hog.getObjectByName("main-wing-port")!.position.y;
+  check("engine nacelles sit above the wing", engineY > wingY);
+  const radomeBox = new THREE.Box3().setFromObject(hog.getObjectByName("radome")!);
+  const barrelFront = hog.getObjectByName("gau8-barrel")!.position.z + 0.525;
+  check("GAU-8 barrel protrudes past the radome nose",
+    barrelFront > radomeBox.max.z,
+    `barrel ${barrelFront.toFixed(2)} vs nose ${radomeBox.max.z.toFixed(2)}`);
+
+  // Flies through the same Aircraft wrapper with the flight transform.
+  const craft = new Aircraft(
+    "warthog",
+    buildWarthog(),
+    new THREE.Vector3(0, 2, 0),
+    0
+  );
+  check("aircraft wraps the warthog airframe", craft.kind === "warthog" && craft.label.includes("warthog"));
+
+  // Independent builds do not share geometry instances.
+  check("independent warthog builds", buildWarthog() !== hog);
 }
 
 console.log(failures === 0 ? "\nAll vehicle tests passed." : `\n${failures} check(s) failed.`);

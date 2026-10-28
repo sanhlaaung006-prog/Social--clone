@@ -119,6 +119,9 @@ game/vehicles/
                       extruded technical and cone-nose jet (no BoxGeometry,
                       flat-shaded metallic-grey/dark-green materials)
   mig29.ts            Compressed/revised MiG-29 airframe, Lambert-only (generated)
+  warthog.ts          Stylized A-10C: lofted fuselage, GAU-8 Avenger, straight
+                      broad wings, twin high nacelles, twin fins, tricycle gear
+                      (superellipse lofts + slab geometry, zero BoxGeometry)
   vehicle.ts          Arcade kinematic vehicle: throttle, steering, terrain
   manager.ts          Spawning, vehicle-vs-vehicle push-out, physics upload
   aircraft.ts         Flyable craft: InputState -> pure flight-model mapping,
@@ -129,7 +132,8 @@ scripts/
   physics.test.ts     Collision + raycast tests (mirrors the C algorithms)
   integration.ts      30-second headless simulated match
   screenshot.ts       CPU rasterizer: real scene geometry -> PNG (no GPU)
-  vehicles.test.ts    Driving, steering, collision, stylized-geometry rules
+  vehicles.test.ts    Driving, steering, collision, stylized-geometry rules,
+                      A-10 part registry/proportions/anti-voxel/tri-budget
   art-style.test.ts   Anti-voxel gate: zero boxes, smooth terrain, curved humans
   quality.test.ts     Tier decision table, culler compaction, low/high World
   worker.test.ts      Worker/core ray parity, deferred drain, fallback

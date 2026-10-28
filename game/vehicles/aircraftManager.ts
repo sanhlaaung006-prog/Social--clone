@@ -13,6 +13,7 @@ import type { Physics } from "../wasm/physics";
 import type { World, CircleObstacle } from "../world";
 import { Aircraft, type AircraftKind } from "./aircraft";
 import { buildStylizedJet } from "./stylized";
+import { buildWarthog } from "./warthog";
 
 export class AircraftManager {
   readonly aircraft: Aircraft[] = [];
@@ -56,13 +57,14 @@ export class AircraftManager {
     const add = (kind: AircraftKind) => {
       const pos = spawn();
       const yaw = rng.range(0, Math.PI * 2);
-      const group = buildStylizedJet();
+      const group = kind === "warthog" ? buildWarthog() : buildStylizedJet();
       const craft = new Aircraft(kind, group, pos, yaw);
       scene.add(craft.group);
       this.aircraft.push(craft);
     };
 
     for (let i = 0; i < CONFIG.flight.jetCount; i++) add("jet");
+    for (let i = 0; i < CONFIG.flight.warthogCount; i++) add("warthog");
   }
 
   update(dt: number, input: InputState | null, physics: Physics, world: World): void {
