@@ -167,11 +167,19 @@ export function renderPng(
     const area = edge(p1.sx, p1.sy, p2.sx, p2.sy, p0.sx, p0.sy);
     if (Math.abs(area) < 1e-4) continue;
 
-    const lit = t.unlit ? 1 : 0.4 + 0.75 * Math.max(0, t.normal.dot(SUN_DIR));
+    // Ambient floor approximates the locked engine's hemisphere (1.75) +
+    // ambient (0.34) lights, which the browser applies in addition to the sun.
+    const lit = t.unlit ? 1 : 0.78 + 0.55 * Math.max(0, t.normal.dot(SUN_DIR));
+    // Soft midtone lift standing in for ACESFilmicToneMapping + IBL,
+    // which the real WebGL renderer applies but this CPU harness cannot.
+    const lift = (c: number) => {
+      const v = THREE.MathUtils.clamp(c * Math.min(1.25, lit), 0, 1);
+      return v + (1 - v) * 0.1;
+    };
     const fogK = THREE.MathUtils.clamp((t.depth - fogNear) / (fogFar - fogNear), 0, 0.92);
-    const r = THREE.MathUtils.clamp(t.color.r * Math.min(1.25, lit) * (1 - fogK) + FOG.r * fogK, 0, 1) * 255;
-    const g = THREE.MathUtils.clamp(t.color.g * Math.min(1.25, lit) * (1 - fogK) + FOG.g * fogK, 0, 1) * 255;
-    const b = THREE.MathUtils.clamp(t.color.b * Math.min(1.25, lit) * (1 - fogK) + FOG.b * fogK, 0, 1) * 255;
+    const r = THREE.MathUtils.clamp(lift(t.color.r) * (1 - fogK) + FOG.r * fogK, 0, 1) * 255;
+    const g = THREE.MathUtils.clamp(lift(t.color.g) * (1 - fogK) + FOG.g * fogK, 0, 1) * 255;
+    const b = THREE.MathUtils.clamp(lift(t.color.b) * (1 - fogK) + FOG.b * fogK, 0, 1) * 255;
 
     const minX = Math.max(0, Math.floor(Math.min(p0.sx, p1.sx, p2.sx)));
     const maxX = Math.min(W - 1, Math.ceil(Math.max(p0.sx, p1.sx, p2.sx)));
