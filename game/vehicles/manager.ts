@@ -63,7 +63,7 @@ export class VehicleManager {
     for (let i = 0; i < CONFIG.vehicles.tankCount; i++) add("tank");
     for (let i = 0; i < CONFIG.vehicles.technicalCount; i++) add("technical");
 
-    this.physics.setVehicles(this.vehicles.map((v) => ({ x: v.position.x, z: v.position.z, r: v.radius })));
+    this.physics.setVehicles(this.vehicles.map((v) => ({ x: v.position.x, y: v.position.y, z: v.position.z, r: v.radius })));
   }
 
   /** Drive/aim updates, vehicle-vs-vehicle push-out, physics refresh. */
@@ -93,7 +93,7 @@ export class VehicleManager {
     }
 
     physics.setVehicles(
-      this.vehicles.map((v) => ({ x: v.position.x, z: v.position.z, r: v.radius }))
+      this.vehicles.map((v) => ({ x: v.position.x, y: v.position.y, z: v.position.z, r: v.radius }))
     );
   }
 

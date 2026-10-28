@@ -52,6 +52,43 @@ void phys_set5(uint32_t p, int32_t i, float a, float b, float c, float d, float 
   q[4] = e;
 }
 
+void phys_set4(uint32_t p, int32_t i, float a, float b, float c, float d) {
+  float *q = fptr(p) + i * 4;
+  q[0] = a;
+  q[1] = b;
+  q[2] = c;
+  q[3] = d;
+}
+
+/* Ray vs vehicle volumes stored as [x, baseY, z, r]. Unlike static cover
+ * (which assumes a near-zero base), the sphere rides 1.5 units above the
+ * vehicle's actual ground height so hulls on hills stay hittable. */
+float phys_ray_vehicles(uint32_t veh_p, int32_t count,
+                        float ox, float oy, float oz,
+                        float dx, float dy, float dz, float max_t) {
+  const float *v = fptr(veh_p);
+  float best = max_t;
+  for (int32_t i = 0; i < count; i++) {
+    float cx = v[i * 4];
+    float cy = v[i * 4 + 1] + 1.5f;
+    float cz = v[i * 4 + 2];
+    float cr = v[i * 4 + 3] * 1.6f + 0.25f;
+
+    float ex = ox - cx;
+    float ey = oy - cy;
+    float ez = oz - cz;
+    float b = ex * dx + ey * dy + ez * dz;
+    float cc = ex * ex + ey * ey + ez * ez - cr * cr;
+    float disc = b * b - cc;
+    if (disc < 0.0f) continue;
+    float s = __builtin_sqrtf(disc);
+    float t = -b - s;
+    if (t < 0.01f) t = -b + s;
+    if (t > 0.01f && t < best) best = t;
+  }
+  return best >= max_t ? -1.0f : best;
+}
+
 /* --------------------- capsule (circle in XZ) resolution ------------------- */
 
 void phys_resolve_circles(uint32_t obs_p, int32_t count, uint32_t pos_p,

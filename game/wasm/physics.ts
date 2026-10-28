@@ -19,8 +19,8 @@ export interface RayHit {
 export interface Physics {
   readonly wasm: boolean;
   setObstacles(obstacles: CircleObstacle[]): void;
-  /** Dynamic vehicle collision radii, refreshed whenever vehicles move. */
-  setVehicles(vehicles: { x: number; z: number; r: number }[]): void;
+  /** Dynamic vehicle collision volumes, refreshed whenever vehicles move. */
+  setVehicles(vehicles: { x: number; y: number; z: number; r: number }[]): void;
   resolveCircles(x: number, z: number, radius: number): [number, number];
   resolveAgainstVehicles(x: number, z: number, radius: number): [number, number];
   rayTerrain(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number;
@@ -45,7 +45,13 @@ interface PhysExports {
   phys_breset(): void;
   phys_make_floats(count: number): number;
   phys_set3(p: number, i: number, a: number, b: number, c: number): void;
+  phys_set4(p: number, i: number, a: number, b: number, c: number, d: number): void;
   phys_set5(p: number, i: number, a: number, b: number, c: number, d: number, e: number): void;
+  phys_ray_vehicles(
+    vehP: number, count: number,
+    ox: number, oy: number, oz: number,
+    dx: number, dy: number, dz: number, maxT: number
+  ): number;
   phys_resolve_circles(
     obsP: number, count: number, posP: number, radius: number, half: number
   ): void;
@@ -73,7 +79,13 @@ class WasmPhysics implements Physics {
   private readonly e: PhysExports;
   private obsPtr = 0;
   private obsCount = 0;
+  // Separate strides: 3-float [x,z,r] for circle resolution,
+  // 4-float [x,y,z,r] for height-aware ray spheres. Buffers are reused
+  // while the vehicle count is stable (it is fixed for a match).
   private vehPtr = 0;
+  private vehCap = 0;
+  private vehRayPtr = 0;
+  private vehRayCap = 0;
   private vehCount = 0;
   private cylPtr = 0;
   private cylCapacity = 0;
@@ -92,10 +104,20 @@ class WasmPhysics implements Physics {
     obstacles.forEach((o, i) => this.e.phys_set3(this.obsPtr, i, o.x, o.z, o.r));
   }
 
-  setVehicles(vehicles: { x: number; z: number; r: number }[]) {
-    this.vehPtr = this.e.phys_make_floats(Math.max(1, vehicles.length) * 3);
+  setVehicles(vehicles: { x: number; y: number; z: number; r: number }[]) {
     this.vehCount = vehicles.length;
-    vehicles.forEach((v, i) => this.e.phys_set3(this.vehPtr, i, v.x, v.z, v.r));
+    if (vehicles.length > this.vehCap) {
+      this.vehPtr = this.e.phys_make_floats(vehicles.length * 3);
+      this.vehCap = vehicles.length;
+    }
+    if (vehicles.length > this.vehRayCap) {
+      this.vehRayPtr = this.e.phys_make_floats(vehicles.length * 4);
+      this.vehRayCap = vehicles.length;
+    }
+    vehicles.forEach((v, i) => {
+      this.e.phys_set3(this.vehPtr, i, v.x, v.z, v.r);
+      this.e.phys_set4(this.vehRayPtr, i, v.x, v.y, v.z, v.r);
+    });
   }
 
   resolveAgainstVehicles(x: number, z: number, radius: number): [number, number] {
@@ -138,8 +160,8 @@ class WasmPhysics implements Physics {
   }
 
   rayVehicles(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
-    return this.e.phys_ray_spheres(
-      this.vehPtr, this.vehCount,
+    return this.e.phys_ray_vehicles(
+      this.vehRayPtr, this.vehCount,
       origin.x, origin.y, origin.z,
       dir.x, dir.y, dir.z, maxT
     );
@@ -194,20 +216,20 @@ class WasmPhysics implements Physics {
 export class JsPhysics implements Physics {
   readonly wasm = false;
   private obstacles: CircleObstacle[] = [];
-  private vehicles: { x: number; z: number; r: number }[] = [];
+  private vehicles: { x: number; y: number; z: number; r: number }[] = [];
   private cylinders: { x: number; y: number; z: number; r: number; h: number }[] = [];
 
   setObstacles(obstacles: CircleObstacle[]) {
     this.obstacles = obstacles;
   }
 
-  setVehicles(vehicles: { x: number; z: number; r: number }[]) {
+  setVehicles(vehicles: { x: number; y: number; z: number; r: number }[]) {
     this.vehicles = vehicles;
   }
 
-  /** Shared sphere-ray test used for both static cover and vehicles. */
-  private sphereRay(
-    list: { x: number; z: number; r: number }[],
+  /** Sphere-ray for static cover: fixed 1.5-unit sphere center. */
+  private coverSphereRay(
+    list: CircleObstacle[],
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     maxT: number,
@@ -217,6 +239,35 @@ export class JsPhysics implements Physics {
     for (const o of list) {
       const cy = 1.5;
       const cr = o.r * expand + 0.25;
+      const ex = origin.x - o.x;
+      const ey = origin.y - cy;
+      const ez = origin.z - o.z;
+      const b = ex * dir.x + ey * dir.y + ez * dir.z;
+      const c = ex * ex + ey * ey + ez * ez - cr * cr;
+      const disc = b * b - c;
+      if (disc < 0) continue;
+      const s = Math.sqrt(disc);
+      let t = -b - s;
+      if (t < 0.01) t = -b + s;
+      if (t > 0.01 && t < best) best = t;
+    }
+    return best >= maxT ? -1 : best;
+  }
+
+  /**
+   * Vehicle ray: the sphere center rides 1.5 units above the vehicle's own
+   * ground height so hulls parked on simplex hills remain ray-hittable.
+   */
+  private vehicleSphereRay(
+    list: { x: number; y: number; z: number; r: number }[],
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxT: number
+  ): number {
+    let best = maxT;
+    for (const o of list) {
+      const cy = o.y + 1.5;
+      const cr = o.r * 1.6 + 0.25;
       const ex = origin.x - o.x;
       const ey = origin.y - cy;
       const ez = origin.z - o.z;
@@ -310,11 +361,11 @@ export class JsPhysics implements Physics {
   static heightFn: (x: number, z: number) => number = () => 0;
 
   rayCover(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
-    return this.sphereRay(this.obstacles, origin, dir, maxT, 1.6);
+    return this.coverSphereRay(this.obstacles, origin, dir, maxT, 1.6);
   }
 
   rayVehicles(origin: THREE.Vector3, dir: THREE.Vector3, maxT: number): number {
-    return this.sphereRay(this.vehicles, origin, dir, maxT, 1.6);
+    return this.vehicleSphereRay(this.vehicles, origin, dir, maxT);
   }
 
   setActors(actors: { x: number; y: number; z: number; r: number; h: number }[]) {
@@ -364,7 +415,7 @@ export class JsPhysics implements Physics {
     } else {
       // Gunner firing from inside a vehicle: ignore its own collision sphere.
       const others = this.vehicles.filter((_, i) => i !== skipVehicle);
-      const tv = this.sphereRay(others, origin, dir, maxT, 1.6);
+      const tv = this.vehicleSphereRay(others, origin, dir, maxT);
       if (tv >= 0 && (!best || tv < best.t)) best = { t: tv, kind: "vehicle" };
     }
     const ta = this.rayActors(origin, dir, maxT);

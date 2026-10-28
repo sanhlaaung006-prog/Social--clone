@@ -75,11 +75,15 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
 {
   const rig = new CameraRig(16 / 9);
   scene.add(rig.camera); // view model is a camera child
-  const px = 18;
-  const pz = 14;
+  // Flat dry vista picked by slope scan so the frame shows open ground,
+  // not a ridge wall (simplex relief is steeper than the old value noise).
+  const px = 60;
+  const pz = -4;
+  const tx = 44;
+  const tz = -6;
   player.group.position.set(px, world.heightAt(px, pz), pz);
   player.velocity.set(0, 0, 0);
-  player.yaw = Math.atan2(-(12 - px), -(4 - pz));
+  player.yaw = Math.atan2(-(tx - px), -(tz - pz));
   player.pitch = -0.04;
   for (let i = 0; i < 10; i++) rig.update(1 / 60, player, world, false);
   scene.updateMatrixWorld(true);

@@ -94,7 +94,7 @@ console.log("Steering:");
 console.log("Physics-core vehicle obstacles:");
 {
   const v = manager.vehicles[0];
-  physics.setVehicles(manager.vehicles.map((x) => ({ x: x.position.x, z: x.position.z, r: x.radius })));
+  physics.setVehicles(manager.vehicles.map((x) => ({ x: x.position.x, y: x.position.y, z: x.position.z, r: x.radius })));
   // Ray from above straight down onto the vehicle's center.
   const origin = new THREE.Vector3(v.position.x, v.position.y + 6, v.position.z);
   const t = physics.rayVehicles(origin, new THREE.Vector3(0, -1, 0), 30);

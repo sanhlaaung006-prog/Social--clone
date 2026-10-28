@@ -34,6 +34,26 @@ const b = noise.fbm2(12.4, -7.1, 42, 5, 2, 0.5);
 check("fbm2 is deterministic", a === b, `got ${a} vs ${b}`);
 check("fbm2 differs across seeds", noise.fbm2(1, 1, 1, 4, 2, 0.5) !== noise.fbm2(1, 1, 2, 4, 2, 0.5));
 
+console.log("Simplex noise:");
+check("simplex2 stays in [-1,1]", (() => {
+  for (let i = 0; i < 400; i++) {
+    const v = noise.simplex2(i * 0.27 - 31.4, Math.sin(i) * 12.0, CONFIG.seed);
+    if (v < -1 || v > 1) return false;
+  }
+  return true;
+})());
+check("simplex2 is deterministic",
+  noise.simplex2(8.8, -3.2, 9) === noise.simplex2(8.8, -3.2, 9));
+check("simplex2 differs across seeds",
+  noise.simplex2(2.2, 2.2, 1) !== noise.simplex2(2.2, 2.2, 2));
+check("sfbm2 is amplitude-bounded", (() => {
+  for (let i = 0; i < 100; i++) {
+    const v = noise.sfbm2(i * 0.4, -i * 0.31, 5, 5, 2, 0.5);
+    if (v < -1 || v > 1) return false;
+  }
+  return true;
+})());
+
 console.log("Terrain heightfield:");
 let finite = true;
 let min = Infinity;
