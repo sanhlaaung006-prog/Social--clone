@@ -55,7 +55,68 @@ imported at runtime. CLI lives in the global npm prefix; skill checkout at
 `~/.img2threejs/releases/a669e9a9…/img2threejs/`. Full install record in
 `reference/tech-inventory.md` §10.
 
+### 6. Footprintarts/ThreeJS_FPS_2.0 — MIT (cloned to /tmp 2026-10-28, three ^0.173 / Vite 6, plain JS, 724 LOC)
+Modular repackaging of the official three.js FPS example. **Borrowed as
+technique reference only — no code copied.**
+- Worth studying: capsule-vs-Octree depenetration math (canonical three.js
+  example approach), `AnimationMixer` action dictionary, camera-attached
+  gun holder (same view-model pattern as `game/cameraRig.ts`), YXZ look
+  order, 5-substep physics integration.
+- Defects found during inspection (do not imitate): two `WebGLRenderer`
+  instances are created (`createRenderer()` called in both `main_modular`
+  and `physics.js`, each with its own `setAnimationLoop`); `gameLoop.js`
+  is dead code with an unexplained `delta/5`; `playerCollider.onFloor` is
+  read but never defined so walk speed silently stays at the airborne
+  value; no pitch clamp (camera can flip); reload/animation state driven
+  by hardcoded `setTimeout(3000)` instead of clock time; per-frame
+  `new THREE.Vector3()` allocations throughout; bullets are 100 physics
+  spheres with O(n²) pairwise collision, not hitscan; GLB-only world via
+  `collision-world.glb` + lil-gui shipped in the loader; zero touch/mobile
+  support. Incompatible with our procedural, in-house C/WASM, mobile-first
+  architecture.
+
+### 7. xilinnihao-afk/sandline-threejs-fps — MIT (cloned to /tmp 2026-10-28, three 0.180 / Vite 7 / TS 5.9, 5,246 LOC)
+Mobile tactical FPS; the closest design analogue in this research.
+**Strongest pattern reference; version gap (10 three.js minors) and GLB
+asset pipeline mean no direct code port — patterns only.**
+- Architecture worth emulating: (a) pure `Simulation` class with zero
+  THREE imports — seeded deterministic state + an event queue the render
+  layer drains once per frame, making the whole game headless-testable;
+  (b) fixed 1/60 s accumulator loop with edge-triggered input flags
+  consumed per sim tick and accumulated look deltas; (c) `TouchAim`
+  with 5 px gesture slop, frame-rate-independent exponential smoothing,
+  and remainder preserved on finger lift; (d) bots with last-seen memory
+  TTL, team reports, cover-proxy search (decision-time only, never
+  per-frame), A* on a precomputed 1 m `Uint8Array` grid, stall-triggered
+  repath, reaction-time + burst/rest rhythm, friendly-fire line checks,
+  and no wallhack (perception-gated information only); (e) multi-sample
+  blast exposure (5 body points + LOS + smoothstep falloff) instead of
+  binary full/zero damage; (f) adaptive mobile render scale that only
+  downgrades after 3 s sustained <48 fps with a 6 s cooldown and never
+  alters aim gain; (g) separate view-model scene/camera composited with
+  `clearDepth()`; (h) pause-on-blur/visibility/pointerlock-loss and
+  `webglcontextlost` handling.
+- Rejected parts: flat 2D box-map collision (`MAP_BOXES`, no terrain
+  heightfield — our world is simplex terrain with C raymarch), GLB
+  character/weapon/IK/audio asset pipeline (conflicts with the zero-asset
+  procedural rule), analytics/telemetry modules, Chinese-only UI strings,
+  200+ line bot-brain method (would be split if adapted).
+- Candidate scoped borrows, in priority order: TouchAim slop/smoothing →
+  `components/TouchControls.tsx`; bot memory/cover/repath → `game/actors.ts`
+  (currently two-state patrol/engage); sustained-slow-frame render-scale
+  adaptation → `game/device.ts` + `game/engine.ts`; event-sourced combat
+  effects discipline → `game/combat.ts`. Each is a separate commit behind
+  the existing test gate. Fixed-timestep accumulator is noted but deferred:
+  our variable-step loop is covered by `scripts/integration.ts` and the
+  worker ray contract, and converting it would touch every test.
+
 ## Also reviewed (search only, not cloned)
+- npm `phototo3d@0.2.1` — MIT, CLI + MCP server (deps:
+  `@modelcontextprotocol/sdk`, `zod`); cloud metered `reconstruct`
+  (needs `SCULPT_API_KEY`, calls phototo3d.dev, unusable in this sandbox)
+  plus fully local free `codegen` from a spec JSON. Generated factories
+  emit raw `THREE.BoxGeometry` and `MeshPhysicalMaterial`, which fail the
+  project anti-voxel/material gates unless revised; not installed.
 - stemkoski three.js examples, NikLever/threejs-games-course — standard
   primitive composition patterns; nothing beyond what the MIT sources cover
 - Quaternius ecosystem repos — confirm the target silhouette language:
