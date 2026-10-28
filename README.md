@@ -37,8 +37,8 @@ Play Console account; the debug APK is sideload-installable for testing.
 ```bash
 npm install
 npm run dev           # Vite dev server with HMR, ~150 ms cold start
-npm test              # 12 headless suites: smoke, physics, vehicles, art,
-                      # quality, worker, touch, bots, adaptive, combat events...
+npm test              # 13 headless suites: smoke, physics, vehicles, art,
+                      # quality, worker, touch, bot AI, utility AI, adaptive...
 npm run build         # type-check and production build to dist/
 npm run preview       # serve the production build locally
 npm run build:wasm    # clang -> public/wasm/math_core.wasm (needs clang + lld)
@@ -81,8 +81,12 @@ game/
                       instanced two-species jungle, grass, drifting clouds
   geometry/kit.ts     Shared stylized builders: loft, jittered blobs,
                       gabled prism, struts, palette variation (anti-voxel)
+  botBrain.ts         Utility AI: six scored actions (engage, cover, reload,
+                      search, returnToZone, patrol), response curves,
+                      hysteresis selector — pure, headless-testable
   actors.ts           Rounded humanoids (cylinders/spheres), Player, bot AI:
-                      LOS vision, last-seen search, cover retreat, repath
+                      LOS perception feeds the utility selector; magazine +
+                      reload, last-seen search, cover retreat, stall repath
   combat.ts           Tracer/flash pools, combat event queue, pickups
   zone.ts             Shrinking battle-royale circle
   cameraRig.ts        FPS camera: YXZ pointer-lock rig, head bob/sway/roll,
@@ -126,6 +130,7 @@ scripts/
   worker.test.ts      Worker/core ray parity, deferred drain, fallback
   touch-aim.test.ts   Touch slop, low-pass smoothing, tail preservation, ADS
   bot-ai.test.ts      LOS gating, last-seen search, cover, stall repath
+  bot-utility.test.ts Utility scorer policy, hysteresis, reload, zone return
   adaptive-quality.test.ts  Slow-frame render-scale governor, recovery, floor
   combat-events.test.ts     Presentation event queue: drain, order, clear
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts

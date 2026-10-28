@@ -90,6 +90,12 @@ export const CONFIG = {
     coverRadius: 14, // how far a bot will look for a cover obstacle
     stallTime: 1.2, // no-progress seconds before a patrol/search repath
     stallDist: 0.45, // progress threshold for the stall detector
+    // Utility AI selector (game/botBrain.ts).
+    utility: {
+      margin: 0.08, // a challenger must beat the incumbent by this score
+      holdTime: 0.3, // minimum seconds before a smaller score gap can switch
+      reloadLowFrac: 0.25, // safe reload becomes attractive below this mag fraction
+    },
   },
 
   weapon: {

@@ -10,6 +10,12 @@ import type { InputState } from "./input";
 import type { Rng } from "./rng";
 import type { World } from "./world";
 import type { Physics } from "./wasm/physics";
+import {
+  UtilitySelector,
+  createUtilityActions,
+  type BotActionId,
+  type BotContext,
+} from "./botBrain";
 
 export interface HumanoidParts {
   group: THREE.Group;
@@ -362,11 +368,19 @@ export interface BotShot {
   dir: THREE.Vector3;
 }
 
-type BotState = "patrol" | "search" | "engage" | "cover" | "dead";
+/** AI state visible to debug/HUD: the running utility action, or dead. */
+export type BotAiState = BotActionId | "dead";
 
 export class Bot extends Actor {
-  state: BotState = "patrol";
   readonly callsign: string;
+  /** Currently selected utility action. */
+  private action: BotActionId = "patrol";
+  private readonly selector = new UtilitySelector(
+    createUtilityActions(),
+    CONFIG.bot.utility.margin,
+    CONFIG.bot.utility.holdTime
+  );
+
   private waypoint = new THREE.Vector3();
   private waypointT = 0;
   private fireT = 0;
@@ -375,20 +389,28 @@ export class Bot extends Actor {
   private strafe = 1;
   private strafeT = 0;
   private deathT = 0;
+
   /* Perception: last-known player position plus how long it stays believable.
      A bot never reads the live player position while the player is unseen. */
   private readonly lastSeen = new THREE.Vector3();
   private lastSeenT = -1e9;
   private aiTime = 0;
   private reactT = 0;
+  private wasSeeing = false;
+
   /* Stall detector: no positional progress forces a navigation repair. */
   private readonly progressAt = new THREE.Vector3();
   private stallT = 0;
+
   /* Cover retreat point and its hold timer. */
   private readonly coverPoint = new THREE.Vector3();
   private coverT = 0;
-  /* Cooldown after a retreat so cover cannot re-trigger every frame. */
+  /* Cooldown after a retreat so cover cannot re-trigger every decision. */
   private coverCdT = 0;
+
+  /* Magazine + reload (the player weapon's sizes are reused). */
+  private mag: number = CONFIG.weapon.magSize;
+  private reloadT = 0;
 
   constructor(
     world: World,
@@ -406,8 +428,26 @@ export class Bot extends Actor {
   }
 
   /** Debug/HUD-visible AI state (no mutable internals exposed). */
-  get aiState(): BotState {
-    return this.state;
+  get aiState(): BotAiState {
+    return this.alive ? this.action : "dead";
+  }
+
+  /** Last utility scores, for debug overlays and tests. */
+  get utilityScores(): Record<BotActionId, number> {
+    return { ...this.selector.scores };
+  }
+
+  get ammoFrac(): number {
+    return this.mag / CONFIG.weapon.magSize;
+  }
+
+  get isReloading(): boolean {
+    return this.reloadT > 0;
+  }
+
+  /** Test/debug seam: force an empty magazine to exercise reload utility. */
+  debugDrainMag(): void {
+    this.mag = 0;
   }
 
   protected override maxHp() {
@@ -416,7 +456,6 @@ export class Bot extends Actor {
 
   protected override onDeath() {
     super.onDeath();
-    this.state = "dead";
     this.velocity.set(0, 0, 0);
   }
 
@@ -454,8 +493,9 @@ export class Bot extends Actor {
   }
 
   /** Pick a point on the far side of a nearby obstacle from the threat.
-   *  Decision-time only (called on low HP, never per frame); candidates must
-   *  be free of other obstacles and genuinely occluded from the threat. */
+   *  Decision-time only (only evaluated when wounded/dry under threat);
+   *  candidates must be free of other obstacles and genuinely occluded
+   *  from the threat. */
   private findCover(threat: THREE.Vector3): THREE.Vector3 | null {
     let best: THREE.Vector3 | null = null;
     let bestScore = Infinity;
@@ -494,7 +534,7 @@ export class Bot extends Actor {
   }
 
   /** Navigation repair: when the bot makes no progress for stallTime it
-   *  abandons the current goal and picks a fresh route (search → patrol). */
+   *  abandons the current goal and picks a fresh route. */
   private detectStall(dt: number): boolean {
     this.stallT += dt;
     if (this.position.distanceTo(this.progressAt) > CONFIG.bot.stallDist) {
@@ -510,8 +550,22 @@ export class Bot extends Actor {
     return false;
   }
 
+  private startReload(): void {
+    if (this.reloadT > 0 || this.mag >= CONFIG.weapon.magSize) return;
+    this.reloadT = CONFIG.weapon.reloadTime;
+  }
+
+  private tickReload(dt: number): void {
+    if (this.reloadT <= 0) return;
+    this.reloadT -= dt;
+    if (this.reloadT <= 0) {
+      this.reloadT = 0;
+      this.mag = CONFIG.weapon.magSize;
+    }
+  }
+
   /**
-   * Runs the AI. Returns a shot descriptor when the bot fires this frame.
+   * Runs the utility AI. Returns a shot descriptor when the bot fires.
    */
   update(
     dt: number,
@@ -531,7 +585,9 @@ export class Bot extends Actor {
     this.aiTime += dt;
     this.reactT = Math.max(0, this.reactT - dt);
     this.coverCdT = Math.max(0, this.coverCdT - dt);
+    this.tickReload(dt);
 
+    /* ------------------------------ perception ------------------------------ */
     const toPlayer = new THREE.Vector3(
       player.position.x - this.position.x,
       0,
@@ -541,144 +597,200 @@ export class Bot extends Actor {
     const canSee =
       player.alive && dist < CONFIG.bot.sightRange && this.hasLineOfSight(player.position);
 
-    let shot: BotShot | null = null;
-    let moveX = 0;
-    let moveZ = 0;
-
-    /* --- perception → state transitions --- */
     if (canSee) {
-      // Cover is a committed retreat: keep refreshing last-known data, but
-      // do not let a fresh sighting cancel the retreat before its timer ends.
-      const fresh = this.state !== "engage" && this.state !== "cover";
-      this.lastSeen.copy(player.position);
-      this.lastSeenT = this.aiTime;
-      if (fresh) {
-        // Reaction delay on every fresh acquisition; no instant snap fire.
-        this.state = "engage";
+      // Reaction delay on every fresh acquisition; no instant snap fire.
+      if (!this.wasSeeing) {
         this.reactT = this.rng.range(CONFIG.bot.reactMin, CONFIG.bot.reactMax);
         this.burstLeft = 0;
       }
-    } else if (this.state === "engage") {
-      this.state = "search";
+      this.lastSeen.copy(player.position);
+      this.lastSeenT = this.aiTime;
     }
+    this.wasSeeing = canSee;
 
-    // Wounded bots with live contact break off to cover when a valid
-    // occluded retreat point exists nearby.
-    if (
-      canSee &&
-      this.state === "engage" &&
-      this.coverCdT <= 0 &&
-      this.hp / CONFIG.bot.maxHp < CONFIG.bot.coverHpFrac
-    ) {
-      const cover = this.findCover(player.position);
-      if (cover) {
-        this.state = "cover";
-        this.coverPoint.copy(cover);
-        this.coverT = CONFIG.bot.coverTime;
-        this.coverCdT = CONFIG.bot.coverTime + CONFIG.bot.memoryTime;
-      }
-    }
-
-    // Stay inside the safe zone: waypoint bias toward circle center.
+    /* ------------------------------ zone facts ------------------------------ */
     const distCenter = Math.hypot(
       this.position.x - zoneCenter.x,
       this.position.z - zoneCenter.z
     );
-    const outside = distCenter > zoneRadius - 3;
+    const safeRadius = zoneRadius - 3;
+    const outside = distCenter > safeRadius;
+    const zoneDepth = outside ? distCenter - safeRadius : 0;
 
-    if (this.state === "engage" && canSee) {
-      const dir = toPlayer.clone().normalize();
-      this.yaw = Math.atan2(-dir.x, -dir.z);
+    /* ------------------------- cover (decision-time) ------------------------ */
+    const memoryAge = this.lastSeenT < -1e8 ? Infinity : this.aiTime - this.lastSeenT;
+    const threatened = canSee || memoryAge < CONFIG.bot.memoryTime;
+    const lowHp = this.hp / CONFIG.bot.maxHp < CONFIG.bot.coverHpFrac;
+    const dry = this.ammoFrac <= CONFIG.bot.utility.reloadLowFrac;
+    let coverResolved: THREE.Vector3 | null = null;
+    if (threatened && (lowHp || this.reloadT > 0 || dry)) {
+      coverResolved = this.findCover(canSee ? player.position : this.lastSeen);
+      if (coverResolved) this.coverPoint.copy(coverResolved);
+    }
 
-      this.strafeT -= dt;
-      if (this.strafeT <= 0) {
-        this.strafe *= -1;
-        this.strafeT = this.rng.range(0.8, 1.8);
-      }
-      if (dist > 14) {
-        moveX = dir.x;
-        moveZ = dir.z;
-      } else if (dist < 8) {
-        moveX = -dir.x;
-        moveZ = -dir.z;
-      } else {
-        moveX = -dir.z * this.strafe;
-        moveZ = dir.x * this.strafe;
-      }
+    /* ------------------------------ utility pick ---------------------------- */
+    const ctx: BotContext = {
+      hasLOS: canSee,
+      distToPlayer: dist,
+      attackRange: CONFIG.bot.attackRange,
+      hpFrac: this.hp / CONFIG.bot.maxHp,
+      memoryAge,
+      memoryTtl: CONFIG.bot.memoryTime,
+      outsideZone: outside,
+      zoneDepth,
+      coverAvailable: coverResolved !== null,
+      coverCooldown: this.coverCdT > 0,
+      magFrac: this.ammoFrac,
+      reloading: this.reloadT > 0,
+      reloadLowFrac: CONFIG.bot.utility.reloadLowFrac,
+      coverHpFrac: CONFIG.bot.coverHpFrac,
+    };
 
-      /* --- burst firing (gated by reaction time) --- */
-      if (this.reactT <= 0) {
-        this.fireT -= dt;
-        if (this.burstLeft > 0) {
-          this.burstT -= dt;
-          if (this.burstT <= 0) {
-            this.burstLeft--;
-            this.burstT = CONFIG.bot.burstGap;
-            shot = this.makeShot(player, dist);
+    const prevAction = this.action;
+    this.action = this.selector.decide(dt, ctx).id;
+    if (this.action === "cover" && prevAction !== "cover") {
+      this.coverT = CONFIG.bot.coverTime;
+    }
+
+    let shot: BotShot | null = null;
+    let moveX = 0;
+    let moveZ = 0;
+
+    switch (this.action) {
+      case "engage": {
+        if (!canSee) break; // selector guard; never fire on stale data
+        const dir = toPlayer.clone().normalize();
+        this.yaw = Math.atan2(-dir.x, -dir.z);
+
+        this.strafeT -= dt;
+        if (this.strafeT <= 0) {
+          this.strafe *= -1;
+          this.strafeT = this.rng.range(0.8, 1.8);
+        }
+        if (dist > 14) {
+          moveX = dir.x;
+          moveZ = dir.z;
+        } else if (dist < 8) {
+          moveX = -dir.x;
+          moveZ = -dir.z;
+        } else {
+          moveX = -dir.z * this.strafe;
+          moveZ = dir.x * this.strafe;
+        }
+
+        /* Burst firing: reaction time gates the trigger, not the decision. */
+        if (this.reactT <= 0 && this.reloadT <= 0 && this.mag > 0) {
+          this.fireT -= dt;
+          if (this.burstLeft > 0) {
+            this.burstT -= dt;
+            if (this.burstT <= 0) {
+              this.burstLeft--;
+              this.burstT = CONFIG.bot.burstGap;
+              shot = this.fireRound(player, dist);
+            }
+          } else if (this.fireT <= 0 && dist < CONFIG.bot.attackRange) {
+            this.burstLeft = CONFIG.bot.burstShots;
+            this.fireT = CONFIG.bot.fireInterval * this.rng.range(0.8, 1.4);
+            this.burstT = 0;
           }
-        } else if (this.fireT <= 0 && dist < CONFIG.bot.attackRange) {
-          this.burstLeft = CONFIG.bot.burstShots;
-          this.fireT = CONFIG.bot.fireInterval * this.rng.range(0.8, 1.4);
-          this.burstT = 0;
         }
+        if (this.mag === 0) this.startReload();
+        break;
       }
-    } else if (this.state === "cover") {
-      const d = new THREE.Vector3(
-        this.coverPoint.x - this.position.x,
-        0,
-        this.coverPoint.z - this.position.z
-      );
-      if (d.length() > 1.2) {
-        // Still retreating: the hold timer starts only on arrival.
-        d.normalize();
-        moveX = d.x;
-        moveZ = d.z;
-        this.yaw = Math.atan2(-d.x, -d.z);
-      } else {
-        // Hold: watch the last known approach while the timer runs.
-        const face = this.lastSeen.clone().sub(this.position);
-        if (face.lengthSq() > 0.01) this.yaw = Math.atan2(-face.x, -face.z);
-        this.coverT -= dt;
-      }
-      if (this.coverT <= 0) this.state = "search";
-    } else {
-      /* --- search (last-known position) or patrol --- */
-      if (this.state === "search") {
-        const memoryFresh = this.aiTime - this.lastSeenT < CONFIG.bot.memoryTime;
-        const reached = this.position.distanceTo(this.lastSeen) < 1.5;
-        if (!memoryFresh || reached) {
-          this.state = "patrol";
-          this.pickWaypoint();
+
+      case "cover": {
+        const d = new THREE.Vector3(
+          this.coverPoint.x - this.position.x,
+          0,
+          this.coverPoint.z - this.position.z
+        );
+        if (d.length() > 1.2) {
+          // Still retreating: the hold timer starts only on arrival.
+          d.normalize();
+          moveX = d.x;
+          moveZ = d.z;
+          this.yaw = Math.atan2(-d.x, -d.z);
+        } else {
+          // Hold: watch the last known approach, reload under cover.
+          const face = this.lastSeen.clone().sub(this.position);
+          if (face.lengthSq() > 0.01) this.yaw = Math.atan2(-face.x, -face.z);
+          if (dry) this.startReload();
+          this.coverT -= dt;
         }
+        // Expire the retreat: the cooldown then blocks immediate re-entry.
+        if (this.coverT <= 0) {
+          this.coverCdT = CONFIG.bot.coverTime + CONFIG.bot.memoryTime;
+        }
+        break;
       }
-      if (this.state === "search" && this.detectStall(dt)) {
-        this.state = "patrol";
-        this.pickWaypoint();
+
+      case "reload": {
+        if (this.reloadT <= 0) this.startReload();
+        // If a cover point was resolved, crouch-walk there while reloading;
+        // otherwise hold position and watch the last-known approach.
+        if (coverResolved) {
+          const d = new THREE.Vector3(
+            this.coverPoint.x - this.position.x,
+            0,
+            this.coverPoint.z - this.position.z
+          );
+          if (d.length() > 1.2) {
+            d.normalize();
+            moveX = d.x;
+            moveZ = d.z;
+            this.yaw = Math.atan2(-d.x, -d.z);
+          }
+        } else {
+          const face = this.lastSeen.clone().sub(this.position);
+          if (face.lengthSq() > 0.01) this.yaw = Math.atan2(-face.x, -face.z);
+        }
+        break;
       }
-      if (this.state === "search") {
-        const d = this.lastSeen
-          .clone()
-          .sub(this.position)
-          .setY(0);
+
+      case "search": {
+        if (this.detectStall(dt)) this.pickWaypoint();
+        const d = this.lastSeen.clone().sub(this.position).setY(0);
         if (d.length() > 1.2) {
           d.normalize();
           moveX = d.x;
           moveZ = d.z;
           this.yaw = Math.atan2(-d.x, -d.z);
         }
-      } else {
-        this.waypointT -= dt;
-        if (this.waypointT <= 0) this.pickWaypoint();
-        if (this.detectStall(dt)) this.pickWaypoint();
-        const wp = outside ? zoneCenter : this.waypoint;
-        const d = new THREE.Vector3(wp.x - this.position.x, 0, wp.z - this.position.z);
-        const l = d.length();
-        if (l > 1.2) {
-          d.multiplyScalar(1 / l);
+        break;
+      }
+
+      case "returnToZone": {
+        const d = new THREE.Vector3(
+          zoneCenter.x - this.position.x,
+          0,
+          zoneCenter.z - this.position.z
+        );
+        if (d.lengthSq() > 0.01) {
+          d.normalize();
           moveX = d.x;
           moveZ = d.z;
           this.yaw = Math.atan2(-d.x, -d.z);
         }
+        break;
+      }
+
+      case "patrol":
+      default: {
+        this.waypointT -= dt;
+        if (this.waypointT <= 0) this.pickWaypoint();
+        if (this.detectStall(dt)) this.pickWaypoint();
+        const d = new THREE.Vector3(
+          this.waypoint.x - this.position.x,
+          0,
+          this.waypoint.z - this.position.z
+        );
+        if (d.length() > 1.2) {
+          d.normalize();
+          moveX = d.x;
+          moveZ = d.z;
+          this.yaw = Math.atan2(-d.x, -d.z);
+        }
+        break;
       }
     }
 
@@ -687,6 +799,12 @@ export class Bot extends Actor {
     this.applyGravity(dt);
     this.animateWalk(Math.hypot(moveX, moveZ) * sp, dt);
     return shot;
+  }
+
+  /** Fire one round and spend a magazine round. */
+  private fireRound(player: Player, dist: number): BotShot {
+    this.mag = Math.max(0, this.mag - 1);
+    return this.makeShot(player, dist);
   }
 
   private makeShot(player: Player, dist: number): BotShot {

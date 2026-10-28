@@ -127,6 +127,21 @@ asset pipeline mean no direct code port — patterns only.**
      the RayService no-shots-cross-matches invariant.
      `scripts/combat-events.test.ts` covers ordering, drain idempotence,
      clear, and JSON-safe payloads.
+  5. **DONE — utility AI extension.** The sandline-style perception layer
+     now feeds a real utility scorer instead of a hardcoded state machine:
+     `game/botBrain.ts` (pure, no THREE) scores six actions every frame —
+     engage, cover, reload, search, returnToZone, patrol — from context
+     facts (LOS, HP fraction, memory age, zone depth, magazine fraction,
+     cover availability). A `UtilitySelector` applies an 0.08 score margin
+     and 0.3 s minimum hold to stop action flicker, and abandons any
+     action whose score drops to zero immediately. Bots gained a real
+     magazine/reload loop (reuses `CONFIG.weapon` sizes): empty under
+     contact → cover reload, empty while safe → reload action. Reaction
+     time gates the trigger, not the decision to face the threat.
+     `scripts/bot-utility.test.ts` (33 checks) covers every scorer rule,
+     hysteresis, reload execution and zone-return movement; the earlier
+     `bot-ai.test.ts` regression suite passes unchanged against the new
+     brain.
   Fixed-timestep accumulator is noted but deferred: our variable-step loop
   is covered by `scripts/integration.ts` and the worker ray contract, and
   converting it would touch every test.
