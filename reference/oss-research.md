@@ -112,8 +112,13 @@ asset pipeline mean no direct code port — patterns only.**
      `search` state, reaction delay, low-HP obstacle cover with cooldown,
      and stall-triggered repath; no wallhack (unseen player position is
      never read); `scripts/bot-ai.test.ts` covers every transition.
-  3. TODO: sustained-slow-frame render-scale adaptation → `game/device.ts`
-     + `game/engine.ts`.
+  3. **DONE** sustained-slow-frame render-scale adaptation → new
+     `game/adaptiveQuality.ts` (pure frame-time governor: 48 fps slow /
+     58 fps fast thresholds, 3 s downgrade / 5 s recovery sustain, 6 s
+     cooldown, 0.65 floor), enabled only on the low tier and wired into
+     the engine frame loop; input/sensitivity never touched;
+     `scripts/adaptive-quality.test.ts` covers downgrade, recovery, hold,
+     floor, disabled passthrough.
   4. TODO: event-sourced combat effects discipline → `game/combat.ts`.
   Fixed-timestep accumulator is noted but deferred: our variable-step loop
   is covered by `scripts/integration.ts` and the worker ray contract, and

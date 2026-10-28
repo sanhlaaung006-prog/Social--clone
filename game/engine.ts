@@ -18,6 +18,7 @@ import { TracerPool, MuzzleFlash, PickupManager } from "./combat";
 import { VehicleManager } from "./vehicles/manager";
 import type { Vehicle, Seat } from "./vehicles/vehicle";
 import { detectTier } from "./device";
+import { AdaptiveResolution } from "./adaptiveQuality";
 import type { HudSnapshot, KillFeedEntry, MatchStatus, MinimapBlip } from "./hud";
 
 const FOG_HEX = CONFIG.world.fogColor;
@@ -72,6 +73,11 @@ export class Engine {
   private pointerLocked = false;
 
   private readonly tier = detectTier();
+  private readonly adaptive = new AdaptiveResolution(
+    CONFIG.quality.adaptive,
+    this.tier === "low"
+  );
+  private basePixelRatio = 1;
 
   private constructor(private readonly container: HTMLElement) {
     this.input.touch =
@@ -84,7 +90,8 @@ export class Engine {
       powerPreference: "high-performance",
       alpha: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+    this.basePixelRatio = Math.min(window.devicePixelRatio, q.pixelRatioCap);
+    this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -252,6 +259,11 @@ export class Engine {
     // Flush smoothed touch-look into the shared accumulator first, so both
     // the on-foot player and the vehicle turret read the same per-frame delta.
     this.input.pumpTouchLook(dt);
+    // Mobile-only governor: sustained slow frames buy a lower render scale;
+    // never changes input/sensitivity, only the drawing buffer resolution.
+    if (this.adaptive.active && this.adaptive.sample(dt)) {
+      this.renderer.setPixelRatio(this.basePixelRatio * this.adaptive.scale);
+    }
     this.fireCooldown -= dt;
     this.gunCooldown -= dt;
 

@@ -23,6 +23,16 @@ export const CONFIG = {
    * geometry density drops before pixel/shadow budgets do.
    */
   quality: {
+    // Runtime render-scale governor (low tier only); see adaptiveQuality.ts.
+    adaptive: {
+      slowFps: 48,
+      fastFps: 58,
+      sustainSlow: 3,
+      sustainFast: 5,
+      cooldown: 6,
+      minScale: 0.65,
+      step: 0.1,
+    },
     high: {
       terrainSegments: 128,
       waterSegments: 56,
