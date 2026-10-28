@@ -60,13 +60,24 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   await page.waitForTimeout(4000);
   await dumpDiag("after-load");
   expect(pageErrors, `page errors during load: ${pageErrors.join(" | ")}`).toHaveLength(0);
-  await page.screenshot({ path: "screenshots/browser/01-orbit-city.png" });
+  // Element capture of the WebGL canvas is more reliable in headless
+  // software-GL than a full-page screenshot (no compositor quiescence wait).
+  await canvas.screenshot({
+    path: "screenshots/browser/01-orbit-city.png",
+    timeout: 30_000,
+    animations: "disabled"
+  });
 
   // Enter first-person mode and capture a walk view with the crosshair.
   await page.getByRole("button", { name: /walk the map/i }).click();
   await page.waitForTimeout(1200);
-  await expect(page.locator(".crosshair")).toBeAttached();
-  await page.screenshot({ path: "screenshots/browser/02-walk-mode.png" });
+  const crosshair = page.locator(".crosshair");
+  await expect(crosshair).toBeAttached();
+  await canvas.screenshot({
+    path: "screenshots/browser/02-walk-mode.png",
+    timeout: 30_000,
+    animations: "disabled"
+  });
 
   // Walk forward for a few seconds to exercise the controller and
   // collision code, then capture the resulting view.
@@ -74,12 +85,21 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   await page.waitForTimeout(3500);
   await page.keyboard.up("KeyW");
   await page.waitForTimeout(500);
-  await page.screenshot({ path: "screenshots/browser/03-walk-forward.png" });
+  await canvas.screenshot({
+    path: "screenshots/browser/03-walk-forward.png",
+    timeout: 30_000,
+    animations: "disabled"
+  });
 
   // Back to orbit for the exit transition.
   await page.getByRole("button", { name: /orbit view/i }).click();
   await page.waitForTimeout(1000);
-  await page.screenshot({ path: "screenshots/browser/04-back-to-orbit.png" });
+  await expect(crosshair).toHaveCount(0);
+  await canvas.screenshot({
+    path: "screenshots/browser/04-back-to-orbit.png",
+    timeout: 30_000,
+    animations: "disabled"
+  });
 
   expect(pageErrors, `page errors during run: ${pageErrors.join(" | ")}`).toHaveLength(0);
   await dumpDiag("complete");

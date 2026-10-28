@@ -18,9 +18,9 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL: "http://127.0.0.1:5173",
-    viewport: { width: 1280, height: 720 },
+    viewport: { width: 960, height: 540 },
     headless: true,
-    actionTimeout: 15_000,
+    actionTimeout: 20_000,
     screenshot: "only-on-failure",
     trace: "retain-on-failure"
   },
@@ -38,7 +38,12 @@ export default defineConfig({
             "--use-angle=swiftshader",
             "--enable-unsafe-swiftshader",
             "--ignore-gpu-blocklist",
-            "--disable-gpu-sandbox"
+            "--disable-gpu-sandbox",
+            // Software-GL compositing can otherwise stall page screenshots.
+            "--disable-new-content-rendering-timeout",
+            "--run-all-compositor-stages-before-draw",
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding"
           ]
         }
       }
