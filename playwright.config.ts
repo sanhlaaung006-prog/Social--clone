@@ -17,6 +17,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
+    baseURL: "http://127.0.0.1:5173",
     viewport: { width: 1280, height: 720 },
     headless: true,
     actionTimeout: 15_000,
