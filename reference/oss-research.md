@@ -45,6 +45,16 @@ over a terrainHeight() function and the head-bob/air-offset controller
 structure. All realism layers (counter-sway, roll, landing dip, sprint FOV,
 ADS pose, camera-attached view model) are original additions.
 
+### 5. img2threejs — Apache-2.0 (npm `img2threejs@0.1.1`, skill tag v2.0.0)
+Installed as a **global agent-skill CLI**, not a game dependency (it has no
+importable API). The skill reconstructs a reference image as a code-only
+procedural Three.js model through a staged sculpt/self-review pipeline with
+a Python 3.10+ stdlib-only `forge/`. Methodologically aligned with this
+project's anti-voxel, zero-texture, primitive-first art rules; nothing is
+imported at runtime. CLI lives in the global npm prefix; skill checkout at
+`~/.img2threejs/releases/a669e9a9…/img2threejs/`. Full install record in
+`reference/tech-inventory.md` §10.
+
 ## Also reviewed (search only, not cloned)
 - stemkoski three.js examples, NikLever/threejs-games-course — standard
   primitive composition patterns; nothing beyond what the MIT sources cover
