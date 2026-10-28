@@ -7,10 +7,10 @@ export function Hud(): JSX.Element {
     <div className="hud" aria-hidden="true">
       <div className="hud-panel hud-title">
         <div className="hud-eyebrow">GOLDEN LAND ROYALE</div>
-        <div className="hud-sub">Myanmar relief · locked terrain foundation</div>
+        <div className="hud-sub">Myanmar relief · locked art foundation · 5 × 5 km merged-noise map</div>
       </div>
       <div className="hud-panel hud-hint">
-        one continuous height field · 130 × 210 m · sea level 0 · drift orbit
+        value + simplex noise · drift orbit · tap walk to enter first person
       </div>
     </div>
   );

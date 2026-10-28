@@ -94,3 +94,188 @@ body,
   border: 1px solid rgba(160, 185, 205, 0.15);
   padding: 6px 10px;
 }
+
+/* ----------------------- first-person walk mode ----------------------- */
+
+.mode-btn {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #eaf4fa;
+  background: rgba(14, 22, 18, 0.78);
+  border: 1px solid rgba(127, 212, 232, 0.45);
+  padding: 12px 22px;
+  backdrop-filter: blur(8px);
+  transition: background 0.16s, transform 0.16s;
+}
+
+.mode-btn:active {
+  transform: scale(0.97);
+}
+
+.mode-btn-enter {
+  bottom: 34px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.mode-btn-enter:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+.mode-btn-exit {
+  top: 16px;
+  left: 16px;
+  padding: 9px 14px;
+  font-size: 10px;
+}
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(234, 244, 250, 0.85);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+}
+
+.crosshair::before {
+  left: 50%;
+  top: 0;
+  width: 1.5px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.crosshair::after {
+  top: 50%;
+  left: 0;
+  height: 1.5px;
+  width: 100%;
+  transform: translateY(-50%);
+}
+
+.coord-readout {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #b9ccd6;
+  background: rgba(10, 13, 17, 0.6);
+  border: 1px solid rgba(160, 185, 205, 0.14);
+  padding: 6px 12px;
+  pointer-events: none;
+}
+
+.walk-hint {
+  position: absolute;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: #7e929d;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ------------------------------ touch layer ---------------------------- */
+
+.touch-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+}
+
+.touch-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  touch-action: none;
+}
+
+.touch-move {
+  left: 0;
+}
+
+.touch-look {
+  right: 0;
+}
+
+.stick-base,
+.stick-knob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.stick-base {
+  width: 118px;
+  height: 118px;
+  border: 1.5px solid rgba(190, 214, 222, 0.35);
+  background: rgba(14, 22, 18, 0.28);
+  backdrop-filter: blur(4px);
+}
+
+.stick-knob {
+  width: 52px;
+  height: 52px;
+  background: rgba(127, 212, 232, 0.42);
+  border: 1.5px solid rgba(200, 235, 242, 0.65);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.touch-actions {
+  position: absolute;
+  right: 20px;
+  bottom: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+  z-index: 13;
+}
+
+.touch-btn {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(190, 214, 222, 0.4);
+  background: rgba(14, 22, 18, 0.62);
+  color: #dcebf2;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  backdrop-filter: blur(6px);
+  touch-action: none;
+  user-select: none;
+}
+
+.touch-btn:active,
+.touch-btn.is-on {
+  background: rgba(127, 212, 232, 0.4);
+  border-color: rgba(200, 235, 242, 0.8);
+}
+
+.touch-btn-jump {
+  width: 78px;
+  height: 78px;
+}

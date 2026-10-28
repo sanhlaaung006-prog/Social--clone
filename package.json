@@ -9,8 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "tsx tests/render-core.test.ts && tsx tests/terrain-lock.test.ts",
-    "screenshot": "tsx tests/terrain-shot.ts"
+    "test": "tsx tests/render-core.test.ts && tsx tests/terrain-lock.test.ts && tsx tests/simplex-map.test.ts && tsx tests/controller.test.ts",
+    "screenshot": "tsx tests/terrain-shot.ts && tsx tests/fp-shot.ts"
   },
   "dependencies": {
     "react": "18.3.1",

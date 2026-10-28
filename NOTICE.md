@@ -3,6 +3,15 @@
 This project re-uses techniques and re-authored code from open-source
 projects. Original copyright notices and license text are preserved below.
 
+## "Myanmar — Living Terrain Atlas" (user-supplied)
+
+The geo-coordinate outline polygon, ocean/coast masking, river
+incision and chunk-LOD/skirt techniques in `src/terrain/myanmarMap.ts`
+(staged outline utility) and the roadmap's LOD brick are re-authored
+from a second user-supplied standalone (`index.html`, received
+2026-10-28, no license declared, treated as project-owned work). No
+code was copied verbatim; only techniques and geo data were reused.
+
 ## "Myanmar, in Relief" terrain engine (user-supplied)
 
 The frozen modules under `src/terrain/locked/` (`noise.ts`,

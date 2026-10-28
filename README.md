@@ -43,11 +43,18 @@ boots the engine at its approved dimensions (130 × 210 m, ×3.4 relief,
 1. ✅ Sandline-derived render core: procedural texture forge, material
    family, batched world toolkit (`src/render/`).
 2. ✅ Locked Myanmar relief terrain port, checksum-frozen, live in-app.
-3. ⏳ First-person controller + input/touch layer (camera-feel math on
-   our collision/ground probe, no Rapier).
-4. ⏳ Weapon viewmodel, ADS, recoil, ballistics and combat FX.
-5. ⏳ Structures and objects on top of the locked map (`placeStructure`).
-6. ⏳ Re-integrate v1 originals: C/WASM physics, utility-AI bots, BR
+3. ✅ 5 × 5 km merged-noise map: locked value-noise macro field plus
+   Gustavson simplex ridged/warped/fine layers (`src/terrain/`), real
+   geo outline utility staged for the accurate-outline brick.
+4. ✅ Immersive first-person controller (`src/player/`): pure
+   deterministic kernel (sprint/crouch/jump/wade/slope block, head bob,
+   sway, lean, landing dip, sprint FOV), unified keyboard/pointer-lock +
+   dynamic touch joystick/drag-look input, orbit ↔ walk mode switch.
+5. ⏳ Chunked LOD for the 5 km ground (the Living Terrain Atlas skirt
+   technique) to cap mobile triangle counts.
+6. ⏳ Weapon viewmodel, ADS, recoil, ballistics and combat FX.
+7. ⏳ Structures and objects on top of the locked map (`placeStructure`).
+8. ⏳ Re-integrate v1 originals: C/WASM physics, utility-AI bots, BR
    zone, adaptive quality, Capacitor APK, vehicles, flight, A-10.
 
 ## Commands
