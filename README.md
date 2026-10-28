@@ -50,7 +50,15 @@ boots the engine at its approved dimensions (130 × 210 m, ×3.4 relief,
    deterministic kernel (sprint/crouch/jump/wade/slope block, head bob,
    sway, lean, landing dip, sprint FOV), unified keyboard/pointer-lock +
    dynamic touch joystick/drag-look input, orbit ↔ walk mode switch.
-5. ⏳ Chunked LOD for the 5 km ground (the Living Terrain Atlas skirt
+5. ✅ Mandalay-inspired royal city (`src/city/`, checksum-frozen): pure
+   deterministic layout kernel, twin semidetached shophouses, battered
+   citadel with 12 zodiac gates + pyatthat pavilions, moat and teak
+   bridges, gilded stupa court with shrine rings, monastery, market and
+   clock tower. Terraced pads adapt to the real terrain; AABB collision
+   and curb step-up are wired into the first-person controller. Zero
+   BoxGeometry (anti-voxel art gate); ~75k tris in 14 merged meshes.
+   Real-browser proof shots run via Playwright in CI.
+6. ⏳ Chunked LOD for the 5 km ground (the Living Terrain Atlas skirt
    technique) to cap mobile triangle counts.
 6. ⏳ Weapon viewmodel, ADS, recoil, ballistics and combat FX.
 7. ⏳ Structures and objects on top of the locked map (`placeStructure`).

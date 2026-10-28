@@ -114,11 +114,23 @@ export function createFpState(x: number, groundY: number, z: number, yaw = 0): F
 const damp = (current: number, target: number, lambda: number, dt: number): number =>
   current + (target - current) * (1 - Math.exp(-lambda * dt));
 
+export interface StepOptions {
+  /**
+   * Extra step height (metres) beyond FP_CONFIG.maxStepHeight that the
+   * player may mount without jumping. The city passes ~1.6 m so terrace
+   * lips, road seams and gate thresholds read as curbs; solid buildings
+   * are still blocked by the city AABB collision pass. Defaults to 0,
+   * which preserves the original open-terrain behaviour exactly.
+   */
+  stepUp?: number;
+}
+
 export function stepFp(
   state: FpState,
   input: FpInput,
   dtRaw: number,
-  groundAt: (x: number, z: number) => number
+  groundAt: (x: number, z: number) => number,
+  opts: StepOptions = {}
 ): FpState {
   const dt = Math.min(0.05, Math.max(0, dtRaw));
   const cfg = FP_CONFIG;
@@ -165,7 +177,7 @@ export function stepFp(
       state.x + (wishX / (targetSpeed || 1)) * cfg.probeDistance,
       state.z + (wishZ / (targetSpeed || 1)) * cfg.probeDistance
     );
-    if (ahead - groundHere > cfg.maxStepHeight) {
+    if (ahead - groundHere > cfg.maxStepHeight + (opts.stepUp ?? 0)) {
       wishX = 0;
       wishZ = 0;
     }

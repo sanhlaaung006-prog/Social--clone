@@ -1,0 +1,7 @@
+{
+  "src/city/buildCity.ts": "f4f2a7396d3a4dd0b13dc96a9a724d5ca48c1489f71c5367bda3f79a5b864e1f",
+  "src/city/geometry.ts": "718d9ed99e44f7300510188f3cff58efe3c24045bf4e68bf08b437d6f8113db5",
+  "src/city/layout.ts": "ec2308b17e7667647225fab3eed1af50b40f26d1a2e5d8acfddeacbeaafab09e",
+  "src/city/materials.ts": "b9d096185fe553848eadac48bf01989a510baaf7f591434cd4ddbae8099822a9",
+  "src/city/walk.ts": "179535513ed7ec70663ef7c1430b2400d1e6afa7446d9f64a998310d225b6414"
+}

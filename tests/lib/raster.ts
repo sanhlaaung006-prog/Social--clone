@@ -107,8 +107,26 @@ export function renderPng(
   tris: Tri[],
   cam: ReturnType<typeof makeCamera>,
   out: string,
-  opts: { bgColor?: THREE.ColorRepresentation; fogColor?: THREE.ColorRepresentation; fogNear?: number; fogFar?: number } = {}
+  opts: {
+    bgColor?: THREE.ColorRepresentation;
+    fogColor?: THREE.ColorRepresentation;
+    fogNear?: number;
+    fogFar?: number;
+    exposure?: number;
+    lift?: number;
+    /** 'lift' (default) keeps the original terrain look; 'aces' applies a
+     *  Narkowicz ACES approximation so light city surfaces roll off
+     *  instead of clipping to pure white. */
+    toneMap?: "lift" | "aces";
+  } = {}
 ): void {
+  const exposure = opts.exposure ?? 1;
+  const liftK = opts.lift ?? 0.1;
+  const toneMap = opts.toneMap ?? "lift";
+  const aces = (x: number): number => {
+    const c = THREE.MathUtils.clamp(x, 0, 2);
+    return (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);
+  };
   const FOG = new THREE.Color(opts.fogColor ?? 0x0c1510);
   const BG = new THREE.Color(opts.bgColor ?? 0x0c1510);
   const fogNear = opts.fogNear ?? 340;
@@ -170,16 +188,19 @@ export function renderPng(
     // Ambient floor approximates the locked engine's hemisphere (1.75) +
     // ambient (0.34) lights, which the browser applies in addition to the sun.
     const lit = t.unlit ? 1 : 0.78 + 0.55 * Math.max(0, t.normal.dot(SUN_DIR));
-    // Soft midtone lift standing in for ACESFilmicToneMapping + IBL,
-    // which the real WebGL renderer applies but this CPU harness cannot.
-    const lift = (c: number) => {
-      const v = THREE.MathUtils.clamp(c * Math.min(1.25, lit), 0, 1);
-      return v + (1 - v) * 0.1;
+    // Terrain shots use a soft midtone lift standing in for
+    // ACESFilmicToneMapping + IBL; city shots switch to an actual ACES
+    // approximation so plaster/marble highlights roll off naturally.
+    const shade = (c: number): number => {
+      const v = c * lit * exposure;
+      if (toneMap === "aces") return aces(v);
+      const clamped = THREE.MathUtils.clamp(v * Math.min(1.25 / 1.0, 1), 0, 1);
+      return clamped + (1 - clamped) * liftK;
     };
     const fogK = THREE.MathUtils.clamp((t.depth - fogNear) / (fogFar - fogNear), 0, 0.92);
-    const r = THREE.MathUtils.clamp(lift(t.color.r) * (1 - fogK) + FOG.r * fogK, 0, 1) * 255;
-    const g = THREE.MathUtils.clamp(lift(t.color.g) * (1 - fogK) + FOG.g * fogK, 0, 1) * 255;
-    const b = THREE.MathUtils.clamp(lift(t.color.b) * (1 - fogK) + FOG.b * fogK, 0, 1) * 255;
+    const r = THREE.MathUtils.clamp(shade(t.color.r) * (1 - fogK) + FOG.r * fogK, 0, 1) * 255;
+    const g = THREE.MathUtils.clamp(shade(t.color.g) * (1 - fogK) + FOG.g * fogK, 0, 1) * 255;
+    const b = THREE.MathUtils.clamp(shade(t.color.b) * (1 - fogK) + FOG.b * fogK, 0, 1) * 255;
 
     const minX = Math.max(0, Math.floor(Math.min(p0.sx, p1.sx, p2.sx)));
     const maxX = Math.min(W - 1, Math.ceil(Math.max(p0.sx, p1.sx, p2.sx)));

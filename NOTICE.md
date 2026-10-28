@@ -3,6 +3,20 @@
 This project re-uses techniques and re-authored code from open-source
 projects. Original copyright notices and license text are preserved below.
 
+## "Mandalay textured reconstruction" (user-supplied)
+
+The royal city in `src/city/` re-authors techniques from a third
+user-supplied standalone (received 2026-10-28, no license declared,
+treated as project-owned work): the 144-block shophouse grid with paired
+semidetached ("twin") houses, battered citadel walls with twelve zodiac
+gates and pyatthat pavilions, square moat ring with teak bridges,
+Shwezigon-type lathed stupa and hti foundry, concentric kyauksa-gu
+shrine rings, teak monastery on posts, tiered market hall and clock
+tower. Geometry, dimensions (rescaled ~0.3x), layout math and palette
+were re-implemented, not copied verbatim; no external assets or
+textures are used. This donor also supplied the Warthog airframe plan
+files, which are not part of this brick.
+
 ## "Myanmar — Living Terrain Atlas" (user-supplied)
 
 The geo-coordinate outline polygon, ocean/coast masking, river
