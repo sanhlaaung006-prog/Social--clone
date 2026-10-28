@@ -16,6 +16,8 @@ import { CameraRig } from "./cameraRig";
 import { Zone } from "./zone";
 import { TracerPool, MuzzleFlash, PickupManager, CombatEventQueue } from "./combat";
 import { VehicleManager } from "./vehicles/manager";
+import { AircraftManager } from "./vehicles/aircraftManager";
+import type { Aircraft } from "./vehicles/aircraft";
 import type { Vehicle, Seat } from "./vehicles/vehicle";
 import { detectTier } from "./device";
 import { AdaptiveResolution } from "./adaptiveQuality";
@@ -62,6 +64,9 @@ export class Engine {
   private activeSeat: Seat | null = null;
   private gunCooldown = 0;
   private nearbyVehicle: Vehicle | null = null;
+  private aircraft!: AircraftManager;
+  private activeAircraft: Aircraft | null = null;
+  private nearbyAircraft: Aircraft | null = null;
 
   private status: MatchStatus = "menu";
   private rng = new Rng(CONFIG.seed);
@@ -173,8 +178,31 @@ export class Engine {
     this.pickups = new PickupManager(this.scene, this.world, this.world.obstacles, this.rng);
     // Vehicles (tanks + armed technicals).
     this.vehicles = new VehicleManager(this.scene, this.world, this.physics, this.rng);
+    // Aircraft (jets, later the A-10 warthog).
+    this.aircraft = new AircraftManager(
+      this.scene,
+      this.world,
+      this.physics,
+      this.rng,
+      this.vehicles.vehicles.map((v) => ({ position: v.position, radius: v.radius }))
+    );
     // Zone.
     this.zone = new Zone(this.scene);
+  }
+
+  /** Ground vehicles + aircraft as one collision/ray volume list. */
+  private syncVehicleVolumes() {
+    const volumes = [
+      ...this.vehicles.vehicles.map((v) => ({
+        x: v.position.x,
+        y: v.position.y,
+        z: v.position.z,
+        r: v.radius,
+      })),
+      ...this.aircraft.volumes(),
+    ];
+    this.physics.setVehicles(volumes);
+    this.rayService.setVehicles(volumes);
   }
 
   private clearMatchEntities() {
@@ -215,6 +243,8 @@ export class Engine {
     this.gunCooldown = 0;
     this.activeVehicle = null;
     this.activeSeat = null;
+    this.activeAircraft = null;
+    this.nearbyAircraft = null;
     this.rayService.clearPending();
     this.combatEvents.clear();
   }
@@ -271,22 +301,17 @@ export class Engine {
     this.fireCooldown -= dt;
     this.gunCooldown -= dt;
 
-    if (this.activeVehicle) {
+    if (this.activeAircraft) {
+      this.updateAircraft(dt);
+    } else if (this.activeVehicle) {
       this.updateInVehicle(dt);
     } else {
       this.updateOnFoot(dt);
     }
     this.input.resetTransient();
     this.syncActorCylinders();
-    // Mirror vehicle volumes to the worker for its own sphere tests.
-    this.rayService.setVehicles(
-      this.vehicles.vehicles.map((v) => ({
-        x: v.position.x,
-        y: v.position.y,
-        z: v.position.z,
-        r: v.radius,
-      }))
-    );
+    // Ground vehicles + aircraft as one volume list for both physics cores.
+    this.syncVehicleVolumes();
 
     // --- bots ---
     for (const bot of this.bots) {
@@ -333,11 +358,16 @@ export class Engine {
 
     // Vehicles roll/idle and stay synced as physics obstacles.
     this.vehicles.update(dt, null, this.physics, this.world);
+    // Unoccupied aircraft spool down and settle themselves.
+    this.aircraft.update(dt, null, this.physics, this.world);
 
-    // Enter prompt + enter action.
+    // Enter prompt + enter action (ground vehicles first, then aircraft).
     this.nearbyVehicle = this.vehicles.nearestEnterable(this.player.position);
+    this.nearbyAircraft = this.aircraft.nearestEnterable(this.player.position);
     if (this.input.enterQueued && this.nearbyVehicle) {
       this.enterVehicle(this.nearbyVehicle, "driver");
+    } else if (this.input.enterQueued && this.nearbyAircraft) {
+      this.enterAircraft(this.nearbyAircraft);
     }
 
     this.handlePlayerShooting();
@@ -361,6 +391,8 @@ export class Engine {
 
     // Driving (the manager only feeds input to the occupied vehicle).
     this.vehicles.update(dt, this.input, this.physics, this.world);
+    // Aircraft idle while the player is in a ground vehicle.
+    this.aircraft.update(dt, null, this.physics, this.world);
 
     // Keep the hidden player glued to the vehicle for zone/minimap logic.
     this.player.position.copy(vehicle.position);
@@ -389,6 +421,63 @@ export class Engine {
     this.player.group.visible = false;
     this.input.firing = false;
     this.pushFeed(`You boarded the ${vehicle.label} as ${seat}`);
+  }
+
+  /* -------------------------------- aircraft -------------------------------- */
+
+  private updateAircraft(dt: number) {
+    const craft = this.activeAircraft!;
+    if (this.input.exitQueued) {
+      this.exitAircraft();
+      return;
+    }
+    // Ground vehicles keep idling while a craft is flown.
+    this.vehicles.update(dt, null, this.physics, this.world);
+    this.aircraft.update(dt, this.input, this.physics, this.world);
+
+    // Keep the hidden player glued to the craft for zone/minimap logic.
+    this.player.position.copy(craft.position);
+    this.world.updateSunTarget(craft.position.x, craft.position.z);
+    this.rig.followTarget(
+      dt,
+      craft.position,
+      craft.flight.yaw,
+      craft.flight.pitch,
+      this.world,
+      CONFIG.flight.cameraDist,
+      CONFIG.flight.cameraHeight
+    );
+  }
+
+  private enterAircraft(craft: Aircraft) {
+    if (craft.occupied) return;
+    craft.occupied = true;
+    this.activeAircraft = craft;
+    this.player.group.visible = false;
+    this.input.firing = false;
+    this.pushFeed(`You boarded the ${craft.label}`);
+  }
+
+  private exitAircraft() {
+    const craft = this.activeAircraft;
+    if (!craft) return;
+    if (!craft.onGround) {
+      this.pushFeed("Land before bailing out");
+      return;
+    }
+    craft.occupied = false;
+    const side = new THREE.Vector3(
+      Math.cos(craft.flight.yaw),
+      0,
+      -Math.sin(craft.flight.yaw)
+    );
+    const px = craft.position.x + side.x * (craft.radius + 1.4);
+    const pz = craft.position.z + side.z * (craft.radius + 1.4);
+    this.player.position.set(px, this.world.heightAt(px, pz), pz);
+    this.player.yaw = craft.flight.yaw;
+    this.player.velocity.set(0, 0, 0);
+    this.player.group.visible = true;
+    this.activeAircraft = null;
   }
 
   private exitVehicle() {
@@ -606,6 +695,9 @@ export class Engine {
     for (const v of this.vehicles?.vehicles ?? []) {
       blips.push({ x: v.position.x, z: v.position.z, kind: "vehicle" });
     }
+    for (const a of this.aircraft?.aircraft ?? []) {
+      blips.push({ x: a.position.x, z: a.position.z, kind: "vehicle" });
+    }
 
     return {
       status: this.status,
@@ -639,11 +731,15 @@ export class Engine {
         r: this.zone?.radius ?? 100,
       },
       blips,
-      inVehicle: this.activeVehicle !== null,
-      vehicleKind: this.activeVehicle?.kind ?? null,
+      inVehicle: this.activeVehicle !== null || this.activeAircraft !== null,
+      vehicleKind: this.activeVehicle?.kind ?? this.activeAircraft?.kind ?? null,
       vehicleSeat: this.activeSeat,
-      canEnterVehicle: !this.activeVehicle && this.nearbyVehicle !== null,
-      nearbyVehicleLabel: this.nearbyVehicle?.label ?? null,
+      canEnterVehicle:
+        (!this.activeVehicle && this.nearbyVehicle !== null) ||
+        (!this.activeAircraft && this.nearbyAircraft !== null),
+      canSwapSeat: this.activeVehicle !== null,
+      nearbyVehicleLabel:
+        this.nearbyVehicle?.label ?? this.nearbyAircraft?.label ?? null,
       gunnerActive:
         this.activeVehicle?.hasGun === true && this.activeSeat === "passenger",
     };

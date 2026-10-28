@@ -32,6 +32,7 @@ const INITIAL_HUD: HudSnapshot = {
   vehicleKind: null,
   vehicleSeat: null,
   canEnterVehicle: false,
+  canSwapSeat: false,
   nearbyVehicleLabel: null,
   gunnerActive: false,
 };

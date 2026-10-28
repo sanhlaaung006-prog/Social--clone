@@ -146,6 +146,20 @@ asset pipeline mean no direct code port — patterns only.**
   is covered by `scripts/integration.ts` and the worker ray contract, and
   converting it would touch every test.
 
+### 8. Flight system — original work, no OSS source (2026-10-28)
+`game/flightModel.ts` is a pure arcade aerodynamics module written for this
+repo, not ported from a template. It uses the same design discipline the
+sandline review recommended for simulation code: zero THREE/IO imports,
+deterministic given identical inputs, fully headless-covered. The model
+implements throttle-based thrust with quadratic drag and a terminal-speed
+balance, a lift-vs-weight sink term that produces a genuine stall below
+flying speed, banked coordinated turns (yaw pulled by sin(roll)), a hard
+ceiling, runway ground-roll with speed-scaled steering, and gentle/hard
+landing handling. The `Aircraft` wrapper maps `InputState` onto flight
+controls and applies the YXZ airframe transform; the A-10 warthog follows
+as a second airframe over this exact physics surface. Evidence:
+`scripts/flight.test.ts` (29 checks) and `screenshots/06b-airborne-jet.png`.
+
 ## Also reviewed (search only, not cloned)
 - npm `phototo3d@0.2.1` — MIT, CLI + MCP server (deps:
   `@modelcontextprotocol/sdk`, `zod`); cloud metered `reconstruct`

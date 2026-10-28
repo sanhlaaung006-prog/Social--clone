@@ -145,6 +145,33 @@ export const CONFIG = {
     gunRange: 90,
     fireInterval: 0.14,
   },
+
+  flight: {
+    jetCount: 1,
+    warthogCount: 0, // enabled when the A-10 airframe lands
+    radius: 2.4,
+    groundOffset: 1.1,
+    maxSpeed: 62,
+    takeoffSpeed: 18,
+    stallSpeed: 15,
+    throttleRate: 0.8,
+    engineAccel: 24,
+    dragK: 0.0062, // terminal at full throttle ~= maxSpeed
+    groundFriction: 6,
+    rollRate: 2.0,
+    maxBank: 1.05,
+    pitchRate: 1.2,
+    maxPitch: 0.75,
+    yawRate: 0.6,
+    turnCoordinator: 1.4,
+    groundSteer: 1.1,
+    stallMoment: 1.1,
+    gravity: 22,
+    ceiling: 95,
+    hardLandingVs: 12,
+    cameraDist: 11,
+    cameraHeight: 4.2,
+  },
 } as const;
 
 export interface PhaseSpec {

@@ -219,15 +219,17 @@ export default function TouchControls({
               Gun
             </button>
           )}
-          <button
-            className="action-btn"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              input.queueSwapSeat();
-            }}
-          >
-            Swap
-          </button>
+          {hud.canSwapSeat && (
+            <button
+              className="action-btn"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                input.queueSwapSeat();
+              }}
+            >
+              Swap
+            </button>
+          )}
           <button
             className="action-btn exit"
             onPointerDown={(e) => {

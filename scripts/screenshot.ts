@@ -14,6 +14,7 @@ import { gatherTriangles, makeCamera, renderPng } from "./lib/raster";
 import { VehicleManager } from "../game/vehicles/manager";
 import { CameraRig } from "../game/cameraRig";
 import { buildStylizedJet, buildStylizedTank, buildStylizedTechnical } from "../game/vehicles/stylized";
+import { Aircraft } from "../game/vehicles/aircraft";
 import { installDomStub } from "./lib/dom-stub";
 
 installDomStub();
@@ -141,6 +142,33 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
       new THREE.Vector3(p.x, p.y + 1.3, p.z)
     );
   }
+}
+
+// 6b) Airborne jet: banked climb pose proves the flight transform chain
+//     (YXZ yaw/pitch/roll applied on top of the +Z model offset).
+{
+  const jet = new Aircraft(
+    "jet",
+    buildStylizedJet(),
+    new THREE.Vector3(-8, 22, -6),
+    -0.5
+  );
+  jet.flight.onGround = false;
+  jet.flight.y = 22;
+  jet.flight.speed = 38;
+  jet.flight.pitch = 0.28;
+  jet.flight.roll = 0.5;
+  jet.flight.throttle = 1;
+  jet.flight.yaw = -0.5;
+  // Re-sync without running a physics step.
+  jet.update(0, null, physics, world);
+  scene.add(jet.group);
+  shoot(
+    "06b-airborne-jet",
+    new THREE.Vector3(18, 30, 22),
+    new THREE.Vector3(-8, 22, -6)
+  );
+  scene.remove(jet.group);
 }
 
 // 7) Clean studio lineup on a plain plane — geometry proof with no trees

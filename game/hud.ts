@@ -40,9 +40,10 @@ export interface HudSnapshot {
   zone: { x: number; z: number; r: number };
   blips: MinimapBlip[];
   inVehicle: boolean;
-  vehicleKind: "tank" | "technical" | null;
+  vehicleKind: "tank" | "technical" | "jet" | "warthog" | null;
   vehicleSeat: VehicleSeat | null;
   canEnterVehicle: boolean;
+  canSwapSeat: boolean;
   nearbyVehicleLabel: string | null;
   gunnerActive: boolean;
 }

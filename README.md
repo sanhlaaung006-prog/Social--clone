@@ -37,8 +37,8 @@ Play Console account; the debug APK is sideload-installable for testing.
 ```bash
 npm install
 npm run dev           # Vite dev server with HMR, ~150 ms cold start
-npm test              # 13 headless suites: smoke, physics, vehicles, art,
-                      # quality, worker, touch, bot AI, utility AI, adaptive...
+npm test              # 14 headless suites: smoke, physics, vehicles, art,
+                      # quality, worker, touch, bot AI, utility AI, flight...
 npm run build         # type-check and production build to dist/
 npm run preview       # serve the production build locally
 npm run build:wasm    # clang -> public/wasm/math_core.wasm (needs clang + lld)
@@ -104,6 +104,8 @@ game/
   touchAim.ts         Touch look filter: gesture slop, frame-rate-independent
                       low-pass, tail preservation, ADS precision gain
   adaptiveQuality.ts  Mobile render-scale governor (sustained slow/fast frames)
+  flightModel.ts      Pure arcade aerodynamics: throttle, lift/stall,
+                      coordinated banked turns, ceiling, landing, determinism
   config.ts           All gameplay tuning constants
   wasm/
     native/math_core.c      C: value noise, fBM, terrain heightfield
@@ -119,6 +121,9 @@ game/vehicles/
   mig29.ts            Compressed/revised MiG-29 airframe, Lambert-only (generated)
   vehicle.ts          Arcade kinematic vehicle: throttle, steering, terrain
   manager.ts          Spawning, vehicle-vs-vehicle push-out, physics upload
+  aircraft.ts         Flyable craft: InputState -> pure flight-model mapping,
+                      YXZ airframe sync (pitch/roll conventions), ground collision
+  aircraftManager.ts  Flat-ground runway spawns, enter-range/nearest queries
 scripts/
   smoke.ts            Deterministic noise/RNG/zone tests
   physics.test.ts     Collision + raycast tests (mirrors the C algorithms)
@@ -131,6 +136,8 @@ scripts/
   touch-aim.test.ts   Touch slop, low-pass smoothing, tail preservation, ADS
   bot-ai.test.ts      LOS gating, last-seen search, cover, stall repath
   bot-utility.test.ts Utility scorer policy, hysteresis, reload, zone return
+  flight.test.ts      Takeoff, banked turn, stall sink, ceiling, landing,
+                      transform conventions, idle auto-land, determinism
   adaptive-quality.test.ts  Slow-frame render-scale governor, recovery, floor
   combat-events.test.ts     Presentation event queue: drain, order, clear
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts

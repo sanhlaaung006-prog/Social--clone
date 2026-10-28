@@ -146,10 +146,19 @@ export default function HUD({
       )}
       {hud.inVehicle && (
         <div className="vehicle-status hud-panel">
-          {hud.vehicleKind === "tank" ? "MBT tank" : "Armed technical"} ·{" "}
-          {hud.vehicleSeat === "driver" ? "DRIVER" : "PASSENGER"}
+          {hud.vehicleKind === "tank"
+            ? "MBT tank"
+            : hud.vehicleKind === "technical"
+              ? "Armed technical"
+              : hud.vehicleKind === "warthog"
+                ? "A-10 warthog"
+                : "Ground-attack jet"}
+          {hud.vehicleKind === "jet" || hud.vehicleKind === "warthog"
+            ? " · FLIGHT"
+            : ` · ${hud.vehicleSeat === "driver" ? "DRIVER" : "PASSENGER"}`}
           {hud.gunnerActive ? " · mounted gun live" : ""}
-          {!touch && " · F swap seat · G exit"}
+          {hud.canSwapSeat && !touch ? " · F swap seat · G exit" : ""}
+          {!hud.canSwapSeat && !touch ? " · G exit" : ""}
         </div>
       )}
       {showHit && <div className="hitmarker" />}
