@@ -362,7 +362,7 @@ export interface BotShot {
   dir: THREE.Vector3;
 }
 
-type BotState = "patrol" | "engage" | "dead";
+type BotState = "patrol" | "search" | "engage" | "cover" | "dead";
 
 export class Bot extends Actor {
   state: BotState = "patrol";
@@ -375,6 +375,20 @@ export class Bot extends Actor {
   private strafe = 1;
   private strafeT = 0;
   private deathT = 0;
+  /* Perception: last-known player position plus how long it stays believable.
+     A bot never reads the live player position while the player is unseen. */
+  private readonly lastSeen = new THREE.Vector3();
+  private lastSeenT = -1e9;
+  private aiTime = 0;
+  private reactT = 0;
+  /* Stall detector: no positional progress forces a navigation repair. */
+  private readonly progressAt = new THREE.Vector3();
+  private stallT = 0;
+  /* Cover retreat point and its hold timer. */
+  private readonly coverPoint = new THREE.Vector3();
+  private coverT = 0;
+  /* Cooldown after a retreat so cover cannot re-trigger every frame. */
+  private coverCdT = 0;
 
   constructor(
     world: World,
@@ -386,8 +400,14 @@ export class Bot extends Actor {
     super(world, physics, 0x8a5a4a, 0x6e3328, CONFIG.bot.maxHp);
     this.callsign = callsign;
     this.group.position.copy(spawn);
+    this.progressAt.copy(spawn);
     this.yaw = rng.range(0, Math.PI * 2);
     this.pickWaypoint();
+  }
+
+  /** Debug/HUD-visible AI state (no mutable internals exposed). */
+  get aiState(): BotState {
+    return this.state;
   }
 
   protected override maxHp() {
@@ -413,6 +433,83 @@ export class Bot extends Actor {
     this.waypointT = this.rng.range(4, 9);
   }
 
+  /** True when no static cover sphere or terrain ridge blocks the segment
+   *  from this bot's eye line to the target's chest. Both physics rays
+   *  return -1 on a clean miss, so only a non-negative t shorter than the
+   *  segment counts as occlusion. */
+  private hasLineOfSight(target: THREE.Vector3): boolean {
+    const eye = this.position.clone();
+    eye.y += 1.6;
+    const aim = target.clone();
+    aim.y += 1.5;
+    const dir = aim.sub(eye);
+    const dist = dir.length();
+    if (dist < 1e-4) return true;
+    dir.divideScalar(dist);
+    const coverT = this.physics.rayCover(eye, dir, dist);
+    if (coverT >= 0 && coverT < dist - 0.3) return false;
+    const terrainT = this.physics.rayTerrain(eye, dir, dist);
+    if (terrainT >= 0 && terrainT < dist - 0.3) return false;
+    return true;
+  }
+
+  /** Pick a point on the far side of a nearby obstacle from the threat.
+   *  Decision-time only (called on low HP, never per frame); candidates must
+   *  be free of other obstacles and genuinely occluded from the threat. */
+  private findCover(threat: THREE.Vector3): THREE.Vector3 | null {
+    let best: THREE.Vector3 | null = null;
+    let bestScore = Infinity;
+    for (const o of this.world.obstacles) {
+      const fromBot = Math.hypot(o.x - this.position.x, o.z - this.position.z);
+      if (fromBot > CONFIG.bot.coverRadius || fromBot < 0.5) continue;
+      const ax = o.x - threat.x;
+      const az = o.z - threat.z;
+      const al = Math.hypot(ax, az) || 1;
+      const cx = o.x + (ax / al) * (o.r + this.radius + 0.6);
+      const cz = o.z + (az / al) * (o.r + this.radius + 0.6);
+      // Reject candidates embedded in another obstacle.
+      if (
+        this.world.obstacles.some(
+          (q) => Math.hypot(q.x - cx, q.z - cz) < q.r + this.radius
+        )
+      ) {
+        continue;
+      }
+      // The obstacle must actually block the threat's view of the candidate.
+      const from = threat.clone();
+      from.y += 1.5;
+      const to = new THREE.Vector3(cx, this.position.y + 1.4, cz);
+      const dir = to.clone().sub(from);
+      const len = dir.length();
+      dir.divideScalar(len);
+      const block = this.physics.rayCover(from, dir, len);
+      if (block < 0 || block >= len - 0.3) continue;
+      const score = Math.hypot(cx - this.position.x, cz - this.position.z);
+      if (score < bestScore) {
+        bestScore = score;
+        best = new THREE.Vector3(cx, 0, cz);
+      }
+    }
+    return best;
+  }
+
+  /** Navigation repair: when the bot makes no progress for stallTime it
+   *  abandons the current goal and picks a fresh route (search → patrol). */
+  private detectStall(dt: number): boolean {
+    this.stallT += dt;
+    if (this.position.distanceTo(this.progressAt) > CONFIG.bot.stallDist) {
+      this.progressAt.copy(this.position);
+      this.stallT = 0;
+      return false;
+    }
+    if (this.stallT > CONFIG.bot.stallTime) {
+      this.stallT = 0;
+      this.progressAt.copy(this.position);
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Runs the AI. Returns a shot descriptor when the bot fires this frame.
    */
@@ -431,21 +528,56 @@ export class Bot extends Actor {
       return null;
     }
 
+    this.aiTime += dt;
+    this.reactT = Math.max(0, this.reactT - dt);
+    this.coverCdT = Math.max(0, this.coverCdT - dt);
+
     const toPlayer = new THREE.Vector3(
       player.position.x - this.position.x,
       0,
       player.position.z - this.position.z
     );
     const dist = toPlayer.length();
-    const canSee = player.alive && dist < CONFIG.bot.sightRange;
+    const canSee =
+      player.alive && dist < CONFIG.bot.sightRange && this.hasLineOfSight(player.position);
 
     let shot: BotShot | null = null;
     let moveX = 0;
     let moveZ = 0;
 
-    /* --- state selection --- */
-    if (canSee) this.state = "engage";
-    else if (this.state === "engage") this.state = "patrol";
+    /* --- perception → state transitions --- */
+    if (canSee) {
+      // Cover is a committed retreat: keep refreshing last-known data, but
+      // do not let a fresh sighting cancel the retreat before its timer ends.
+      const fresh = this.state !== "engage" && this.state !== "cover";
+      this.lastSeen.copy(player.position);
+      this.lastSeenT = this.aiTime;
+      if (fresh) {
+        // Reaction delay on every fresh acquisition; no instant snap fire.
+        this.state = "engage";
+        this.reactT = this.rng.range(CONFIG.bot.reactMin, CONFIG.bot.reactMax);
+        this.burstLeft = 0;
+      }
+    } else if (this.state === "engage") {
+      this.state = "search";
+    }
+
+    // Wounded bots with live contact break off to cover when a valid
+    // occluded retreat point exists nearby.
+    if (
+      canSee &&
+      this.state === "engage" &&
+      this.coverCdT <= 0 &&
+      this.hp / CONFIG.bot.maxHp < CONFIG.bot.coverHpFrac
+    ) {
+      const cover = this.findCover(player.position);
+      if (cover) {
+        this.state = "cover";
+        this.coverPoint.copy(cover);
+        this.coverT = CONFIG.bot.coverTime;
+        this.coverCdT = CONFIG.bot.coverTime + CONFIG.bot.memoryTime;
+      }
+    }
 
     // Stay inside the safe zone: waypoint bias toward circle center.
     const distCenter = Math.hypot(
@@ -474,31 +606,79 @@ export class Bot extends Actor {
         moveZ = dir.x * this.strafe;
       }
 
-      /* --- burst firing --- */
-      this.fireT -= dt;
-      if (this.burstLeft > 0) {
-        this.burstT -= dt;
-        if (this.burstT <= 0) {
-          this.burstLeft--;
-          this.burstT = CONFIG.bot.burstGap;
-          shot = this.makeShot(player, dist);
+      /* --- burst firing (gated by reaction time) --- */
+      if (this.reactT <= 0) {
+        this.fireT -= dt;
+        if (this.burstLeft > 0) {
+          this.burstT -= dt;
+          if (this.burstT <= 0) {
+            this.burstLeft--;
+            this.burstT = CONFIG.bot.burstGap;
+            shot = this.makeShot(player, dist);
+          }
+        } else if (this.fireT <= 0 && dist < CONFIG.bot.attackRange) {
+          this.burstLeft = CONFIG.bot.burstShots;
+          this.fireT = CONFIG.bot.fireInterval * this.rng.range(0.8, 1.4);
+          this.burstT = 0;
         }
-      } else if (this.fireT <= 0 && dist < CONFIG.bot.attackRange) {
-        this.burstLeft = CONFIG.bot.burstShots;
-        this.fireT = CONFIG.bot.fireInterval * this.rng.range(0.8, 1.4);
-        this.burstT = 0;
       }
-    } else {
-      this.waypointT -= dt;
-      if (this.waypointT <= 0) this.pickWaypoint();
-      const wp = outside ? zoneCenter : this.waypoint;
-      const d = new THREE.Vector3(wp.x - this.position.x, 0, wp.z - this.position.z);
-      const l = d.length();
-      if (l > 1.2) {
-        d.multiplyScalar(1 / l);
+    } else if (this.state === "cover") {
+      const d = new THREE.Vector3(
+        this.coverPoint.x - this.position.x,
+        0,
+        this.coverPoint.z - this.position.z
+      );
+      if (d.length() > 1.2) {
+        // Still retreating: the hold timer starts only on arrival.
+        d.normalize();
         moveX = d.x;
         moveZ = d.z;
         this.yaw = Math.atan2(-d.x, -d.z);
+      } else {
+        // Hold: watch the last known approach while the timer runs.
+        const face = this.lastSeen.clone().sub(this.position);
+        if (face.lengthSq() > 0.01) this.yaw = Math.atan2(-face.x, -face.z);
+        this.coverT -= dt;
+      }
+      if (this.coverT <= 0) this.state = "search";
+    } else {
+      /* --- search (last-known position) or patrol --- */
+      if (this.state === "search") {
+        const memoryFresh = this.aiTime - this.lastSeenT < CONFIG.bot.memoryTime;
+        const reached = this.position.distanceTo(this.lastSeen) < 1.5;
+        if (!memoryFresh || reached) {
+          this.state = "patrol";
+          this.pickWaypoint();
+        }
+      }
+      if (this.state === "search" && this.detectStall(dt)) {
+        this.state = "patrol";
+        this.pickWaypoint();
+      }
+      if (this.state === "search") {
+        const d = this.lastSeen
+          .clone()
+          .sub(this.position)
+          .setY(0);
+        if (d.length() > 1.2) {
+          d.normalize();
+          moveX = d.x;
+          moveZ = d.z;
+          this.yaw = Math.atan2(-d.x, -d.z);
+        }
+      } else {
+        this.waypointT -= dt;
+        if (this.waypointT <= 0) this.pickWaypoint();
+        if (this.detectStall(dt)) this.pickWaypoint();
+        const wp = outside ? zoneCenter : this.waypoint;
+        const d = new THREE.Vector3(wp.x - this.position.x, 0, wp.z - this.position.z);
+        const l = d.length();
+        if (l > 1.2) {
+          d.multiplyScalar(1 / l);
+          moveX = d.x;
+          moveZ = d.z;
+          this.yaw = Math.atan2(-d.x, -d.z);
+        }
       }
     }
 

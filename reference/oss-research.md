@@ -101,14 +101,23 @@ asset pipeline mean no direct code port — patterns only.**
   character/weapon/IK/audio asset pipeline (conflicts with the zero-asset
   procedural rule), analytics/telemetry modules, Chinese-only UI strings,
   200+ line bot-brain method (would be split if adapted).
-- Candidate scoped borrows, in priority order: TouchAim slop/smoothing →
-  `components/TouchControls.tsx`; bot memory/cover/repath → `game/actors.ts`
-  (currently two-state patrol/engage); sustained-slow-frame render-scale
-  adaptation → `game/device.ts` + `game/engine.ts`; event-sourced combat
-  effects discipline → `game/combat.ts`. Each is a separate commit behind
-  the existing test gate. Fixed-timestep accumulator is noted but deferred:
-  our variable-step loop is covered by `scripts/integration.ts` and the
-  worker ray contract, and converting it would touch every test.
+- Candidate scoped borrows, in priority order (each a separate commit
+  behind the existing test gate):
+  1. **DONE (c9d044d)** TouchAim slop/smoothing → new `game/touchAim.ts`,
+     wired through `InputState`/engine/`TouchControls.tsx`; pixel-domain
+     revision preserving the project's rad/px sensitivity; 19 checks in
+     `scripts/touch-aim.test.ts`.
+  2. **DONE** bot LOS/memory/cover/repath → `game/actors.ts` Bot rewritten
+     with LOS-gated vision (`rayCover`+`rayTerrain`), last-seen memory +
+     `search` state, reaction delay, low-HP obstacle cover with cooldown,
+     and stall-triggered repath; no wallhack (unseen player position is
+     never read); `scripts/bot-ai.test.ts` covers every transition.
+  3. TODO: sustained-slow-frame render-scale adaptation → `game/device.ts`
+     + `game/engine.ts`.
+  4. TODO: event-sourced combat effects discipline → `game/combat.ts`.
+  Fixed-timestep accumulator is noted but deferred: our variable-step loop
+  is covered by `scripts/integration.ts` and the worker ray contract, and
+  converting it would touch every test.
 
 ## Also reviewed (search only, not cloned)
 - npm `phototo3d@0.2.1` — MIT, CLI + MCP server (deps:

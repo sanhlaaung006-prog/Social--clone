@@ -71,6 +71,15 @@ export const CONFIG = {
     burstGap: 0.11,
     hitChance: 0.32,
     burstDamage: 7,
+    // Perception & tactics (revised from sandline-threejs-fps patterns).
+    reactMin: 0.35, // reaction delay on fresh target acquisition
+    reactMax: 0.8,
+    memoryTime: 4, // seconds a last-seen position stays believable
+    coverHpFrac: 0.4, // retreat to cover below this HP fraction
+    coverTime: 2.4, // seconds to hold cover before re-acquiring
+    coverRadius: 14, // how far a bot will look for a cover obstacle
+    stallTime: 1.2, // no-progress seconds before a patrol/search repath
+    stallDist: 0.45, // progress threshold for the stall detector
   },
 
   weapon: {
