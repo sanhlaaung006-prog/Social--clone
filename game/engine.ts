@@ -14,7 +14,7 @@ import { World } from "./world";
 import { Player, Bot } from "./actors";
 import { CameraRig } from "./cameraRig";
 import { Zone } from "./zone";
-import { TracerPool, MuzzleFlash, PickupManager } from "./combat";
+import { TracerPool, MuzzleFlash, PickupManager, CombatEventQueue } from "./combat";
 import { VehicleManager } from "./vehicles/manager";
 import type { Vehicle, Seat } from "./vehicles/vehicle";
 import { detectTier } from "./device";
@@ -55,6 +55,8 @@ export class Engine {
   private tracers!: TracerPool;
   private flash!: MuzzleFlash;
   private pickups!: PickupManager;
+  /** Single presentation drain for tracers/flashes across all shot paths. */
+  private readonly combatEvents = new CombatEventQueue();
   private vehicles!: VehicleManager;
   private activeVehicle: Vehicle | null = null;
   private activeSeat: Seat | null = null;
@@ -214,6 +216,7 @@ export class Engine {
     this.activeVehicle = null;
     this.activeSeat = null;
     this.rayService.clearPending();
+    this.combatEvents.clear();
   }
 
   private endMatch(won: boolean) {
@@ -221,6 +224,7 @@ export class Engine {
     this.input.firing = false;
     // Do not resolve shots fired just before death into the next match.
     this.rayService.clearPending();
+    this.combatEvents.clear();
     if (document.pointerLockElement) document.exitPointerLock?.();
   }
 
@@ -306,7 +310,9 @@ export class Engine {
       }
     }
 
-    // --- cosmetics ---
+    // --- cosmetics: one presentation drain for every shot path (player,
+    // vehicle gun, bot fire, worker-deferred or synchronous) ---
+    this.combatEvents.drain(this.tracers, this.flash);
     this.tracers.update(dt);
     this.flash.update(dt);
     this.pickups.update(dt, this.elapsed);
@@ -412,7 +418,7 @@ export class Engine {
     const dir = this.rig.getForward(new THREE.Vector3());
     const vehicleIndex = this.vehicles.indexOf(vehicle);
     const aliveBots = this.aliveBotCylinders();
-    this.flash.flash(origin);
+    this.combatEvents.emit({ type: "flash", at: [origin.x, origin.y, origin.z] });
 
     this.dispatchRay(origin, dir, CONFIG.vehicles.gunRange, vehicleIndex, (hit) => {
       const endPoint = hit
@@ -431,7 +437,12 @@ export class Engine {
         }
       }
 
-      this.tracers.spawn(origin, endPoint, 0xffb347);
+      this.combatEvents.emit({
+        type: "tracer",
+        from: [origin.x, origin.y, origin.z],
+        to: [endPoint.x, endPoint.y, endPoint.z],
+        color: 0xffb347,
+      });
     });
   }
 
@@ -499,7 +510,10 @@ export class Engine {
     // raymarch off the main thread), else the identical local core.
     const aliveBots = this.aliveBotCylinders();
     const muzzle = this.player.muzzleWorld; // capture now; deferred callback
-    this.flash.flash(muzzle);
+    this.combatEvents.emit({
+      type: "flash",
+      at: [muzzle.x, muzzle.y, muzzle.z],
+    });
 
     this.dispatchRay(origin, dir, CONFIG.weapon.range, -1, (hit) => {
       const endPoint = hit
@@ -518,7 +532,12 @@ export class Engine {
         }
       }
 
-      this.tracers.spawn(muzzle, endPoint, 0xffe2a1);
+      this.combatEvents.emit({
+        type: "tracer",
+        from: [muzzle.x, muzzle.y, muzzle.z],
+        to: [endPoint.x, endPoint.y, endPoint.z],
+        color: 0xffe2a1,
+      });
     });
   }
 
@@ -540,7 +559,12 @@ export class Engine {
       const end = blocker
         ? origin.clone().addScaledVector(dir, blocker.t)
         : origin.clone().addScaledVector(dir, CONFIG.weapon.range);
-      this.tracers.spawn(origin, end, 0xff7a5c);
+      this.combatEvents.emit({
+        type: "tracer",
+        from: [origin.x, origin.y, origin.z],
+        to: [end.x, end.y, end.z],
+        color: 0xff7a5c,
+      });
       if (blocker) return;
       if (!this.player.alive) return;
 

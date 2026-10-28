@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "tsx scripts/smoke.ts && tsx scripts/physics.test.ts && tsx scripts/vehicles.test.ts && tsx scripts/art-style.test.ts && tsx scripts/quality.test.ts && tsx scripts/worker.test.ts && tsx scripts/touch-aim.test.ts && tsx scripts/bot-ai.test.ts && tsx scripts/adaptive-quality.test.ts && tsx scripts/mig.test.ts && tsx scripts/integration.ts",
+    "test": "tsx scripts/smoke.ts && tsx scripts/physics.test.ts && tsx scripts/vehicles.test.ts && tsx scripts/art-style.test.ts && tsx scripts/quality.test.ts && tsx scripts/worker.test.ts && tsx scripts/touch-aim.test.ts && tsx scripts/bot-ai.test.ts && tsx scripts/adaptive-quality.test.ts && tsx scripts/combat-events.test.ts && tsx scripts/mig.test.ts && tsx scripts/integration.ts",
     "test:smoke": "tsx scripts/smoke.ts",
     "test:physics": "tsx scripts/physics.test.ts",
     "test:vehicles": "tsx scripts/vehicles.test.ts",

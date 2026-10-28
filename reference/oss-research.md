@@ -119,7 +119,14 @@ asset pipeline mean no direct code port — patterns only.**
      the engine frame loop; input/sensitivity never touched;
      `scripts/adaptive-quality.test.ts` covers downgrade, recovery, hold,
      floor, disabled passthrough.
-  4. TODO: event-sourced combat effects discipline → `game/combat.ts`.
+  4. **DONE** event-sourced combat effects → `CombatEventQueue` in
+     `game/combat.ts`: all five tracer/flash call sites (player, vehicle
+     gun, bot fire, worker-deferred and sync paths) now emit tuple-only
+     events; the engine drains them once per frame into the pooled
+     presentation objects and clears the queue on endMatch/reset, matching
+     the RayService no-shots-cross-matches invariant.
+     `scripts/combat-events.test.ts` covers ordering, drain idempotence,
+     clear, and JSON-safe payloads.
   Fixed-timestep accumulator is noted but deferred: our variable-step loop
   is covered by `scripts/integration.ts` and the worker ray contract, and
   converting it would touch every test.

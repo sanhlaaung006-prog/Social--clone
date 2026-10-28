@@ -61,6 +61,54 @@ export class TracerPool {
   }
 }
 
+/* --------------------------- combat event queue --------------------------- */
+
+/**
+ * Presentation-only combat events. Gameplay code (including deferred worker
+ * ray callbacks) emits these instead of touching scene objects directly;
+ * the engine drains the queue once per frame into the pooled tracers and
+ * muzzle flash. Tuple payloads keep the queue renderer-free and JSON-safe,
+ * mirroring the worker message contract.
+ */
+export type CombatEvent =
+  | { type: "tracer"; from: [number, number, number]; to: [number, number, number]; color: number }
+  | { type: "flash"; at: [number, number, number] };
+
+export class CombatEventQueue {
+  private readonly events: CombatEvent[] = [];
+
+  emit(event: CombatEvent): void {
+    this.events.push(event);
+  }
+
+  get pending(): number {
+    return this.events.length;
+  }
+
+  /** Apply every queued event to the pooled presentation objects, in order,
+   *  then empty the queue. Safe to call with zero events. */
+  drain(tracers: TracerPool, flash: MuzzleFlash): void {
+    for (const e of this.events) {
+      if (e.type === "tracer") {
+        tracers.spawn(
+          new THREE.Vector3(...e.from),
+          new THREE.Vector3(...e.to),
+          e.color
+        );
+      } else {
+        flash.flash(new THREE.Vector3(...e.at));
+      }
+    }
+    this.events.length = 0;
+  }
+
+  /** Drop queued presentation (match end / reset): shots must never cross
+   *  matches, the same invariant as RayService.clearPending(). */
+  clear(): void {
+    this.events.length = 0;
+  }
+}
+
 /* ----------------------------- muzzle flash ------------------------------ */
 
 export class MuzzleFlash {
