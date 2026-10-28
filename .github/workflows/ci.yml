@@ -87,7 +87,7 @@ jobs:
       # workflow annotations are returned by the GitHub API instead, so
       # emit the plain-text diagnostic as a single error annotation.
       - name: Annotate browser failure
-        if: always()
+        if: failure()
         run: |
           DIAG=screenshots/browser/diag.txt
           if [ -f "$DIAG" ]; then
