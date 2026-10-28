@@ -19,12 +19,25 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   const dumpDiag = async (label: string): Promise<void> => {
     mkdirSync("screenshots/browser", { recursive: true });
     const ua = await page.evaluate(() => navigator.userAgent).catch(() => "n/a");
+    const glInfo = await page
+      .locator("#terrainCanvas")
+      .evaluate((el) => {
+        const c = el as HTMLCanvasElement;
+        const gl = (c.getContext("webgl2") || c.getContext("webgl")) as WebGLRenderingContext | null;
+        if (!gl) return "no webgl context";
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        return dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.VERSION));
+      })
+      .catch((e) => `gl probe failed: ${String(e)}`);
     const body = [
       `# ${label}`,
       `url: ${page.url()}`,
+      `title: ${await page.title().catch(() => "n/a")}`,
       `userAgent: ${ua}`,
-      `canvas attached: ${await page.locator("#terrainCanvas").count().catch(() => 0)}`,
-      `crosshair attached: ${await page.locator(".crosshair").count().catch(() => 0)}`,
+      `webgl: ${glInfo}`,
+      `canvas: ${await page.locator("#terrainCanvas").count().catch(() => 0)}`,
+      `walk button: ${await page.getByRole("button", { name: /walk the map/i }).count().catch(() => 0)}`,
+      `crosshair: ${await page.locator(".crosshair").count().catch(() => 0)}`,
       "errors:",
       ...pageErrors.map((e) => `  - ${e}`)
     ].join("\n");

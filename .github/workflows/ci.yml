@@ -53,8 +53,6 @@ jobs:
 
   browser-visual:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -85,20 +83,16 @@ jobs:
             test-results/
           if-no-files-found: warn
 
-      # Sandboxes used for authoring cannot reach the Actions artifact
-      # blob host, so mirror the plain-text diagnostic into the branch
-      # itself through the GitHub contents API (api.github.com).
-      - name: Mirror browser diagnostic into the branch
+      # Artifact blobs are unreachable from some authoring sandboxes;
+      # workflow annotations are returned by the GitHub API instead, so
+      # emit the plain-text diagnostic as a single error annotation.
+      - name: Annotate browser failure
         if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DIAG=screenshots/browser/diag.txt
-          if [ ! -f "$DIAG" ]; then echo "no diagnostic file"; exit 0; fi
-          REPO="${{ github.repository }}"
-          BRANCH="${{ github.head_ref || github.ref_name }}"
-          SHA=$(gh api "repos/$REPO/contents/ci-diag/browser-diag.txt" --jq .sha 2>/dev/null || true)
-          ARGS=(-X PUT -f message="ci: browser visual diagnostics (run ${{ github.run_id }})" \
-                -f content="$(base64 -w0 "$DIAG")" -f branch="$BRANCH")
-          if [ -n "$SHA" ]; then ARGS+=(-f sha="$SHA"); fi
-          gh api "repos/$REPO/contents/ci-diag/browser-diag.txt" "${ARGS[@]}" >/dev/null && echo "diagnostic committed to $BRANCH"
+          if [ -f "$DIAG" ]; then
+            MSG=$(tr '\n' '%0A' < "$DIAG")
+            echo "::error title=Browser visual failure::$MSG"
+          else
+            echo "::warning title=Browser visual::no diagnostic file was produced"
+          fi
