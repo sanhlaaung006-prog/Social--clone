@@ -13,3 +13,17 @@ INVENTORY, SETTINGS and a mission BRIEFING (controls) available before you
 deploy. In-game, `ESC` opens the command/pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
 title screen before deployment and to the pause menu once in the field.
+
+### Screenshots
+
+**Start menu (desktop)** — loading complete, ready to deploy:
+
+![IRONVEIL start menu](screenshots/ironveil-start-menu.png)
+
+**Gameplay HUD** — after pressing START:
+
+![IRONVEIL gameplay HUD](screenshots/ironveil-gameplay-hud.png)
+
+**Start menu (mobile):**
+
+![IRONVEIL start menu on mobile](screenshots/ironveil-start-menu-mobile.png)
