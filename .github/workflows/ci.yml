@@ -72,9 +72,13 @@ jobs:
       - name: Real-browser WebGL screenshots (orbit + first-person)
         run: npm run screenshot:browser
 
-      - name: Upload browser screenshots
+      - name: Upload browser screenshots and failure diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-screenshots
-          path: screenshots/browser/
-          if-no-files-found: error
+          path: |
+            screenshots/browser/
+            playwright-report/
+            test-results/
+          if-no-files-found: warn

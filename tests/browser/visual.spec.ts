@@ -5,6 +5,7 @@
  * approximate. Runs in CI; see playwright.config.ts.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 
 test("terrain and royal city render in a real browser", async ({ page }) => {
@@ -15,7 +16,22 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   page.on("console", (msg) => {
     if (msg.type() === "error") pageErrors.push(`console: ${msg.text()}`);
   });
+  const dumpDiag = async (label: string): Promise<void> => {
+    mkdirSync("screenshots/browser", { recursive: true });
+    const ua = await page.evaluate(() => navigator.userAgent).catch(() => "n/a");
+    const body = [
+      `# ${label}`,
+      `url: ${page.url()}`,
+      `userAgent: ${ua}`,
+      `canvas attached: ${await page.locator("#terrainCanvas").count().catch(() => 0)}`,
+      `crosshair attached: ${await page.locator(".crosshair").count().catch(() => 0)}`,
+      "errors:",
+      ...pageErrors.map((e) => `  - ${e}`)
+    ].join("\n");
+    writeFileSync("screenshots/browser/diag.txt", body + "\n");
+  };
 
+  try {
   await page.goto("/");
   const canvas = page.locator("#terrainCanvas");
   await expect(canvas).toBeAttached({ timeout: 30_000 });
@@ -29,6 +45,7 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
 
   // Give the engine time to build the merged ground, city and scatter.
   await page.waitForTimeout(4000);
+  await dumpDiag("after-load");
   expect(pageErrors, `page errors during load: ${pageErrors.join(" | ")}`).toHaveLength(0);
   await page.screenshot({ path: "screenshots/browser/01-orbit-city.png" });
 
@@ -52,4 +69,9 @@ test("terrain and royal city render in a real browser", async ({ page }) => {
   await page.screenshot({ path: "screenshots/browser/04-back-to-orbit.png" });
 
   expect(pageErrors, `page errors during run: ${pageErrors.join(" | ")}`).toHaveLength(0);
+  await dumpDiag("complete");
+  } catch (err) {
+    await dumpDiag(`failure: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
 });
