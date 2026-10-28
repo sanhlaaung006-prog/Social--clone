@@ -1,0 +1,18 @@
+{
+  "name": "ironveil",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "IRONVEIL tactical operations interface — single-file production build (see build.mjs).",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "4.5.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
