@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { InputState } from "@/game/input";
 import type { HudSnapshot } from "@/game/hud";
 
@@ -23,6 +23,24 @@ export default function TouchControls({
   const lastLook = useRef({ x: 0, y: 0 });
   const [firing, setFiring] = useState(false);
   const [aiming, setAiming] = useState(false);
+
+  // A gesture must not survive focus loss: hard-clear the smoother and drop
+  // any in-flight look pointer when the tab is hidden or the window blurs.
+  useEffect(() => {
+    const hardClear = () => {
+      lookPointer.current = null;
+      input.touchLook.clear();
+    };
+    const onVisibility = () => {
+      if (document.hidden) hardClear();
+    };
+    window.addEventListener("blur", hardClear);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", hardClear);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [input]);
 
   const handleStick = (e: ReactPointerEvent) => {
     const el = stickRef.current;
@@ -62,19 +80,29 @@ export default function TouchControls({
           if (lookPointer.current !== null) return;
           lookPointer.current = e.pointerId;
           lastLook.current = { x: e.clientX, y: e.clientY };
+          input.touchLook.begin();
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
         }}
         onPointerMove={(e) => {
           if (lookPointer.current !== e.pointerId) return;
-          input.lookDX += e.clientX - lastLook.current.x;
-          input.lookDY += e.clientY - lastLook.current.y;
+          input.touchLook.move(
+            e.clientX - lastLook.current.x,
+            e.clientY - lastLook.current.y
+          );
           lastLook.current = { x: e.clientX, y: e.clientY };
         }}
         onPointerUp={(e) => {
-          if (lookPointer.current === e.pointerId) lookPointer.current = null;
+          if (lookPointer.current === e.pointerId) {
+            lookPointer.current = null;
+            // Keep the smoothed tail; it drains over the next frames.
+            input.touchLook.end();
+          }
         }}
         onPointerCancel={(e) => {
-          if (lookPointer.current === e.pointerId) lookPointer.current = null;
+          if (lookPointer.current === e.pointerId) {
+            lookPointer.current = null;
+            input.touchLook.clear();
+          }
         }}
       />
 

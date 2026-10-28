@@ -249,6 +249,9 @@ export class Engine {
   private updatePlaying(dt: number) {
     // Resolve off-thread ray results from previous frames before new shots.
     this.rayService.drain();
+    // Flush smoothed touch-look into the shared accumulator first, so both
+    // the on-foot player and the vehicle turret read the same per-frame delta.
+    this.input.pumpTouchLook(dt);
     this.fireCooldown -= dt;
     this.gunCooldown -= dt;
 

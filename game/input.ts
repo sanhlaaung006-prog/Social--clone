@@ -3,6 +3,8 @@
  * keyboard/mouse listeners both write here; the engine reads it every frame.
  */
 
+import { TouchAim, AIM_GAIN } from "./touchAim";
+
 export class InputState {
   /** Normalized movement vector from the virtual joystick / WASD. */
   moveX = 0;
@@ -10,6 +12,10 @@ export class InputState {
   /** Accumulated look deltas (engine consumes and resets). */
   lookDX = 0;
   lookDY = 0;
+
+  /** Touch-only look-gesture filter (slop + low-pass). Desktop mouse
+   *  bypasses it and writes lookDX/lookDY directly. */
+  readonly touchLook = new TouchAim();
 
   firing = false;
   aiming = false;
@@ -28,6 +34,15 @@ export class InputState {
     this.lookDX = 0;
     this.lookDY = 0;
     return out;
+  }
+
+  /** Move one frame of smoothed touch look into the raw look accumulator.
+   *  Called once per engine frame before either on-foot or vehicle code
+   *  consumes look. No-op for desktop since the touch queue stays empty. */
+  pumpTouchLook(dt: number): void {
+    const d = this.touchLook.pump(dt, this.aiming ? AIM_GAIN : 1);
+    this.lookDX += d.dx;
+    this.lookDY += d.dy;
   }
 
   queueJump() {
