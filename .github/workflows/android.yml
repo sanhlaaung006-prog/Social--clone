@@ -26,7 +26,13 @@ jobs:
         run: npm ci
 
       - name: Compile C cores to WASM
-        run: npm run build:wasm
+        # Tolerate the pre-WASM-brick state where this script is absent.
+        run: |
+          if npm run | grep -q "build:wasm"; then
+            npm run build:wasm
+          else
+            echo "build:wasm not defined yet — skipping until the WASM brick lands"
+          fi
 
       - name: Vite production build (-> dist/)
         run: npm run build
