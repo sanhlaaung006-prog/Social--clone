@@ -43,3 +43,31 @@ jobs:
         with:
           name: web-dist
           path: dist/
+
+  browser-visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # GitHub-hosted runners can reach the Playwright browser CDN;
+      # the restricted dev sandbox used for authoring cannot.
+      - name: Install headless Chromium with OS libraries
+        run: npx playwright install --with-deps chromium
+
+      - name: Real-browser WebGL screenshots (orbit + first-person)
+        run: npm run screenshot:browser
+
+      - name: Upload browser screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots
+          path: screenshots/browser/
+          if-no-files-found: error

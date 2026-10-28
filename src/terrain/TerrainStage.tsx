@@ -25,6 +25,13 @@ import { createFpState, stepFp, type FpState } from "../player/controller";
 import { FirstPersonRig } from "../player/FirstPersonRig";
 import { InputBus } from "../player/input";
 import { TouchControls } from "../ui/TouchControls";
+import { CITY_SEED, isCityFootprint, planCity } from "../city/layout";
+import { buildCity, pruneInstancedInside } from "../city/buildCity";
+import {
+  CITY_STEP_UP,
+  createCityGroundSampler,
+  resolveCityWalk
+} from "../city/walk";
 
 type Mode = "orbit" | "walk";
 
@@ -84,6 +91,23 @@ export function TerrainStage(): JSX.Element {
       seed: 977
     });
 
+    // Royal city: deterministic plan over the real terrain sampler,
+    // merged anti-voxel meshes added as a sibling layer (locked engine
+    // untouched). Scatter dressing inside the footprint is removed so
+    // no tree or rock grows through a house or the citadel.
+    const cityPlan = planCity(CITY_SEED, groundHeight);
+    const city = buildCity(cityPlan);
+    engine.scene.add(city.group);
+    const pruned = pruneInstancedInside(
+      engine.scene,
+      cityPlan.center,
+      cityPlan.footprint
+    );
+    console.info(
+      `royal city: ${city.stats.pieces} pieces, ${city.stats.triangles} tris, ${pruned} scatter instances pruned`
+    );
+    const cityGround = createCityGroundSampler(cityPlan);
+
     // Locate the shadow-casting sun for player-relative shadows.
     let sun: THREE.DirectionalLight | null = null;
     engine.scene.traverse((o) => {
@@ -103,7 +127,8 @@ export function TerrainStage(): JSX.Element {
       if (modeRef.current !== "walk") return;
       const dt = Math.min(0.05, frameClock.getDelta());
       const input = bus.sample();
-      stepFp(fp, input, dt, groundHeight);
+      stepFp(fp, input, dt, cityGround, { stepUp: CITY_STEP_UP });
+      const contact = resolveCityWalk(cityPlan, fp);
       rig.apply(fp);
       if (sun) {
         sun.position.set(fp.x - 150, fp.y + 220, fp.z + 120);
@@ -113,6 +138,7 @@ export function TerrainStage(): JSX.Element {
       if (coordRef.current) {
         coordRef.current.textContent =
           `x ${fp.x.toFixed(0)} m · z ${fp.z.toFixed(0)} m · alt ${fp.y.toFixed(1)} m` +
+          (contact.inCity && isCityFootprint(cityPlan, fp.x, fp.z) ? " · royal city" : "") +
           (fp.wading ? " · wading" : "");
       }
     });
