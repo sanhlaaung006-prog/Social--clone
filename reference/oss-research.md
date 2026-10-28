@@ -32,6 +32,19 @@ Tank shooter patterns reviewed for structure only; nothing copied.
 Notably its own hero still uses 4-sided cone pyramids — our faceted cylinder
 turret and wedge hull go beyond its shape language.
 
+### 4. mrdoob/three.js r170 — MIT (Copyright © 2010-2026 Three.js Authors)
+Fetched `examples/jsm/controls/PointerLockControls.js` at the r170 tag
+(the same three.js release the project depends on). Revised/mixed into
+`game/cameraRig.ts`, not imported:
+- YXZ Euler order with yaw on Y and pitch on X, and the quaternion derived
+  from that Euler — the exact convention PointerLockControls uses
+- ~0.002 rad/px mouse sensitivity baseline (the project's Player keeps its
+  own touch/desktop sensitivities around this range)
+The Shellishack player-controllers skill supplied the eye-height grounding
+over a terrainHeight() function and the head-bob/air-offset controller
+structure. All realism layers (counter-sway, roll, landing dip, sprint FOV,
+ADS pose, camera-attached view model) are original additions.
+
 ## Also reviewed (search only, not cloned)
 - stemkoski three.js examples, NikLever/threejs-games-course — standard
   primitive composition patterns; nothing beyond what the MIT sources cover

@@ -12,6 +12,7 @@ import { Rng } from "../game/rng";
 import { CONFIG } from "../game/config";
 import { gatherTriangles, makeCamera, renderPng } from "./lib/raster";
 import { VehicleManager } from "../game/vehicles/manager";
+import { CameraRig } from "../game/cameraRig";
 import { buildStylizedJet, buildStylizedTank, buildStylizedTechnical } from "../game/vehicles/stylized";
 import { installDomStub } from "./lib/dom-stub";
 
@@ -67,6 +68,27 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
     pz - Math.cos(player.yaw) * 4
   );
   shoot("03-gameplay", eye, target);
+}
+
+// 3b) First-person view through the real CameraRig: eye-height framing,
+//     view-model rifle, bots downrange. Rasterizer FOCAL assumes 62 FOV.
+{
+  const rig = new CameraRig(16 / 9);
+  scene.add(rig.camera); // view model is a camera child
+  const px = 18;
+  const pz = 14;
+  player.group.position.set(px, world.heightAt(px, pz), pz);
+  player.velocity.set(0, 0, 0);
+  player.yaw = Math.atan2(-(12 - px), -(4 - pz));
+  player.pitch = -0.04;
+  for (let i = 0; i < 10; i++) rig.update(1 / 60, player, world, false);
+  scene.updateMatrixWorld(true);
+  const fpEye = rig.camera.position.clone();
+  const fpF = rig.getForward(new THREE.Vector3());
+  const fpR = new THREE.Vector3().crossVectors(fpF, new THREE.Vector3(0, 1, 0)).normalize();
+  const fpU = new THREE.Vector3().crossVectors(fpR, fpF).normalize();
+  renderPng(gatherTriangles(scene), { eye: fpEye, f: fpF, r: fpR, u: fpU }, "screenshots/09-first-person.png");
+  scene.remove(rig.camera);
 }
 
 // 4) Hero shot of the golden pagoda landmark (r=6.2 obstacle marker).

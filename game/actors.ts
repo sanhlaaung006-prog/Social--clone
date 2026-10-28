@@ -35,12 +35,33 @@ function zCylinder(rTop: number, rBottom: number, length: number, segments = 8):
   return geo;
 }
 
+/**
+ * Low-poly rifle assembled from cylinders (receiver, barrel, magazine,
+ * stock). Shared by the third-person humanoid and the FPS view model.
+ */
+export function buildRifleModel(): THREE.Group {
+  const metal = mat(0x2c3138);
+  const rifle = new THREE.Group();
+  rifle.name = "rifle";
+  const receiver = new THREE.Mesh(zCylinder(0.09, 0.1, 0.7, 8), metal);
+  receiver.castShadow = true;
+  const barrel = new THREE.Mesh(zCylinder(0.045, 0.055, 0.7, 8), metal);
+  barrel.position.z = 0.62;
+  barrel.castShadow = true;
+  const mag = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.28, 6), metal);
+  mag.position.set(0, -0.16, -0.05);
+  mag.rotation.x = 0.25;
+  const stock = new THREE.Mesh(zCylinder(0.08, 0.1, 0.34, 7), metal);
+  stock.position.z = -0.48;
+  rifle.add(receiver, barrel, mag, stock);
+  return rifle;
+}
+
 export function buildHumanoid(uniform: number, accent: number): HumanoidParts {
   const g = new THREE.Group();
   const cloth = mat(uniform);
   const skin = mat(0xc99a6a);
   const dark = mat(0x3a3f38);
-  const metal = mat(0x2c3138);
 
   // Torso: tapered faceted cylinder with a subtle chest.
   const torsoGeo = new THREE.CylinderGeometry(0.34, 0.44, 1.15, 8, 1);
@@ -89,19 +110,7 @@ export function buildHumanoid(uniform: number, accent: number): HumanoidParts {
   g.add(leftArm, rightArm);
 
   // Low-poly rifle assembled from cylinders: receiver, barrel, magazine.
-  const rifle = new THREE.Group();
-  rifle.name = "rifle";
-  const receiver = new THREE.Mesh(zCylinder(0.09, 0.1, 0.7, 8), metal);
-  receiver.castShadow = true;
-  const barrel = new THREE.Mesh(zCylinder(0.045, 0.055, 0.7, 8), metal);
-  barrel.position.z = 0.62;
-  barrel.castShadow = true;
-  const mag = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.28, 6), metal);
-  mag.position.set(0, -0.16, -0.05);
-  mag.rotation.x = 0.25;
-  const stock = new THREE.Mesh(zCylinder(0.08, 0.1, 0.34, 7), metal);
-  stock.position.z = -0.48;
-  rifle.add(receiver, barrel, mag, stock);
+  const rifle = buildRifleModel();
   rifle.position.set(0.46, 1.72, 0.45);
   g.add(rifle);
 

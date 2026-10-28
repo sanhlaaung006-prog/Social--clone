@@ -97,6 +97,9 @@ export class Engine {
     this.rig = new CameraRig(
       container.clientWidth / Math.max(1, container.clientHeight)
     );
+    // The FPS view-model rifle is parented to the camera, so the camera
+    // itself must live in the scene graph to be rendered.
+    this.scene.add(this.rig.camera);
 
     this.resizeObs = new ResizeObserver(() => this.onResize());
     this.resizeObs.observe(container);

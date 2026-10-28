@@ -83,7 +83,9 @@ game/
   actors.ts           Rounded humanoids (cylinders/spheres), Player, bot AI
   combat.ts           Tracer pool, muzzle flash, canister/hex-tin pickups
   zone.ts             Shrinking battle-royale circle
-  cameraRig.ts        Third-person orbit camera w/ terrain pull-in
+  cameraRig.ts        FPS camera: YXZ pointer-lock rig, head bob/sway/roll,
+                      landing dip, ADS + sprint FOV, camera-attached rifle
+                      view model; vehicle chase cam and menu orbit retained
   input.ts            Unified touch + keyboard/mouse input state
   config.ts           All gameplay tuning constants
   wasm/
