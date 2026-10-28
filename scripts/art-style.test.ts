@@ -42,6 +42,8 @@ const shippedModules = [
   "game/vehicles/stylized.ts",
   "game/geometry/kit.ts",
   "game/cameraRig.ts",
+  "game/instancedCuller.ts",
+  "game/device.ts",
 ];
 for (const rel of shippedModules) {
   const src = readFileSync(join(root, rel), "utf8");

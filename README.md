@@ -86,6 +86,10 @@ game/
   cameraRig.ts        FPS camera: YXZ pointer-lock rig, head bob/sway/roll,
                       landing dip, ADS + sprint FOV, camera-attached rifle
                       view model; vehicle chase cam and menu orbit retained
+  device.ts           Quality-tier detection (mobile UA, pointer, cores,
+                      memory); ?quality=low|high URL override
+  instancedCuller.ts  Per-instance frustum + distance culling with order-
+                      preserving matrix compaction for InstancedMesh
   input.ts            Unified touch + keyboard/mouse input state
   config.ts           All gameplay tuning constants
   wasm/
@@ -109,6 +113,7 @@ scripts/
   screenshot.ts       CPU rasterizer: real scene geometry -> PNG (no GPU)
   vehicles.test.ts    Driving, steering, collision, stylized-geometry rules
   art-style.test.ts   Anti-voxel gate: zero boxes, smooth terrain, curved humans
+  quality.test.ts     Tier decision table, culler compaction, low/high World
   extract-mig.mjs     Compressing extractor: 4,160-line showcase -> mig29.ts
   mig.test.ts         MiG material revision, rig hooks and render proofs
   lib/raster.ts       Shared headless triangle rasterizer
@@ -150,9 +155,16 @@ dynamics become necessary.
 
 ## Mobile performance notes
 
-- `antialias: false`, capped device pixel ratio (1.6 on touch devices)
-- Instanced meshes for all trees and rocks; Lambert materials + flat shading
-- Single directional shadow light with a player-following frustum
-- Distance fog doubles as draw-distance masking
-- Procedural everything — zero texture downloads; ~182 kB gzip first load
-  (three.js/react split into separate cacheable vendor chunks)
+- Two quality tiers (`game/device.ts`, override with `?quality=low|high`):
+  mobile/low-memory devices get coarser terrain/water meshes, 40% fewer
+  instanced props, half-size shadow maps, pixel ratio capped at 1.25 and
+  22% denser fog; desktops keep the full profile (ratio cap 2)
+- Per-instance frustum + distance culling (`game/instancedCuller.ts`)
+  compacts each InstancedMesh every frame; cull radii sit inside the fog
+  envelope so the cutoff never visibly pops
+- `antialias: false`, flat-shaded Standard materials, one directional
+  shadow light with a player-following frustum
+- Distance fog doubles as draw-distance masking; water normal recompute
+  was removed (flat shading derives normals in-shader)
+- Procedural everything — zero texture downloads; three.js/react split
+  into separate cacheable vendor chunks

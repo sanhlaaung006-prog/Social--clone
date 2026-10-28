@@ -17,6 +17,38 @@ export const CONFIG = {
     pickupCount: 16,
   },
 
+  /*
+   * Per-tier rendering budgets. Low = aggressive-but-clean mobile:
+   * cull radii stay inside the fog envelope, so nothing visibly pops;
+   * geometry density drops before pixel/shadow budgets do.
+   */
+  quality: {
+    high: {
+      terrainSegments: 128,
+      waterSegments: 56,
+      treeScale: 1,
+      rockScale: 1,
+      grassCount: 260,
+      cloudCount: 14,
+      shadowMapSize: 1024,
+      pixelRatioCap: 2,
+      fogDensityMul: 1,
+      cull: { tree: 150, rock: 150, grass: 95, cloud: 320 },
+    },
+    low: {
+      terrainSegments: 72,
+      waterSegments: 32,
+      treeScale: 0.6,
+      rockScale: 0.6,
+      grassCount: 130,
+      cloudCount: 8,
+      shadowMapSize: 512,
+      pixelRatioCap: 1.25,
+      fogDensityMul: 1.22,
+      cull: { tree: 88, rock: 88, grass: 55, cloud: 260 },
+    },
+  } as const,
+
   player: {
     maxHp: 100,
     speed: 9.5,

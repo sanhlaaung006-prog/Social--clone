@@ -186,4 +186,28 @@ shoot("01-overview", new THREE.Vector3(62, 46, 74), new THREE.Vector3(0, 3, 0));
   );
 }
 
+// 8) Low-tier mobile profile: coarser terrain, fewer props, per-instance
+//    culling active. Same vista direction as the FPS proof for comparison.
+{
+  const lowWorld = new World(noise, "low");
+  const lowScene = new THREE.Scene();
+  lowScene.add(lowWorld.group);
+  const lx = 60;
+  const lz = -4;
+  const ly = lowWorld.heightAt(lx, lz);
+  const lowCam = new THREE.PerspectiveCamera(62, 16 / 9, 0.1, 600);
+  lowCam.position.set(lx, ly + 2.45, lz);
+  lowCam.lookAt(44, ly + 2.2, -6);
+  lowWorld.updateCulling(lowCam);
+  lowScene.updateMatrixWorld(true);
+  const f = lowCam.getWorldDirection(new THREE.Vector3());
+  const r = new THREE.Vector3().crossVectors(f, new THREE.Vector3(0, 1, 0)).normalize();
+  const u = new THREE.Vector3().crossVectors(r, f).normalize();
+  renderPng(
+    gatherTriangles(lowScene),
+    { eye: lowCam.position.clone(), f, r, u },
+    "screenshots/10-low-tier.png"
+  );
+}
+
 console.log("done");

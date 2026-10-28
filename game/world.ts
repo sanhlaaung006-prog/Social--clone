@@ -20,6 +20,8 @@ import {
   mergeNonIndexed,
   varyPalette,
 } from "./geometry/kit";
+import type { QualityTier } from "./device";
+import { InstanceCuller } from "./instancedCuller";
 
 export interface CircleObstacle {
   x: number;
@@ -53,9 +55,17 @@ export class World {
   private cloudData: Array<{
     x: number; y: number; z: number; speed: number; scale: number; rot: number;
   }> = [];
+  private readonly cullers: InstanceCuller[] = [];
+  private cloudCenters: Float32Array | null = null;
   private readonly half = CONFIG.world.size / 2;
+  readonly tier: QualityTier;
+  private readonly q;
+  private readonly noise: NoiseImpl;
 
-  constructor(private readonly noise: NoiseImpl) {
+  constructor(noise: NoiseImpl, tier: QualityTier = "high") {
+    this.noise = noise;
+    this.tier = tier;
+    this.q = CONFIG.quality[tier];
     this.buildLights();
     this.buildSky();
     this.buildTerrain();
@@ -82,7 +92,7 @@ export class World {
     const sun = new THREE.DirectionalLight(0xfff2d6, 2.1);
     sun.position.set(60, 90, 35);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.mapSize.set(this.q.shadowMapSize, this.q.shadowMapSize);
     const s = 55;
     sun.shadow.camera.left = -s;
     sun.shadow.camera.right = s;
@@ -145,7 +155,8 @@ export class World {
   /* ------------------------------ terrain ------------------------------- */
 
   private buildTerrain() {
-    const { size, terrainSegments, waterLevel } = CONFIG.world;
+    const { size, waterLevel } = CONFIG.world;
+    const terrainSegments = this.q.terrainSegments;
     // Indexed geometry: shared vertices give smooth stylized normals,
     // instead of the non-indexed faceted voxel look.
     const geo = new THREE.PlaneGeometry(size, size, terrainSegments, terrainSegments);
@@ -216,7 +227,8 @@ export class World {
   private buildWater() {
     // Subdivided plane so gentle CPU-side waves can move real vertices.
     const span = CONFIG.world.size * 1.4;
-    const geo = new THREE.PlaneGeometry(span, span, 56, 56);
+    const seg = this.q.waterSegments;
+    const geo = new THREE.PlaneGeometry(span, span, seg, seg);
     geo.rotateX(-Math.PI / 2);
     this.waterBase = (geo.getAttribute("position") as THREE.BufferAttribute).array.slice() as Float32Array;
     const mat = new THREE.MeshStandardMaterial({
@@ -388,9 +400,10 @@ export class World {
       rot: number;
       conifer: boolean;
     }
+    const targetTrees = Math.round(CONFIG.world.treeCount * this.q.treeScale);
     const placements: Placement[] = [];
     let attempts = 0;
-    while (placements.length < CONFIG.world.treeCount && attempts++ < CONFIG.world.treeCount * 6) {
+    while (placements.length < targetTrees && attempts++ < targetTrees * 6) {
       const x = rng.range(-this.half + 6, this.half - 6);
       const z = rng.range(-this.half + 6, this.half - 6);
       const h = this.heightAt(x, z);
@@ -419,8 +432,12 @@ export class World {
       const crowns = new THREE.InstancedMesh(crownGeo, crownMat, list.length);
       trunks.castShadow = true;
       crowns.castShadow = true;
+      const centers = new Float32Array(list.length * 3);
+      const trunkRadii = new Float32Array(list.length);
+      const crownRadii = new Float32Array(list.length);
       list.forEach((p, i) => {
-        dummy.position.set(p.x, this.heightAt(p.x, p.z), p.z);
+        const gy = this.heightAt(p.x, p.z);
+        dummy.position.set(p.x, gy, p.z);
         dummy.rotation.set(0, p.rot, 0);
         dummy.scale.setScalar(p.scale);
         dummy.updateMatrix();
@@ -431,6 +448,11 @@ export class World {
         // Slight lightness variance per instance.
         tint.offsetHSL(0, 0, (hash3(p.x, i, p.z) - 0.5) * 0.06);
         crowns.setColorAt(i, tint);
+        centers[i * 3] = p.x;
+        centers[i * 3 + 1] = gy + 2.6;
+        centers[i * 3 + 2] = p.z;
+        trunkRadii[i] = 0.5 * p.scale;
+        crownRadii[i] = 3.4 * p.scale;
       });
       trunks.instanceMatrix.needsUpdate = true;
       crowns.instanceMatrix.needsUpdate = true;
@@ -439,6 +461,10 @@ export class World {
       trunks.computeBoundingSphere();
       crowns.computeBoundingSphere();
       this.group.add(trunks, crowns);
+      this.cullers.push(
+        new InstanceCuller(trunks, centers, trunkRadii, this.q.cull.tree),
+        new InstanceCuller(crowns, centers, crownRadii, this.q.cull.tree)
+      );
     };
 
     addSpecies(broad, broadTrunkGeo, broadCrownGeo, greenPalette);
@@ -447,7 +473,7 @@ export class World {
 
   private buildRocks() {
     const rng = new Rng(CONFIG.seed + 99);
-    const count = CONFIG.world.rockCount;
+    const count = Math.round(CONFIG.world.rockCount * this.q.rockScale);
     // One jittered polyhedron, varied per instance by non-uniform scale,
     // random rotation and palette shade — organic, never identical clones.
     const geo = jitteredBlobGeometry(1, 0, 0.28, 101);
@@ -456,6 +482,8 @@ export class World {
     rocks.castShadow = true;
     const palette = varyPalette(0x827d72, 4, 0.1);
     const dummy = new THREE.Object3D();
+    const centers = new Float32Array(count * 3);
+    const radii = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
       const x = rng.range(-this.half + 5, this.half - 5);
@@ -468,18 +496,23 @@ export class World {
       dummy.updateMatrix();
       rocks.setMatrixAt(i, dummy.matrix);
       rocks.setColorAt(i, palette[i % palette.length]);
+      centers[i * 3] = x;
+      centers[i * 3 + 1] = h + s * 0.35;
+      centers[i * 3 + 2] = z;
+      radii[i] = s * 1.9;
       this.obstacles.push({ x, z, r: s * 0.8 });
     }
     rocks.instanceMatrix.needsUpdate = true;
     if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
     this.group.add(rocks);
+    this.cullers.push(new InstanceCuller(rocks, centers, radii, this.q.cull.rock));
   }
 
   /* --------------------------- grass and clouds -------------------------- */
 
   private buildGrassTufts() {
     const rng = new Rng(CONFIG.seed + 314);
-    const count = 260;
+    const count = this.q.grassCount;
     // Three-blade tuft: merged tiny cones, one draw call via instancing.
     const blade = new THREE.ConeGeometry(0.16, 0.7, 3);
     blade.translate(0, 0.35, 0);
@@ -496,6 +529,8 @@ export class World {
     const tufts = new THREE.InstancedMesh(tuftGeo, mat, count);
     const palette = varyPalette(0x6f9e4e, 4, 0.14);
     const dummy = new THREE.Object3D();
+    const centers = new Float32Array(count * 3);
+    const radii = new Float32Array(count);
     let placed = 0;
     for (let i = 0; i < count * 3 && placed < count; i++) {
       const x = rng.range(-this.half + 4, this.half - 4);
@@ -511,6 +546,10 @@ export class World {
       dummy.updateMatrix();
       tufts.setMatrixAt(placed, dummy.matrix);
       tufts.setColorAt(placed, palette[placed % palette.length]);
+      centers[placed * 3] = x;
+      centers[placed * 3 + 1] = h;
+      centers[placed * 3 + 2] = z;
+      radii[placed] = 0.6 * s;
       placed++;
     }
     tufts.count = placed;
@@ -518,11 +557,12 @@ export class World {
     if (tufts.instanceColor) tufts.instanceColor.needsUpdate = true;
     tufts.receiveShadow = true;
     this.group.add(tufts);
+    this.cullers.push(new InstanceCuller(tufts, centers, radii, this.q.cull.grass));
   }
 
   private buildClouds() {
     const rng = new Rng(CONFIG.seed + 271);
-    const count = 14;
+    const count = this.q.cloudCount;
     // A cloud is a cluster of flattened jittered blobs in one geometry.
     const blobs: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 4; i++) {
@@ -542,6 +582,9 @@ export class World {
     this.cloudMesh = new THREE.InstancedMesh(cloudGeo, mat, count);
     const dummy = new THREE.Object3D();
     const cloudPalette = varyPalette(0xf2f4ee, 3, 0.05);
+    this.cloudCenters = new Float32Array(count * 3);
+    const cloudCenters = this.cloudCenters;
+    const cloudRadii = new Float32Array(count);
     this.cloudData = [];
     for (let i = 0; i < count; i++) {
       const x = rng.range(-this.half, this.half);
@@ -555,11 +598,18 @@ export class World {
       dummy.updateMatrix();
       this.cloudMesh.setMatrixAt(i, dummy.matrix);
       this.cloudMesh.setColorAt(i, cloudPalette[i % cloudPalette.length]);
+      cloudCenters[i * 3] = x;
+      cloudCenters[i * 3 + 1] = y;
+      cloudCenters[i * 3 + 2] = z;
+      cloudRadii[i] = 6 * s;
       this.cloudData.push({ x, y, z, speed: rng.range(0.6, 1.6), scale: s, rot });
     }
     this.cloudMesh.instanceMatrix.needsUpdate = true;
     this.cloudMesh.frustumCulled = false;
     this.group.add(this.cloudMesh);
+    this.cullers.push(
+      new InstanceCuller(this.cloudMesh, cloudCenters, cloudRadii, this.q.cull.cloud)
+    );
   }
 
   /** Slow cloud drift and water waves, called once per frame. */
@@ -578,7 +628,8 @@ export class World {
         attr.setY(i, wave);
       }
       attr.needsUpdate = true;
-      this.waterMesh.geometry.computeVertexNormals();
+      // No normal recompute: flatShading derives face normals in-shader
+      // via screen-space derivatives, so this was pure per-frame CPU cost.
     }
     if (!this.cloudMesh) return;
     const dummy = new THREE.Object3D();
@@ -591,8 +642,21 @@ export class World {
       dummy.scale.setScalar(c.scale);
       dummy.updateMatrix();
       this.cloudMesh!.setMatrixAt(i, dummy.matrix);
+      if (this.cloudCenters) {
+        this.cloudCenters[i * 3] = c.x;
+        this.cloudCenters[i * 3 + 1] = c.y;
+        this.cloudCenters[i * 3 + 2] = c.z;
+      }
     });
     this.cloudMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * Per-instance frustum + distance culling for every instanced prop set.
+   * Call once per frame with the active camera (any render state).
+   */
+  updateCulling(camera: THREE.PerspectiveCamera) {
+    for (const c of this.cullers) c.update(camera);
   }
 
   /* ------------------------------ helpers ------------------------------- */

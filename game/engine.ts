@@ -16,6 +16,7 @@ import { Zone } from "./zone";
 import { TracerPool, MuzzleFlash, PickupManager } from "./combat";
 import { VehicleManager } from "./vehicles/manager";
 import type { Vehicle, Seat } from "./vehicles/vehicle";
+import { detectTier } from "./device";
 import type { HudSnapshot, KillFeedEntry, MatchStatus, MinimapBlip } from "./hud";
 
 const FOG_HEX = CONFIG.world.fogColor;
@@ -67,17 +68,20 @@ export class Engine {
   private damageAt = 0;
   private pointerLocked = false;
 
+  private readonly tier = detectTier();
+
   private constructor(private readonly container: HTMLElement) {
     this.input.touch =
       typeof window !== "undefined" &&
       (window.matchMedia?.("(pointer: coarse)").matches || "ontouchstart" in window);
 
+    const q = CONFIG.quality[this.tier];
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: "high-performance",
       alpha: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.input.touch ? 1.6 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -91,7 +95,8 @@ export class Engine {
     this.renderer.domElement.style.touchAction = "none";
 
     // Exponential mist fades distant jungle naturally (no hard fog plane).
-    this.scene.fog = new THREE.FogExp2(FOG_HEX, CONFIG.world.fogDensity);
+    // Mobile gets denser fog so the shorter cull radius is fully hidden.
+    this.scene.fog = new THREE.FogExp2(FOG_HEX, CONFIG.world.fogDensity * q.fogDensityMul);
     this.scene.background = new THREE.Color(FOG_HEX);
 
     this.rig = new CameraRig(
@@ -123,7 +128,7 @@ export class Engine {
   /* ---------------------------- world construction ---------------------------- */
 
   private buildPermanentWorld() {
-    this.world = new World(this.noise);
+    this.world = new World(this.noise, this.tier);
     this.scene.add(this.world.group);
 
     this.player = new Player(this.world, this.physics);
@@ -218,6 +223,9 @@ export class Engine {
       this.tracers.update(dt);
       this.flash.update(dt);
     }
+
+    // Per-instance frustum/distance culling before the health-bar billboards.
+    this.world.updateCulling(this.rig.camera);
 
     // Billboard every actor health bar.
     for (const b of this.bots) b.updateHealthBar(this.rig.camera);
