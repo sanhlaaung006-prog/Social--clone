@@ -1684,7 +1684,11 @@
       -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     }
     .fire-btn:active { background: radial-gradient(circle at 50% 38%, rgba(200, 244, 92, 0.42), rgba(10, 16, 11, 0.6) 74%); color: #eaffb0; }
-  </style>
+      .debug-overlay{position:fixed;top:10px;left:10px;z-index:70;background:rgba(4,8,5,.85);border:1px solid rgba(184,255,92,.4);color:#9db88a;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10px;line-height:1.55;padding:8px 10px;min-width:180px;pointer-events:none;letter-spacing:.05em}
+    .debug-overlay .dbg-head{color:#b8ff5c;font-weight:600;margin-bottom:4px;border-bottom:1px solid rgba(184,255,92,.25);padding-bottom:3px}
+    .debug-overlay .dbg-row{display:flex;justify-content:space-between;gap:16px}
+    .debug-overlay .dbg-row span:last-child{color:#f2f7e9}
+</style>
 </head>
 <body>
   <div id="app"></div>

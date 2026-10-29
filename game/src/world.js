@@ -22,6 +22,13 @@ export const inputState = {
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
 };
 
+// Live perf counters, filled by the render loop, read by the React debug overlay.
+export const debugStats = {
+  fps: 0, frameMs: 0, calls: 0, tris: 0, points: 0, lines: 0,
+  geometries: 0, textures: 0, programs: 0,
+  width: 0, height: 0, cycle: 0, px: 0, pz: 0, _last: 0,
+};
+
 // ---------- deterministic rng / noise ----------
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -937,6 +944,26 @@ export function createWorld(canvas, hooks = {}) {
     updateSky(dt);
     pushHud();
     renderer.render(scene, camera);
+    { // debug counters (renderer.info is valid right after render)
+      const now = performance.now();
+      const ft = debugStats._last ? now - debugStats._last : 16.7;
+      debugStats._last = now;
+      debugStats.frameMs = debugStats.frameMs * 0.92 + ft * 0.08;
+      debugStats.fps = debugStats.frameMs > 0 ? 1000 / debugStats.frameMs : 0;
+      const ri = renderer.info;
+      debugStats.calls = ri.render.calls;
+      debugStats.tris = ri.render.triangles;
+      debugStats.points = ri.render.points;
+      debugStats.lines = ri.render.lines;
+      debugStats.geometries = ri.memory.geometries;
+      debugStats.textures = ri.memory.textures;
+      debugStats.programs = ri.programs ? ri.programs.length : 0;
+      debugStats.width = renderer.domElement.width;
+      debugStats.height = renderer.domElement.height;
+      debugStats.cycle = cycleT;
+      debugStats.px = Math.round(camera.position.x);
+      debugStats.pz = Math.round(camera.position.z);
+    }
   }
   frame();
 

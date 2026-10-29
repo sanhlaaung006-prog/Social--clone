@@ -1,7 +1,7 @@
     import React, { useEffect, useState } from "react";
     import { createRoot } from "react-dom/client";
     import { create } from "zustand";
-    import { createWorld, inputState } from "./world.js";
+    import { createWorld, inputState, debugStats } from "./world.js";
     import { sfx } from "./audio.js";
 
     // === [UI: ZUSTAND_STORE] ===
@@ -263,6 +263,61 @@
     });
 
     // === [WORLD: THREE_TERRAIN / REACT BRIDGE] ===
+    // Perf/debug overlay (top-left). Toggle with ` or F3. Reads mutable
+    // debugStats on a 4Hz tick so the render loop never touches React.
+    function DebugOverlay() {
+      const [open, setOpen] = useState(true);
+      const [, setTick] = useState(0);
+      useEffect(() => {
+        const id = setInterval(() => setTick((t) => t + 1), 250);
+        const onKey = (e) => {
+          if (e.code === "Backquote" || e.code === "F3") {
+            e.preventDefault();
+            setOpen((o) => !o);
+          }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => {
+          clearInterval(id);
+          window.removeEventListener("keydown", onKey);
+        };
+      }, []);
+      if (!open) return null;
+      const d = debugStats;
+      const heap =
+        typeof performance !== "undefined" && performance.memory
+          ? (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB"
+          : "--";
+      const tod = ((d.cycle * 24 + 6) % 24).toFixed(1).padStart(4, "0") + "H";
+      const rows = [
+        ["FPS", d.fps.toFixed(1)],
+        ["FRAME", d.frameMs.toFixed(2) + " MS"],
+        ["DRAW CALLS", d.calls],
+        ["TRIANGLES", d.tris.toLocaleString()],
+        ["POINTS", d.points.toLocaleString()],
+        ["LINES", d.lines],
+        ["GEOMETRIES", d.geometries],
+        ["TEXTURES", d.textures],
+        ["PROGRAMS", d.programs],
+        ["CANVAS", d.width + "x" + d.height],
+        ["DPR", (window.devicePixelRatio || 1).toFixed(2)],
+        ["JS HEAP", heap],
+        ["TIME OF DAY", tod],
+        ["CAM X/Z", d.px + " / " + d.pz],
+      ];
+      return (
+        <div className="debug-overlay">
+          <div className="dbg-head">DEBUG // PERF [` / F3]</div>
+          {rows.map(([k, v]) => (
+            <div className="dbg-row" key={k}>
+              <span>{k}</span>
+              <span>{v}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
     const WorldScene = React.memo(function WorldScene() {
       const canvasRef = React.useRef(null);
       const apiRef = React.useRef(null);
@@ -2075,6 +2130,7 @@
 
       return (
         <div className="app">
+          <DebugOverlay />
           <WorldScene />
           <StageHitLayer />
           <TouchControls />
