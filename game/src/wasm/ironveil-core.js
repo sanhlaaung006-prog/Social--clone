@@ -4,7 +4,7 @@
 // time. Loading is async and non-blocking; world.js keeps its identical
 // JS implementation as the fallback until (or unless) this is ready.
 
-export const rustCore = { ready: false, exports: null, version: 0, v3: false, physics: false };
+export const rustCore = { ready: false, exports: null, version: 0, v3: false, physics: false, safety: false };
 let groundProvider = null;
 let physicsView = null;
 
@@ -37,7 +37,7 @@ export function loadRustCore() {
       const ex = instance.exports;
       if (!ex.memory || typeof ex.ironveil_abi_version !== "function") return false;
       const version = ex.ironveil_abi_version();
-      if (version < 1 || version > 4) return false;
+      if (version < 1 || version > 5) return false;
       rustCore.version = version;
       if (typeof ex.ironveil_raw_height !== "function") return false;
       if (typeof ex.ironveil_chunk_raw_heights !== "function") return false;
@@ -52,6 +52,9 @@ export function loadRustCore() {
       rustCore.physics = version >= 4
         && typeof ex.ironveil_physics_ptr === "function"
         && typeof ex.ironveil_physics_step === "function";
+      rustCore.safety = version >= 5
+        && typeof ex.ironveil_safety_report === "function"
+        && typeof ex.ironveil_safety_report_count === "function";
       physicsView = null;
       if (rustCore.v3 && typeof ex.ironveil_build_sky_lut === "function"
         && typeof ex.ironveil_sky_lut_ptr === "function") {
@@ -126,7 +129,6 @@ export function rustBuildChunkMesh(finalHeights, seed, minX, minZ, sizeM, segmen
     positions: f32("ironveil_positions_ptr", count * 3),
     normals: f32("ironveil_normals_ptr", count * 3),
     colors: f32("ironveil_colors_ptr", count * 3),
-    splat: f32("ironveil_splat_ptr", count * 4),
     light: f32("ironveil_lighting_ptr", count),
     indices: new Uint32Array(ex.memory.buffer, ex.ironveil_indices_ptr(), segments * segments * 6).slice(),
   };
@@ -179,6 +181,19 @@ export function rustPhysicsStep(buffer) {
   }
   buffer.set(physicsView);
   return true;
+}
+
+// ABI v5 safety sink: records an anti-underground rescue in Rust's
+// fixed ring buffer. Returns the Rust-side report count, or 0 on v4/JS.
+export function rustSafetyReport(code, x, y, z, groundY, simSeconds) {
+  if (!rustCore.ready || !rustCore.safety) return 0;
+  const ex = rustCore.exports;
+  return ex.ironveil_safety_report(code >>> 0, x, y, z, groundY, simSeconds) >>> 0;
+}
+
+export function rustSafetyReportCount() {
+  if (!rustCore.ready || !rustCore.safety) return 0;
+  return rustCore.exports.ironveil_safety_report_count() >>> 0;
 }
 
 // Samples the Rust-built sky/cloud LUT into out[12]:

@@ -12,7 +12,7 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep } from "./wasm/ironveil-core.js";
+import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep, rustSafetyReport } from "./wasm/ironveil-core.js";
 import { stepPhysicsBuffer } from "./physics.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
@@ -33,6 +33,7 @@ export const inputState = {
   aimY: 0,
   lookDX: 0, // accumulated mouse-drag deltas (consumed each frame)
   lookDY: 0,
+  sensitivity: 0.55, // lower default look multiplier (settings slider writes this)
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
   jump: false, // pulsed by the touch JUMP button; the world consumes it
@@ -50,6 +51,9 @@ export const debugStats = {
   chunksLoaded: 0, chunksVisible: 0, chunksTotal: 16,
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
   grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
+  stamina: 100, sprinting: 0, sprintHold: 0, reloadT: 0,
+  safetyRescues: 0, safetyReports: 0, safetyRustReports: 0, safetyLastCode: 0,
+  treeLodFull: 0, treeLodMid: 0, treeLodFar: 0, dpr: 1,
   grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
   terrainCore: "JS", rustChunks: 0, rustMeshes: 0, rustScatter: 0, rustScatterBatches: 0, rustAiBatches: 0, rustPaths: 0, rustSky: 0,
   physicsCore: "JS", workerCore: "OFF", workerChunks: 0, workerPending: 0,
@@ -63,7 +67,7 @@ export const debugStats = {
 
 // External debug/test control. The render loop consumes a pending teleport
 // once; used by automated boundary/spawn verification.
-export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false };
+export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false, safetyReports: [] };
 
 // Opt-in CPU frame profiler (?profile=1). Samples land in preallocated
 // ring-free typed arrays: enabling it adds three performance.now() calls
@@ -146,7 +150,7 @@ export const MAP_PRESETS = Object.freeze({
   }),
 });
 export const CHUNK_SIZE_M = 1000;
-export const CHUNK_SEGMENTS = 96; // ~10.4m per terrain vertex
+export const CHUNK_SEGMENTS = 64; // 15.6m per terrain vertex (mobile <60k-tri budget)
 
 export function getMapPreset(id) {
   return MAP_PRESETS[id] || MAP_PRESETS.survival;
@@ -260,7 +264,7 @@ function buildRiver(seed, preset) {
   const cellSize = 50;
   const grid = new Map();
   const samples = pts.map(([x, z], i) => {
-    const sample = { x, z, bed: prof[i] - 1.55, water: prof[i] - 0.62 };
+    const sample = { x, z, bed: prof[i] - 2.7, water: prof[i] - 1.05 };
     const key = riverCellKey(Math.floor(x / cellSize), Math.floor(z / cellSize));
     const bucket = grid.get(key);
     if (bucket) bucket.push(sample); else grid.set(key, [sample]);
@@ -305,7 +309,7 @@ function chooseRelay(seed, preset) {
     const x = Math.round(Math.cos(angle) * radius);
     const z = Math.round(Math.sin(angle) * radius);
     if (Math.max(Math.abs(x), Math.abs(z)) > preset.rimStart * 0.82) continue;
-    if (riverInfoInto(x, z, _riverWorldInfo).d < 28) continue; // not in the river
+    if (riverInfoInto(x, z, _riverWorldInfo).d < 48) continue; // not in the widened river valley
     return { x, z };
   }
   return { x: Math.round(preset.half * 0.45), z: Math.round(-preset.half * 0.45) };
@@ -346,8 +350,8 @@ function terrainHeightFromRaw(raw, x, z) {
   h = lerp(relayBase, h, smoothstep(9, 26, dRelay));
   h = lerp(spawnBase, h, smoothstep(7, 20, dSpawn));
   const ri = riverInfoInto(x, z, _riverHeightInfo);
-  if (ri.d < 17) {
-    const t = 1 - smoothstep(4.2, 17, ri.d);
+  if (ri.d < 34) {
+    const t = 1 - smoothstep(9, 34, ri.d);
     h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
   }
   return h;
@@ -515,7 +519,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.workerCore = "OFF";
   }
 
-  const noop = { setPlaying() {}, shoot() {}, teleport() {}, dispose() {} };
+  const noop = { setPlaying() {}, shoot() {}, reload() {}, teleport() {}, dispose() {} };
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
@@ -523,7 +527,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     return noop; // very old device: UI still works over the CSS gradient
   }
   const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, coarse ? 1.75 : 2));
+  const renderDprCap = Math.min(window.devicePixelRatio || 1, coarse ? 1.6 : 2);
+  let renderDpr = Math.min(renderDprCap, coarse ? 1.35 : renderDprCap);
+  let dprSampleMs = 0, dprSamples = 0, dprCooldown = 0;
+  renderer.setPixelRatio(renderDpr);
+  debugStats.dpr = renderDpr;
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.06;
@@ -572,7 +580,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     uSunGlow: { value: 1 },
   };
   const skyDome = new THREE.Mesh(
-    new THREE.SphereGeometry(780, 28, 16),
+    new THREE.SphereGeometry(780, 20, 12),
     new THREE.ShaderMaterial({
       uniforms: skyUniforms,
       side: THREE.BackSide,
@@ -695,18 +703,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const terrainMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
   });
-  // Rust v3 terrain meshes carry aSplat [rock,dry,wet,roughness]. Only
-  // roughness needs shader support (the tint is already in vertex color);
-  // JS-fallback geometries omit the attribute and WebGL's default
-  // (0,0,0,1) keeps roughness at 1.
-  terrainMaterial.onBeforeCompile = (shader) => {
-    shader.vertexShader = "attribute vec4 aSplat;\nvarying vec4 vSplat;\n" + shader.vertexShader
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vSplat = aSplat;");
-    shader.fragmentShader = "varying vec4 vSplat;\n" + shader.fragmentShader
-      .replace("#include <roughnessmap_fragment>",
-        "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(vSplat.w, 0.25, 1.0);");
-  };
-  terrainMaterial.customProgramCacheKey = () => "ironveil-terrain-splat-v1";
+  // Mobile fill-rate pass: terrain shading is plain MeshStandardMaterial
+  // vertex color. Rust still bakes color/AO into the vertex colors, but
+  // no splat attribute or custom roughness shader is uploaded/run.
   const terrainGroup = new THREE.Group();
   terrainGroup.name = "terrain-chunks";
   scene.add(terrainGroup);
@@ -725,7 +724,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     return { minX, maxX: minX + CHUNK_SIZE_M, minZ, maxZ: minZ + CHUNK_SIZE_M, cx: minX + CHUNK_SIZE_M / 2, cz: minZ + CHUNK_SIZE_M / 2 };
   }
-  const LOD_SEGMENTS = [96, 96, 48, 24]; // by Chebyshev ring from camera chunk
+  const LOD_SEGMENTS = [64, 48, 28, 14]; // by Chebyshev ring; tuned for <60k visible tris on mobile
   const chunkJobs = new Map(); // key -> build job
   const chunkQueue = []; // job keys, best score first
   const bvhQueue = []; // finished meshes awaiting an idle-frame BVH build
@@ -815,7 +814,6 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     geo.setAttribute("position", new THREE.BufferAttribute(rustMesh.positions, 3));
     geo.setAttribute("normal", new THREE.BufferAttribute(rustMesh.normals, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(rustMesh.colors, 3));
-    geo.setAttribute("aSplat", new THREE.BufferAttribute(rustMesh.splat, 4));
     geo.setIndex(new THREE.BufferAttribute(rustMesh.indices, 1));
     job.geo.dispose();
     job.geo = geo;
@@ -888,8 +886,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       job.stage = "colors";
       job.i = 0;
     }
-    // Rust v3 can now finish the whole mesh (positions/normals/colors/
-    // splat/indices) from the final-height grid. If it is unavailable,
+    // Rust can finish the whole mesh (positions/normals/vertex-colors/
+    // indices) from the final-height grid. If it is unavailable,
     // the original JS color loop below remains the exact fallback.
     if (!job.rustTried) {
       job.rustTried = true;
@@ -997,7 +995,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (mesh) {
           mesh.visible = d <= 340;
           if (mesh.visible) visible++;
-          if (mesh.userData.seg >= 96) l96++; else if (mesh.userData.seg >= 48) l48++; else l24++;
+          if (mesh.userData.seg >= 64) l96++; else if (mesh.userData.seg >= 28) l48++; else l24++;
         }
       }
     }
@@ -1020,7 +1018,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // ----- river water ribbon + plank bridge on the spawn->relay line -----
   const waterUniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
-    { uTime: { value: 0 }, uDay: { value: 1 } },
+    {
+      uTime: { value: 0 }, uDay: { value: 1 },
+      uSunColor: { value: new THREE.Color(0xfff2d8) },
+      uHorizon: { value: new THREE.Color(0xb7c8ae) },
+    },
   ]);
   {
     const pts = RIVER.samples;
@@ -1037,7 +1039,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       tx /= tl; tz /= tl;
       if (i > 0) distAcc += Math.hypot(p.x - pp.x, p.z - pp.z);
       const taper = Math.min(1, Math.min(i, pts.length - 1 - i) / 8 + 0.25);
-      const hw = 3.4 * taper;
+      const hw = 8.6 * taper;
       const sx = -tz * hw, sz = tx * hw;
       positions.set([p.x - sx, p.water, p.z - sz, p.x + sx, p.water, p.z + sz], i * 6);
       uvs.set([0, distAcc / 9, 1, distAcc / 9], i * 4);
@@ -1063,7 +1065,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         void main() {
           vUv = uv;
           vec3 p = position;
-          p.y += sin(p.x * 0.55 + uTime * 1.9) * cos(p.z * 0.5 + uTime * 1.35) * 0.045;
+          p.y += sin(uv.y * 16.0 - uTime * 1.5) * 0.035;
           vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           #include <fog_vertex>
@@ -1071,16 +1073,18 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       fragmentShader: `
         uniform float uTime;
         uniform float uDay;
+        uniform vec3 uSunColor;
+        uniform vec3 uHorizon;
         varying vec2 vUv;
         #include <fog_pars_fragment>
         void main() {
-          float flow = sin(vUv.y * 46.0 - uTime * 2.4 + sin(vUv.x * 14.0 + uTime) * 0.8) * 0.5 + 0.5;
-          float sparkle = pow(flow, 7.0);
-          float edge = smoothstep(0.0, 0.16, vUv.x) * smoothstep(1.0, 0.84, vUv.x);
-          vec3 dayCol = mix(vec3(0.05, 0.19, 0.29), vec3(0.21, 0.44, 0.55), 0.25 + sparkle * 0.75);
-          vec3 nightCol = mix(vec3(0.012, 0.05, 0.09), vec3(0.06, 0.14, 0.21), sparkle * 0.7);
-          vec3 col = mix(nightCol, dayCol, uDay);
-          gl_FragColor = vec4(col, 0.52 + edge * 0.36);
+          float flow = sin(vUv.y * 34.0 - uTime * 2.0) * 0.5 + 0.5;
+          float glint = pow(flow, 10.0) * uDay;
+          float edge = smoothstep(0.0, 0.14, vUv.x) * smoothstep(1.0, 0.86, vUv.x);
+          vec3 deep = mix(vec3(0.012, 0.05, 0.09), vec3(0.04, 0.16, 0.24), uDay);
+          vec3 col = mix(deep, uHorizon * 0.55, 0.38 * uDay);
+          col += uSunColor * glint * 0.55;
+          gl_FragColor = vec4(col, 0.58 + edge * 0.30);
           #include <fog_fragment>
         }`,
     });
@@ -1106,14 +1110,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const wood = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
     const group = new THREE.Group();
     const rotY = Math.atan2(axis.x, axis.y);
-    for (let s = -5; s <= 5; s++) {
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.16, 0.94), wood);
-      plank.position.set(c.x + axis.x * s, deckY + 0.14 * (1 - (s / 5.6) * (s / 5.6)), c.z + axis.y * s);
+    for (let s = -12; s <= 12; s += 2) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.16, 1.8), wood);
+      plank.position.set(c.x + axis.x * s, deckY + 0.32 * (1 - (s / 13.5) * (s / 13.5)), c.z + axis.y * s);
       plank.rotation.y = rotY;
       group.add(plank);
     }
     for (const side of [-1, 1]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 11.4), wood);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 25.5), wood);
       rail.position.set(c.x - axis.y * side * 1.45, deckY + 0.85, c.z + axis.x * side * 1.45);
       rail.rotation.y = rotY;
       group.add(rail);
@@ -1126,7 +1130,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const dx = x - bridge.cx, dz = z - bridge.cz;
     const along = dx * bridge.ax + dz * bridge.az;
     const across = dx * bridge.px + dz * bridge.pz;
-    if (Math.abs(along) < 5.8 && Math.abs(across) < 1.7) y = Math.max(y, bridge.deckY);
+    if (Math.abs(along) < 13.2 && Math.abs(across) < 1.8) y = Math.max(y, bridge.deckY);
     return y;
   }
   setRustGroundProvider(groundHeightWithBridge);
@@ -1149,7 +1153,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const x = (rand() * 2 - 1) * scatterLimit;
       const z = (rand() * 2 - 1) * scatterLimit;
       if (!clearOf(x, z, 15)) continue;
-      if (riverInfoInto(x, z, _riverWorldInfo).d < 5.5) continue; // not in the water
+      if (riverInfoInto(x, z, _riverWorldInfo).d < 12.5) continue; // not in the widened river
       placer(x, terrainHeight(x, z), z, placed);
       placed++;
     }
@@ -1187,18 +1191,74 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   });
   scene.add(rocks);
 
-  const trunks = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.13, 0.22, 1.7, 5),
-    new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 1 }),
-    TREE_N
-  );
-  const canopyMaterial = new THREE.MeshStandardMaterial({ color: 0x1b2a17, roughness: 1, flatShading: true });
-  const canopies = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(1.55, 5, 6),
-    canopyMaterial,
-    TREE_N
-  );
-  const treeBlobShadows = new THREE.InstancedMesh(blobShadowGeometry, blobShadowMaterial, TREE_N);
+  // ---- Myanmar trees: five unified whole-tree archetypes ----
+  // Every archetype is ONE merged, vertex-colored geometry per LOD band.
+  // Trunk and canopy can therefore never be culled independently (the old
+  // split trunk/canopy submission produced floating leaves beyond 60m).
+  // Bands: full detail <=45m, low-poly <=95m, merged trunk+silhouette
+  // imposter at 95-150m (past the requested 100m transition zone).
+  const canopyMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
+  const _partColor = new THREE.Color();
+  function coloredPart(geo, hex) {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    _partColor.setHex(hex);
+    const n = g.attributes.position.count;
+    const colors = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { colors[i * 3] = _partColor.r; colors[i * 3 + 1] = _partColor.g; colors[i * 3 + 2] = _partColor.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    if (g !== geo) geo.dispose();
+    return g;
+  }
+  function partCyl(rt, rb, h, seg, x, y, z, hex, rz = 0, rx = 0) {
+    const g = new THREE.CylinderGeometry(rt, rb, h, seg);
+    if (rz) g.rotateZ(rz); if (rx) g.rotateX(rx); g.translate(x, y, z);
+    return coloredPart(g, hex);
+  }
+  function partBlob(r, sx, sy, sz, x, y, z, hex) {
+    const g = new THREE.IcosahedronGeometry(r, 0); g.scale(sx, sy, sz); g.translate(x, y, z);
+    return coloredPart(g, hex);
+  }
+  function partCone(r, h, seg, x, y, z, hex) {
+    const g = new THREE.ConeGeometry(r, h, seg); g.translate(x, y, z);
+    return coloredPart(g, hex);
+  }
+  function partFrond(angle, tilt, len, x, y, z, hex) {
+    const g = new THREE.ConeGeometry(0.44, len, 4);
+    g.translate(0, len / 2, 0); g.rotateZ(tilt); g.rotateY(angle); g.translate(x, y, z);
+    return coloredPart(g, hex);
+  }
+  function fronds(count, len, x, y, z, hex) {
+    const out = [];
+    for (let i = 0; i < count; i++) out.push(partFrond((i / count) * Math.PI * 2, 0.94 + (i % 2) * 0.24, len, x, y, z, hex));
+    return out;
+  }
+  const BARK = 0x3a2a1a, BARK_DARK = 0x2a1d12, PALM_BARK = 0x6a5136;
+  // Species order: teak, padauk, rain tree, banyan, toddy/coconut palm.
+  const treeGeometries = [
+    [mergeGeometries([partCyl(0.15,0.26,3.6,6,0,1.8,0,BARK),partCyl(0.07,0.10,1.4,5,0.48,3.45,0,BARK,-0.55),partCyl(0.07,0.10,1.3,5,-0.44,3.5,0.1,BARK,0.55),partBlob(1.5,1.02,1.28,1.02,0,4.65,0,0x2d5a26),partBlob(1.0,1,1.05,1,0.42,5.65,-0.15,0x3b6d30)],false),
+     mergeGeometries([partCyl(0.16,0.27,3.5,5,0,1.75,0,BARK),partBlob(1.6,1,1.2,1,0,4.8,0,0x2d5a26)],false),
+     mergeGeometries([partCyl(0.14,0.22,3.4,4,0,1.7,0,BARK_DARK),partCone(1.55,3.4,6,0,4.9,0,0x24491f)],false)],
+    [mergeGeometries([partCyl(0.17,0.30,3.0,6,0,1.5,0,0x4a3020),partCyl(0.08,0.11,1.5,5,0.62,3.05,0,0x4a3020,-0.65),partCyl(0.08,0.11,1.4,5,-0.58,3.1,-0.08,0x4a3020,0.65),partBlob(1.55,1.22,0.78,1.10,0,4.25,0,0x35632c),partBlob(1.05,1.1,0.72,1,-1.15,3.85,0.35,0x2d5727),partBlob(1.0,1.05,0.7,0.95,1.08,3.95,-0.38,0x416f34)],false),
+     mergeGeometries([partCyl(0.18,0.31,2.9,5,0,1.45,0,0x4a3020),partBlob(1.65,1.22,0.72,1.08,0,4.15,0,0x35632c)],false),
+     mergeGeometries([partCyl(0.16,0.26,2.8,4,0,1.4,0,0x3a2518),partBlob(1.6,1.2,0.68,1.05,0,4.05,0,0x2b5025)],false)],
+    [mergeGeometries([partCyl(0.20,0.34,2.8,6,0,1.4,0,BARK),partCyl(0.08,0.12,2.2,5,1.05,3.3,0,BARK,-0.85),partCyl(0.08,0.12,2.1,5,-1.0,3.35,0.12,BARK,0.85),partCyl(0.07,0.10,1.8,5,0.1,3.45,0.9,BARK,0,0.8),partBlob(1.82,1.34,0.48,1.34,0,4.8,0,0x406f35),partBlob(1.32,1.25,0.42,1.18,0.25,5.12,-0.2,0x4a7a3b)],false),
+     mergeGeometries([partCyl(0.20,0.34,2.8,5,0,1.4,0,BARK),partBlob(1.9,1.32,0.48,1.32,0,4.75,0,0x406f35)],false),
+     mergeGeometries([partCyl(0.18,0.28,2.7,4,0,1.35,0,BARK_DARK),partCone(2.45,1.15,7,0,4.45,0,0x31582b)],false)],
+    [mergeGeometries([partCyl(0.40,0.56,2.7,7,0,1.35,0,0x33251b),partCyl(0.045,0.065,2.3,4,1.35,1.15,0.2,0x33251b,-0.12),partCyl(0.045,0.065,2.3,4,-1.25,1.15,-0.35,0x33251b,0.10),partCyl(0.045,0.065,2.2,4,0.25,1.1,1.3,0x33251b,0,0.11),partCyl(0.045,0.065,2.2,4,-0.3,1.1,-1.3,0x33251b,0,-0.10),partBlob(1.75,1.25,0.68,1.16,0,4.25,0,0x1f4522),partBlob(1.25,1.15,0.62,1,-1.45,3.85,0.4,0x274f27),partBlob(1.2,1.1,0.6,1,1.45,3.9,-0.35,0x2a552b),partBlob(1.05,1,0.58,1,0.2,4.75,0.75,0x24491f)],false),
+     mergeGeometries([partCyl(0.42,0.58,2.6,6,0,1.3,0,0x33251b),partBlob(1.85,1.24,0.68,1.14,0,4.15,0,0x1f4522)],false),
+     mergeGeometries([partCyl(0.38,0.50,2.5,5,0,1.25,0,0x291c14),partBlob(1.8,1.22,0.64,1.1,0,4.0,0,0x1d3d1e)],false)],
+    [mergeGeometries([partCyl(0.15,0.21,2.0,6,0,1.0,0,PALM_BARK,0.07),partCyl(0.13,0.17,2.0,6,0.28,2.85,0,PALM_BARK,0.17),partCyl(0.11,0.14,1.8,6,0.68,4.45,0,PALM_BARK,0.28),partBlob(0.20,1,1,1,0.82,5.18,0.12,0x6c7a32),partBlob(0.18,1,1,1,1.02,5.12,-0.12,0x777f35),...fronds(7,2.6,0.95,5.35,0,0x477a36)],false),
+     mergeGeometries([partCyl(0.13,0.20,5.1,5,0.35,2.55,0,PALM_BARK,0.16),...fronds(5,2.35,0.82,5.15,0,0x477a36)],false),
+     mergeGeometries([partCyl(0.12,0.18,5.0,4,0.32,2.5,0,0x54402a,0.16),...fronds(4,2.15,0.78,5.05,0,0x3a6830)],false)],
+  ];
+  const TREE_LOD_CAP = 384;
+  const treeLodCounts = treeGeometries.map(() => new Int32Array(3));
+  const treeLodMeshes = treeGeometries.map((typeGeos) => typeGeos.map((geo) => {
+    const mesh = new THREE.InstancedMesh(geo, canopyMaterial, TREE_LOD_CAP);
+    mesh.count = 0; scene.add(mesh); return mesh;
+  }));
+  const treeBlobShadows = new THREE.InstancedMesh(blobShadowGeometry, blobShadowMaterial, 768);
+  treeBlobShadows.count = 0;
   treeBlobShadows.renderOrder = 1;
   // Local jungle-floor tufts: three tapered triangles per instance. A
   // deterministic world-space grid around the camera keeps a dense 60m
@@ -1229,35 +1289,29 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const grassTufts = new THREE.InstancedMesh(grassGeometry, grassMaterial, 900);
   scatter(TREE_N, (x, y, z, i) => {
     const s = 0.8 + rand() * 1.15, rot = rand() * Math.PI * 2;
-    treePlacements.push({ x, y, z, s, rot });
-    dummy.rotation.set(0, rot, 0);
-    dummy.position.set(x, y + 0.8 * s, z); dummy.scale.setScalar(s); dummy.updateMatrix();
-    trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(x, y + (1.7 + 2.1) * s, z); dummy.updateMatrix();
-    canopies.setMatrixAt(i, dummy.matrix);
+    treePlacements.push({ x, y, z, s, rot, type: i % 5 });
   });
-  scene.add(trunks, canopies, treeBlobShadows, grassTufts);
-  for (const mesh of [rocks, trunks, canopies, treeBlobShadows, grassTufts]) {
+  scene.add(treeBlobShadows, grassTufts);
+  for (const mesh of [rocks, treeBlobShadows, grassTufts, ...treeLodMeshes.flat()]) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false; // contents are per-instance distance-compacted below
   }
 
-  // ----- combat distance bands: 60m detail / 150m silhouette / culled -----
-  // The macro terrain, river and relay remain as navigation landmarks (they
-  // are only a few draw calls). Scatter detail uses:
-  //   <= 60m: rocks + trunks + canopies
-  //   <=150m: canopies only (cover silhouettes at engagement range)
-  //    >150m: no scatter instances submitted
-  // Compaction reuses the existing three InstancedMeshes, so culling does
-  // not change the draw-call count; it cuts vertex/instance processing.
-  const CULL_NEAR_M = 60;
+  // ----- combat distance bands: 35m ground detail / unified tree LOD -----
+  // Rocks, pebbles and grass are submitted inside 35m only. Trees always
+  // submit one whole merged mesh: full <=45m, low-poly <=95m, and a merged
+  // trunk+silhouette imposter from 95m to the 150m cull. Nothing can leave
+  // a canopy floating after its trunk leaves a band.
+  const CULL_NEAR_M = 35;
   const CULL_MID_M = 150;
   const CULL_NEAR2 = CULL_NEAR_M * CULL_NEAR_M;
   const CULL_MID2 = CULL_MID_M * CULL_MID_M;
   let scatterCullAcc = Infinity;
   function refreshScatterCulling() {
     const cx = camera.position.x, cz = camera.position.z;
-    let rockN = 0, trunkN = 0, canopyN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
+    let rockN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
+    let treeFullN = 0, treeMidN = 0, treeFarN = 0;
+    for (let ti = 0; ti < treeLodCounts.length; ti++) treeLodCounts[ti].fill(0);
 
     for (const p of rockPlacements) {
       const dx = p.x - cx, dz = p.z - cz;
@@ -1275,7 +1329,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       for (let ri = 0; ri < rustPebbles.length && rockN < ROCK_N; ri += 10) {
         const x = rustPebbles[ri + 1], z = rustPebbles[ri + 2];
         const dx = x - cx, dz = z - cz;
-        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 4.8) continue;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
         dummy.position.set(x, terrainHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
         dummy.rotation.set(rustPebbles[ri + 6], rustPebbles[ri + 7], rustPebbles[ri + 8]);
         dummy.scale.set(rustPebbles[ri + 3], rustPebbles[ri + 4], rustPebbles[ri + 5]);
@@ -1297,7 +1351,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const x = (gx + 0.18 + hash2(gx * 7 - 31, gz * 11 + 71) * 0.64) * cell;
           const z = (gz + 0.18 + hash2(gx * 13 + 97, gz * 5 - 53) * 0.64) * cell;
           const dx = x - cx, dz = z - cz;
-          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 4.8) continue;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
           const s = 0.13 + hash2(gx * 29 + 3, gz * 31 + 9) * 0.34;
           dummy.position.set(x, terrainHeight(x, z) + s * 0.22, z);
           dummy.rotation.set(hash2(gx, gz) * 3, hash2(gx + 9, gz - 4) * 3, hash2(gx - 6, gz + 8) * 3);
@@ -1316,7 +1370,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       for (let ri = 0; ri < rustGrass.length && grassN < 900; ri += 10) {
         const x = rustGrass[ri + 1], z = rustGrass[ri + 2];
         const dx = x - cx, dz = z - cz;
-        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 4.7) continue;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
         dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
         dummy.rotation.set(0, rustGrass[ri + 7], 0);
         dummy.scale.setScalar(rustGrass[ri + 3]);
@@ -1336,7 +1390,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const x = (gx + 0.2 + hash2(gx * 17 + 19, gz * 19 - 23) * 0.6) * cell;
           const z = (gz + 0.2 + hash2(gx * 23 - 41, gz * 29 + 13) * 0.6) * cell;
           const dx = x - cx, dz = z - cz;
-          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 4.7) continue;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
           dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
           dummy.rotation.set(0, hash2(gx * 43, gz * 47) * Math.PI * 2, 0);
           dummy.scale.setScalar(0.75 + hash2(gx * 53 + 7, gz * 59 - 5) * 0.85);
@@ -1351,40 +1405,50 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const dx = p.x - cx, dz = p.z - cz;
       const d2 = dx * dx + dz * dz;
       if (d2 > CULL_MID2) { farTrees++; continue; }
-      dummy.rotation.set(0, p.rot, 0);
-      dummy.scale.setScalar(p.s);
-      dummy.position.set(p.x, p.y + 3.8 * p.s, p.z);
-      dummy.updateMatrix();
-      canopies.setMatrixAt(canopyN++, dummy.matrix);
-      dummy.position.set(p.x, p.y + 0.045, p.z);
-      dummy.scale.setScalar(2.15 * p.s);
-      dummy.updateMatrix();
-      treeBlobShadows.setMatrixAt(blobN++, dummy.matrix);
-      if (d2 <= CULL_NEAR2) {
-        dummy.position.set(p.x, p.y + 0.8 * p.s, p.z);
+      const band = d2 <= 2025 ? 0 : (d2 <= 9025 ? 1 : 2); // 45m / 95m squared
+      const type = p.type || 0;
+      const slot = treeLodCounts[type][band];
+      if (slot < TREE_LOD_CAP) {
+        dummy.rotation.set(0, p.rot, 0);
+        dummy.scale.setScalar(p.s);
+        dummy.position.set(p.x, p.y - 0.08, p.z);
         dummy.updateMatrix();
-        trunks.setMatrixAt(trunkN++, dummy.matrix);
+        treeLodMeshes[type][band].setMatrixAt(slot, dummy.matrix);
+        treeLodCounts[type][band] = slot + 1;
+        if (band === 0) treeFullN++; else if (band === 1) treeMidN++; else treeFarN++;
+      }
+      if (band < 2 && blobN < 768) {
+        dummy.rotation.set(0, p.rot, 0);
+        dummy.position.set(p.x, p.y + 0.045, p.z);
+        dummy.scale.setScalar(2.3 * p.s);
+        dummy.updateMatrix();
+        treeBlobShadows.setMatrixAt(blobN++, dummy.matrix);
       }
     }
 
     rocks.count = rockN;
-    trunks.count = trunkN;
-    canopies.count = canopyN;
     treeBlobShadows.count = blobN;
     grassTufts.count = grassN;
     rocks.instanceMatrix.needsUpdate = true;
-    trunks.instanceMatrix.needsUpdate = true;
-    canopies.instanceMatrix.needsUpdate = true;
     treeBlobShadows.instanceMatrix.needsUpdate = true;
     grassTufts.instanceMatrix.needsUpdate = true;
+    for (let ti = 0; ti < treeLodMeshes.length; ti++) {
+      for (let bi = 0; bi < 3; bi++) {
+        treeLodMeshes[ti][bi].count = treeLodCounts[ti][bi];
+        treeLodMeshes[ti][bi].instanceMatrix.needsUpdate = true;
+      }
+    }
 
     // The relay point light has a 90m radius; don't include it in material
     // lighting once the objective is outside the 150m combat band.
     const rdx = WORLD.relay.x - cx, rdz = WORLD.relay.z - cz;
     beaconLight.visible = rdx * rdx + rdz * rdz <= CULL_MID2;
 
-    debugStats.cullNear = rockN + trunkN;
-    debugStats.cullMid = canopyN;
+    debugStats.cullNear = rockN + treeFullN;
+    debugStats.cullMid = treeMidN + treeFarN;
+    debugStats.treeLodFull = treeFullN;
+    debugStats.treeLodMid = treeMidN;
+    debugStats.treeLodFar = treeFarN;
     debugStats.grass = grassN;
     debugStats.pebbles = pebbleN;
     debugStats.blobShadows = blobN;
@@ -1513,6 +1577,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   // ----- weapon viewmodel -----
   const gun = new THREE.Group();
+  let gunMagazine = null;
   {
     // Refined stylized low-poly tactical rifle: tapered receiver and
     // handguard prisms, segmented Picatinny rail, detailed optic,
@@ -1523,7 +1588,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const gm2 = new THREE.MeshStandardMaterial({ color: 0x5d7048, roughness: 0.74, metalness: 0.12, emissive: 0x14200e, flatShading: true });
     const gm3 = new THREE.MeshStandardMaterial({ color: 0xa28259, roughness: 0.55, metalness: 0.3, emissive: 0x201708, flatShading: true });
     const gm4 = new THREE.MeshStandardMaterial({ color: 0x1a201a, roughness: 0.92, metalness: 0.02, emissive: 0x050605, flatShading: true });
-    const dark = [], polymer = [], accent = [], rubber = [];
+    const dark = [], polymer = [], accent = [], rubber = [], magazinePolymer = [], magazineAccent = [];
     const finish = (list, g) => list.push(g.index ? g.toNonIndexed() : g);
     const box = (list, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const g = new THREE.BoxGeometry(w, h, d);
@@ -1622,14 +1687,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     box(rubber, 0.057, 0.02, 0.082, 0, -0.22, 0.162, 0.35); // grip base
     box(polymer, 0.045, 0.135, 0.055, 0, -0.105, -0.39, -0.18); // angled foregrip
     box(rubber, 0.047, 0.018, 0.057, 0, -0.168, -0.378, -0.18);
-    // Three-segment curved magazine + ribs + baseplate.
-    box(polymer, 0.054, 0.15, 0.09, 0, -0.145, -0.07, 0.16);
-    box(polymer, 0.051, 0.14, 0.086, 0, -0.235, -0.045, 0.33);
-    box(polymer, 0.048, 0.125, 0.082, 0, -0.31, -0.01, 0.5);
-    box(accent, 0.056, 0.013, 0.02, 0, -0.18, -0.118, 0.2);
-    box(accent, 0.053, 0.013, 0.02, 0, -0.255, -0.095, 0.35);
-    box(accent, 0.05, 0.013, 0.02, 0, -0.322, -0.062, 0.5);
-    box(accent, 0.056, 0.026, 0.092, 0, -0.362, 0.012, 0.5);
+    // Three-segment curved magazine + ribs + baseplate. Kept as its own
+    // two-material group (same merged geometry technique) so reload can
+    // physically drop and re-seat it without extra per-frame allocations.
+    box(magazinePolymer, 0.054, 0.15, 0.09, 0, -0.145, -0.07, 0.16);
+    box(magazinePolymer, 0.051, 0.14, 0.086, 0, -0.235, -0.045, 0.33);
+    box(magazinePolymer, 0.048, 0.125, 0.082, 0, -0.31, -0.01, 0.5);
+    box(magazineAccent, 0.056, 0.013, 0.02, 0, -0.18, -0.118, 0.2);
+    box(magazineAccent, 0.053, 0.013, 0.02, 0, -0.255, -0.095, 0.35);
+    box(magazineAccent, 0.05, 0.013, 0.02, 0, -0.322, -0.062, 0.5);
+    box(magazineAccent, 0.056, 0.026, 0.092, 0, -0.362, 0.012, 0.5);
     // Handguard side panels + M-LOK style slots.
     prism(polymer, 0.012, 0.052, 0.012, 0.042, 0.28, -0.041, -0.005, -0.39);
     prism(polymer, 0.012, 0.052, 0.012, 0.042, 0.28, 0.041, -0.005, -0.39);
@@ -1649,6 +1716,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     gun.add(new THREE.Mesh(mergeGeometries(polymer, false), gm2));
     gun.add(new THREE.Mesh(mergeGeometries(accent, false), gm3));
     gun.add(new THREE.Mesh(mergeGeometries(rubber, false), gm4));
+    gunMagazine = new THREE.Group();
+    gunMagazine.add(new THREE.Mesh(mergeGeometries(magazinePolymer, false), gm2));
+    gunMagazine.add(new THREE.Mesh(mergeGeometries(magazineAccent, false), gm3));
+    gun.add(gunMagazine);
     const lens = new THREE.Mesh(
       new THREE.CircleGeometry(0.019, 18),
       new THREE.MeshStandardMaterial({ color: 0x102f38, roughness: 0.16, metalness: 0.1, emissive: 0x1d5d6b, emissiveIntensity: 0.55 })
@@ -1689,6 +1760,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     pitch: -0.03,
     bobPhase: 0,
     recoil: 0,
+    stamina: 100,
+    sprintHold: 0,
+    sprinting: false,
+    reloadT: 0,
+    reloadDur: 1.55,
+    safetyBadFrames: 0,
     lastStep: 0,
     wading: false,
   };
@@ -1774,6 +1851,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const _muzzleWorld = new THREE.Vector3(), _far = new THREE.Vector3();
   const _center2 = new THREE.Vector2(0, 0);
   const _shootTargets = [];
+  function reload() {
+    if (!playing || player.reloadT > 0) return;
+    player.reloadT = player.reloadDur;
+  }
   function shoot() {
     if (!playing) return;
     player.recoil = 1;
@@ -1852,8 +1933,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function updatePlayer(dt) {
     // look: drag deltas + aim-stick rate
     const prevYaw = player.yaw, prevPitch = player.pitch;
-    player.yaw -= inputState.lookDX * 0.0026 + inputState.aimX * 2.5 * dt;
-    player.pitch -= inputState.lookDY * 0.0026 + inputState.aimY * 1.9 * dt;
+    const lookScale = clamp(inputState.sensitivity || 0.55, 0.15, 1.5);
+    player.yaw -= inputState.lookDX * 0.0024 * lookScale + inputState.aimX * 1.55 * lookScale * dt;
+    player.pitch -= inputState.lookDY * 0.0024 * lookScale + inputState.aimY * 1.15 * lookScale * dt;
     player.pitch = clamp(player.pitch, -1.35, 1.35);
     inputState.lookDX = 0; inputState.lookDY = 0;
     // Viewmodel spring: while the camera is turning, the rifle's target
@@ -1884,13 +1966,29 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (len > 1) { mx /= len; mz /= len; }
     const riNow = riverInfoInto(player.pos.x, player.pos.z, _riverPlayerInfo);
     const terrainNow = terrainHeight(player.pos.x, player.pos.z);
-    const inWaterNow = riNow.d < 4.4 && terrainNow < riNow.water - 0.12;
+    const inWaterNow = riNow.d < 9.2 && terrainNow < riNow.water - 0.12;
     if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
     player.wading = inWaterNow;
     const crouch = k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight");
     player.crouching = crouch;
-    const sprint = !crouch && (k.has("ShiftLeft") || k.has("ShiftRight"));
-    const maxSpeed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1) * (crouch ? 0.45 : 1);
+    const forwardPull = !crouch && !inWaterNow && mz > 0.88 && Math.abs(mx) < 0.45;
+    if (forwardPull) {
+      player.sprintHold += dt;
+      if (player.sprintHold >= 1 && player.stamina > 1) player.sprinting = true;
+    } else {
+      player.sprintHold = 0;
+      player.sprinting = false;
+    }
+    if (player.sprinting) {
+      player.stamina = Math.max(0, player.stamina - dt * 16);
+      if (player.stamina <= 0) player.sprinting = false;
+    } else {
+      player.stamina = Math.min(100, player.stamina + dt * (len > 0.1 ? 7 : 13));
+    }
+    debugStats.stamina = Math.round(player.stamina);
+    debugStats.sprinting = player.sprinting ? 1 : 0;
+    debugStats.sprintHold = Math.round(player.sprintHold * 100) / 100;
+    const maxSpeed = (player.sprinting ? 7.6 : 5.2) * (inWaterNow ? 0.45 : 1) * (crouch ? 0.5 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
     const wasGrounded = physBuf[6] > 0.5;
@@ -1904,22 +2002,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // PUBG-style kinematic step shared field-for-field with Rust ABI v4:
     // control-speed friction, projection-capped acceleration, weak air
     // control, slope gravity/sliding, 0.55m step-up and hard-landing
-    // momentum damping. Top speeds above remain 8.6 / 14.5 m/s.
+    // momentum damping. Analog walk/jog tops out at 5.2 m/s; sprint is
+    // 7.6 m/s and only latches after 1s of near-straight forward input.
     physBuf[8] = dt;
     physBuf[9] = wishX;
     physBuf[10] = wishZ;
     physBuf[11] = maxSpeed;
     physBuf[12] = jumpPressed ? 1 : 0;
-    physBuf[13] = 12 * (1 - 0.3 * mud) * (inWaterNow ? 0.65 : 1);
-    physBuf[14] = 2.2;
-    physBuf[15] = 11 * (1 - 0.45 * mud) * (inWaterNow ? 0.7 : 1);
+    physBuf[13] = 8.5 * (1 - 0.3 * mud) * (inWaterNow ? 0.65 : 1);
+    physBuf[14] = 1.4;
+    physBuf[15] = 8.5 * (1 - 0.45 * mud) * (inWaterNow ? 0.7 : 1);
     physBuf[16] = 1.0;
     physBuf[17] = 0.9;
     physBuf[18] = GRAVITY;
     physBuf[19] = 7.7;
     physBuf[20] = 0.55;
     physBuf[21] = 0.55;
-    physBuf[22] = 0.62;
+    physBuf[22] = 0.74; // ~42deg walkable limit: hills block/slide instead of climb-warping
     physBuf[23] = 0.85;
     const usedRustPhysics = rustPhysicsStep(physBuf);
     if (!usedRustPhysics) stepPhysicsBuffer(physBuf, groundHeightWithBridge);
@@ -1974,7 +2073,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.vy = Math.round(player.vy * 10) / 10;
     debugStats.speed = Math.round(physBuf[31] * 10) / 10;
     const hSpeed = physBuf[31];
-    const moving = clamp(hSpeed / 8, 0, 1) * (player.grounded ? 1 : 0.2);
+    const moving = clamp(hSpeed / 5, 0, 1) * (player.grounded ? 1 : 0.2);
     player.bobPhase += dt * hSpeed * 1.18 * (player.grounded ? 1 : 0.25);
     const stepIdx = Math.floor(player.bobPhase / Math.PI);
     if (moving > 0.15 && stepIdx !== player.lastStep && player.grounded) {
@@ -1998,15 +2097,46 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       camera.rotation.set(player.pitch, player.yaw, -mx * 0.014);
     }
 
-    // Viewmodel: camera-synced walking bob + spring sway + recoil.
+    // Viewmodel: camera-synced walking bob + spring sway + recoil + reload.
     player.recoil = Math.max(0, player.recoil - dt * 7);
     const rk = player.recoil * player.recoil;
+    let reloadDip = 0, reloadTilt = 0, reloadYaw = 0;
+    if (player.reloadT > 0) {
+      player.reloadT = Math.max(0, player.reloadT - dt);
+      const rp = 1 - player.reloadT / player.reloadDur;
+      const env = Math.sin(Math.min(1, rp * 1.08) * Math.PI);
+      reloadDip = env * 0.11;
+      reloadTilt = env * 0.42;
+      reloadYaw = env * 0.20;
+      if (gunMagazine) {
+        let magY = 0, magZ = 0, magRot = 0;
+        if (rp < 0.32) {
+          const q = rp / 0.32;
+          magY = -0.24 * q; magZ = 0.055 * q; magRot = 0.38 * q;
+        } else if (rp < 0.52) {
+          magY = -0.24; magZ = 0.055; magRot = 0.38;
+        } else if (rp < 0.80) {
+          const q = (rp - 0.52) / 0.28;
+          magY = -0.24 * (1 - q); magZ = 0.055 * (1 - q); magRot = 0.38 * (1 - q);
+        }
+        gunMagazine.position.set(0, magY, magZ);
+        gunMagazine.rotation.set(magRot, 0, 0);
+      }
+    } else if (gunMagazine) {
+      gunMagazine.position.set(0, 0, 0);
+      gunMagazine.rotation.set(0, 0, 0);
+    }
+    debugStats.reloadT = Math.round(player.reloadT * 100) / 100;
     gun.position.set(
-      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16,
-      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11,
-      -0.65 + rk * 0.07
+      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16 - reloadYaw * 0.10,
+      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11 - reloadDip,
+      -0.65 + rk * 0.07 + reloadDip * 0.35
     );
-    gun.rotation.set(rk * 0.09 + player.swayPitch * 0.85, player.swayYaw, player.swayYaw * 0.35);
+    gun.rotation.set(
+      rk * 0.09 + player.swayPitch * 0.85 + reloadTilt,
+      player.swayYaw + reloadYaw,
+      player.swayYaw * 0.35 - reloadTilt * 0.45
+    );
     flash.material.opacity = Math.max(0, flash.material.opacity - dt * 16);
   }
 
@@ -2230,15 +2360,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const SEASON_ORDER = ["dry", "cool", "monsoon"];
   const SEASON_PALETTES = {
     dry: {
-      terrain: new THREE.Color(0xd8bd83), canopy: new THREE.Color(0x716b35), grass: new THREE.Color(0x8a8142),
+      terrain: new THREE.Color(0xd8bd83), canopy: new THREE.Color(0xe4d49a), grass: new THREE.Color(0x8a8142),
       weights: [["sunny", 0.60], ["mist", 0.30], ["monsoon", 0.10]],
     },
     cool: {
-      terrain: new THREE.Color(0xffffff), canopy: new THREE.Color(0x1b2a17), grass: new THREE.Color(0x35542a),
+      terrain: new THREE.Color(0xffffff), canopy: new THREE.Color(0xffffff), grass: new THREE.Color(0x35542a),
       weights: [["sunny", 0.50], ["mist", 0.40], ["monsoon", 0.10]],
     },
     monsoon: {
-      terrain: new THREE.Color(0x9fd3a8), canopy: new THREE.Color(0x0e3520), grass: new THREE.Color(0x1f6b32),
+      terrain: new THREE.Color(0x9fd3a8), canopy: new THREE.Color(0xbde8c5), grass: new THREE.Color(0x1f6b32),
       weights: [["monsoon", 0.50], ["mist", 0.40], ["sunny", 0.10]],
     },
   };
@@ -2407,6 +2537,83 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   rainOverlay.visible = false;
   scene.add(rainOverlay);
 
+  let safetyAcc = 0;
+  function recordSafetyReport(code, x, y, z, groundY) {
+    debugStats.safetyReports++;
+    debugStats.safetyLastCode = code;
+    const rustReport = rustSafetyReport(code, x, y, z, groundY, elapsed);
+    debugStats.safetyRustReports = rustReport;
+    const reports = worldControl.safetyReports;
+    reports.push({ code, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, z: Math.round(z * 10) / 10, groundY: Math.round(groundY * 10) / 10, t: Math.round(elapsed * 10) / 10, core: rustCore.ready ? "RUST" : "JS", rustReport });
+    if (reports.length > 24) reports.shift();
+    if (hooks.onSafetyReport) hooks.onSafetyReport(reports[reports.length - 1]);
+  }
+  function isSafeGround(x, z) {
+    const limit = mapPreset.hardClamp - 2;
+    if (!Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > limit || Math.abs(z) > limit) return false;
+    const h = terrainHeight(x, z);
+    const gx = (terrainHeight(x + 1, z) - terrainHeight(x - 1, z)) * 0.5;
+    const gz = (terrainHeight(x, z + 1) - terrainHeight(x, z - 1)) * 0.5;
+    const normalY = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
+    if (normalY < 0.72) return false;
+    const ri = riverInfoInto(x, z, _riverWorldInfo);
+    if (ri.d < 14 && h < ri.water + 0.05) return false;
+    return true;
+  }
+  function findSafePlace(x, z) {
+    if (isSafeGround(x, z)) return { x, z, y: groundHeightWithBridge(x, z) };
+    const radii = [3, 6, 10, 16, 24, 36, 54, 80];
+    for (let r = 0; r < radii.length; r++) {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const sx = clamp(x + Math.cos(ang) * radii[r], -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+        const sz = clamp(z + Math.sin(ang) * radii[r], -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+        if (isSafeGround(sx, sz)) return { x: sx, z: sz, y: groundHeightWithBridge(sx, sz) };
+      }
+    }
+    return { x: WORLD.spawn.x, z: WORLD.spawn.z, y: terrainHeight(WORLD.spawn.x, WORLD.spawn.z) };
+  }
+  function rescuePlayer(code, groundY) {
+    const feetY = physBuf[1];
+    const safe = findSafePlace(player.pos.x, player.pos.z);
+    recordSafetyReport(code, player.pos.x, feetY, player.pos.z, groundY);
+    debugStats.safetyRescues++;
+    player.pos.x = safe.x;
+    player.pos.z = safe.z;
+    player.pos.y = safe.y + player.eyeHeight;
+    player.safetyBadFrames = 0;
+    transition = null;
+    resetPhysics(safe.x, safe.y, safe.z);
+  }
+  function safetySweep(dt) {
+    if (playing) {
+      const feetY = physBuf[1];
+      const groundY = groundHeightWithBridge(player.pos.x, player.pos.z);
+      const bad = !Number.isFinite(feetY) || !Number.isFinite(player.pos.x) || !Number.isFinite(player.pos.z)
+        || feetY < groundY - 0.38 || feetY > groundY + 260;
+      if (bad) {
+        player.safetyBadFrames++;
+        if (player.safetyBadFrames >= 2) rescuePlayer(1, groundY);
+      } else {
+        player.safetyBadFrames = 0;
+      }
+    }
+    safetyAcc += dt;
+    if (safetyAcc < 0.25) return;
+    safetyAcc = 0;
+    for (let i = 0; i < drones.length; i++) {
+      const d = drones[i];
+      if (!d.alive) continue;
+      const gy = terrainHeight(d.group.position.x, d.group.position.z);
+      if (!Number.isFinite(d.group.position.y) || d.group.position.y < gy + 1.0) {
+        recordSafetyReport(2, d.group.position.x, d.group.position.y, d.group.position.z, gy);
+        debugStats.safetyRescues++;
+        d.cx = d.ax; d.cz = d.az; d.vy = 0;
+        d.group.position.set(d.ax, terrainHeight(d.ax, d.az) + d.hoverH, d.az);
+      }
+    }
+  }
+
   function updateClimate(dt) {
     const computedSeason = seasonForMacroDay(macroDays);
     if (computedSeason !== seasonName) setSeason(computedSeason, false);
@@ -2526,6 +2733,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     waterUniforms.uTime.value = elapsed;
     waterUniforms.uDay.value = daylight;
+    if (waterUniforms.uSunColor) waterUniforms.uSunColor.value.copy(skyUniforms.uSunColor.value);
+    if (waterUniforms.uHorizon) waterUniforms.uHorizon.value.copy(_c1);
     rainUniforms.uTime.value = elapsed;
     rainUniforms.uIntensity.value = climate.rain;
     rainUniforms.uAspect.value = camera.aspect || 1;
@@ -2580,6 +2789,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const ringScale = 1 + 0.05 * Math.sin(elapsed * 1.8);
     ring.scale.set(ringScale, ringScale, 1);
     updateDrones(dt, elapsed);
+    safetySweep(dt);
     updateFx(dt);
     updateSky(dt);
     pushHud();
@@ -2619,6 +2829,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       debugStats._last = now;
       debugStats.frameMs = debugStats.frameMs * 0.92 + ft * 0.08;
       debugStats.fps = debugStats.frameMs > 0 ? 1000 / debugStats.frameMs : 0;
+      dprCooldown = Math.max(0, dprCooldown - dt);
+      dprSampleMs += Math.min(ft, 100);
+      dprSamples++;
+      if (dprSamples >= 45 && dprCooldown <= 0) {
+        const avgFrameMs = dprSampleMs / dprSamples;
+        let nextDpr = renderDpr;
+        if (avgFrameMs > 19 && renderDpr > 1) nextDpr = Math.max(1, renderDpr - 0.25);
+        else if (avgFrameMs < 12.5 && renderDpr < renderDprCap) nextDpr = Math.min(renderDprCap, renderDpr + 0.15);
+        if (nextDpr !== renderDpr) {
+          renderDpr = nextDpr;
+          renderer.setPixelRatio(renderDpr);
+          dprCooldown = nextDpr < renderDpr ? 2 : 4;
+        }
+        dprSampleMs = 0;
+        dprSamples = 0;
+      }
+      debugStats.dpr = Math.round(renderDpr * 100) / 100;
       const ri = renderer.info;
       debugStats.calls = ri.render.calls;
       debugStats.tris = ri.render.triangles;
@@ -2657,5 +2884,5 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     renderer.dispose();
   }
 
-  return { setPlaying, shoot, teleport, dispose };
+  return { setPlaying, shoot, reload, teleport, dispose };
 }

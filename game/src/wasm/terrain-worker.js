@@ -73,8 +73,8 @@ function terrainHeightFromRaw(raw, x, z) {
   h = lerp(layout.relayBase, h, smoothstep(9, 26, dRelay));
   h = lerp(layout.spawnBase, h, smoothstep(7, 20, dSpawn));
   const ri = riverInfoInto(x, z, _ri);
-  if (ri.d < 17) {
-    const t = 1 - smoothstep(4.2, 17, ri.d);
+  if (ri.d < 34) {
+    const t = 1 - smoothstep(9, 34, ri.d);
     h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
   }
   return h;
@@ -136,10 +136,10 @@ self.onmessage = async (e) => {
       self.postMessage({
         type: "chunk", id: m.id, ok: true, key: m.key,
         positions: mesh.positions, normals: mesh.normals, colors: mesh.colors,
-        splat: mesh.splat, light: mesh.light, indices: mesh.indices,
+        light: mesh.light, indices: mesh.indices,
       }, [
         mesh.positions.buffer, mesh.normals.buffer, mesh.colors.buffer,
-        mesh.splat.buffer, mesh.light.buffer, mesh.indices.buffer,
+        mesh.light.buffer, mesh.indices.buffer,
       ]);
       return;
     }

@@ -166,7 +166,7 @@
 
       // Interface / loadout state.
       screen: "title",
-      equipped: { head: "raven", torso: "plate3", primary: "kx9", secondary: "vp70", utility: "trauma" },
+      equipped: { head: "raven", torso: "plate3", primary: "kx9", secondary: null, utility: "trauma" },
       faction: FACTION_A,
       defected: false,
       notice: null,
@@ -356,7 +356,8 @@
         ["PROGRAMS", d.programs],
         ["MAP", (MAP_PRESETS[d.mapMode]?.label || d.mapMode) + " " + d.mapSizeM + "M"],
         ["CHUNKS", d.chunksVisible + " VIS / " + d.chunksLoaded + "/" + d.chunksTotal],
-        ["LOD 96/48/24", d.lod96 + "/" + d.lod48 + "/" + d.lod24],
+        ["TERRAIN LOD", d.lod96 + "/" + d.lod48 + "/" + d.lod24],
+        ["TREE LOD F/M/I", (d.treeLodFull || 0) + "/" + (d.treeLodMid || 0) + "/" + (d.treeLodFar || 0)],
         ["CHUNK BUILD", d.chunkBuildMs.toFixed(1) + " MS MAX"],
         ["PHYSICS", (d.physicsCore || "JS") + " KINEMATIC"],
         ["CPU MS", "U " + (d.cpuUpdateMs || 0).toFixed(1) + " R " + (d.cpuRenderMs || 0).toFixed(1) + " T " + (d.cpuFrameMs || 0).toFixed(1)],
@@ -370,15 +371,17 @@
         ["FOG EXP2", d.fogDensity.toFixed(4)],
         ["OUT OF BOUNDS", d.outOfBounds ? "YES -" + d.boundaryDamage + "/S" : "NO"],
         ["SHADOW MAPS", d.shadowMapsFrozen ? "FROZEN/OFF" : "LIVE"],
-        ["CULL <=60M", d.cullNear],
-        ["GROUND <=60M", d.grass + "G " + d.pebbles + "P " + d.blobShadows + "B"],
-        ["CULL <=150M", d.cullMid],
+        ["SCATTER <=35M", d.cullNear],
+        ["GROUND <=35M", d.grass + "G " + d.pebbles + "P " + d.blobShadows + "B"],
+        ["TREES <=150M", d.cullMid],
+        ["SAFETY", "R " + (d.safetyReports || 0) + " RUST " + (d.safetyRustReports || 0) + " RESCUE " + (d.safetyRescues || 0)],
+        ["STAMINA/SPRINT", Math.round(d.stamina || 0) + (d.sprinting ? " SPRINT" : " " + (d.sprintHold || 0).toFixed(2) + "S")],
         ["CULLED >150M", d.cullFar],
         ["DRONES VIS", d.dronesVisible + "/6"],
         ["SIM TIME", d.simSeconds.toFixed(1) + " S"],
         ["TRAVEL", d.travelM.toFixed(0) + " M"],
         ["CANVAS", d.width + "x" + d.height],
-        ["DPR", (window.devicePixelRatio || 1).toFixed(2)],
+        ["DPR", ((d.dpr || window.devicePixelRatio || 1).toFixed(2)) + " ADAPTIVE"],
         ["JS HEAP", heap],
         ["TIME OF DAY", tod],
         ["CAM X/Z", Math.round(d.px) + " / " + Math.round(d.pz)],
@@ -427,6 +430,7 @@
         apiRef.current = api;
         const unsubscribe = gameStore.subscribe((state, prev) => {
           if (state.shots > prev.shots) api.shoot();
+          if (state.ammo > prev.ammo && api.reload) api.reload();
         });
         return () => { unsubscribe(); api.dispose(); apiRef.current = null; };
       }, [mapMode]);
@@ -456,49 +460,52 @@
     const Vitals = React.memo(function Vitals() {
       const health = useGameStore((state) => state.health);
       const maxHealth = useGameStore((state) => state.maxHealth);
+      const torso = useGameStore((state) => state.equipped.torso);
       const heal = useGameStore((state) => state.heal);
+      const staminaFillRef = React.useRef(null);
+      const staminaTextRef = React.useRef(null);
       const ratio = Math.max(0, Math.min(1, health / maxHealth));
-      const critical = ratio <= 0.3;
-      const warning = !critical && ratio <= 0.6;
-      const tone = critical ? "var(--danger)" : warning ? "var(--amber)" : "var(--accent)";
-      const stateLabel = critical ? "CRITICAL" : warning ? "WOUNDED" : "STABLE";
-      const stateClass = critical ? "is-critical" : warning ? "is-warn" : "";
+      const protection = Math.max(0, Math.min(100, (ITEMS[torso]?.stats?.ARMOR) || 0));
+
+      // Stamina is simulated by world.js every frame; paint it directly
+      // to the stripe instead of re-rendering React at 60Hz.
+      useEffect(() => {
+        let raf = 0;
+        let last = -1;
+        const paint = () => {
+          const value = Math.max(0, Math.min(100, Math.round(debugStats.stamina || 0)));
+          if (value !== last) {
+            last = value;
+            if (staminaFillRef.current) staminaFillRef.current.style.width = `${value}%`;
+            if (staminaTextRef.current) staminaTextRef.current.textContent = String(value);
+          }
+          raf = requestAnimationFrame(paint);
+        };
+        paint();
+        return () => cancelAnimationFrame(raf);
+      }, []);
 
       return (
-        <section className="vitals hud-panel" aria-label="Operator vitals">
-          <div className="panel-head">
-            <span>VITALS / OPERATOR</span>
-            <span className="oper">VEX-07</span>
-          </div>
-          <div className="vitals-main">
-            <div className="health-value">
-              <b style={{ color: critical ? tone : undefined }}>{health}</b>
-              <small>/{maxHealth}</small>
+        <section className="vitals-stripes" aria-label="Operator vitals">
+          <div className="vital-row is-health">
+            <span className="vital-label">HP</span>
+            <div className="vital-track" role="progressbar" aria-valuemin="0" aria-valuemax={maxHealth} aria-valuenow={health} aria-label={`Health ${health} of ${maxHealth}`}>
+              <div className="vital-fill" style={{ width: `${ratio * 100}%` }} />
             </div>
-            <span className={`health-state ${stateClass}`}>
-              <i className="live-dot pulse" style={{ background: tone, boxShadow: `0 0 7px ${tone}` }} />
-              {stateLabel}
-            </span>
+            <b>{health}</b>
+            <button className="med-btn" onClick={() => heal(18)} aria-label="Apply trauma kit and restore health">+</button>
           </div>
-          <div
-            className="health-track"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax={maxHealth}
-            aria-valuenow={health}
-            aria-label={`Health ${health} of ${maxHealth}`}
-          >
-            <div className="health-fill" style={{ width: `${ratio * 100}%`, backgroundColor: tone }} />
-            <div className="health-segs" />
+          <div className="vital-row is-stamina">
+            <span className="vital-label">ST</span>
+            <div className="vital-track" aria-hidden="true"><div ref={staminaFillRef} className="vital-fill" style={{ width: "100%" }} /></div>
+            <b ref={staminaTextRef}>100</b>
           </div>
-          <div className="vitals-foot">
-            <span>PLATE III / TRAUMA 01</span>
-            <button className="med-btn" onClick={() => heal(18)} aria-label="Apply trauma kit and restore health">
-              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-                <path d="M6 1.5v9M1.5 6h9" />
-              </svg>
-              <span className="med-label">TRAUMA</span>
-            </button>
+          <div className="vital-row is-armor">
+            <span className="vital-label">AR</span>
+            <div className="vital-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={protection} aria-label={`Protection ${protection} of 100`}>
+              <div className="vital-fill" style={{ width: `${protection}%` }} />
+            </div>
+            <b>{protection}</b>
           </div>
         </section>
       );
@@ -593,26 +600,38 @@
       );
     });
 
-    const AmmoPanel = React.memo(function AmmoPanel() {
+    const WeaponSlots = React.memo(function WeaponSlots() {
+      const primary = useGameStore((state) => state.equipped.primary);
+      const secondary = useGameStore((state) => state.equipped.secondary);
+      const reload = useGameStore((state) => state.reload);
+      const slots = [
+        { key: "1", item: ITEMS[primary], active: true },
+        { key: "2", item: ITEMS[secondary], active: false },
+      ];
       return (
-        <section className="ammo-panel hud-panel" aria-label="Weapon ammunition">
-          <div className="ammo-head">
-            <WeaponLine />
-            <span className="fire-mode">AUTO</span>
-          </div>
-          <div className="ammo-main">
-            <div className="ammo-values">
-              <AmmoMag />
-              <span className="ammo-divider">/</span>
-              <AmmoReserve />
+        <section className="weapon-slots" aria-label="Weapon slots">
+          {slots.map((slot) => slot.item ? (
+            <button
+              key={slot.key}
+              type="button"
+              className={`weapon-slot ${slot.active ? "is-active" : ""}`}
+              onClick={slot.active ? reload : undefined}
+              aria-label={slot.active ? `${slot.item.name}, active weapon. Activate to reload.` : `${slot.item.name}, carried weapon`}
+            >
+              <span className="slot-key">{slot.key}</span>
+              <HudWeaponGlyph />
+              <span className="slot-copy">
+                <b>{slot.item.name}</b>
+                {slot.active ? <small><AmmoMag /> / <AmmoReserve /></small> : <small>CARRIED</small>}
+              </span>
+            </button>
+          ) : (
+            <div key={slot.key} className="weapon-slot is-empty" aria-label={`Weapon slot ${slot.key} empty`}>
+              <span className="slot-key">{slot.key}</span>
+              <HudWeaponGlyph />
+              <span className="slot-copy"><b>EMPTY</b><small>NO WEAPON</small></span>
             </div>
-            <span className="ammo-type">5.56 NATO</span>
-          </div>
-          <AmmoPips />
-          <div className="ammo-foot">
-            <span>MAGAZINE // LIVE</span>
-            <ReloadButton />
-          </div>
+          ))}
         </section>
       );
     });
@@ -745,7 +764,8 @@
           <ObjectiveLabel />
           <div className="hud-bottom">
             <Vitals />
-            <AmmoPanel />
+            <WeaponSlots />
+            <div className="hud-bottom-spacer" aria-hidden="true" />
           </div>
           <div className="hud-hints" aria-hidden="true">
             <span><kbd>WASD</kbd> MOVE</span>
@@ -1788,8 +1808,13 @@
     });
 
     // ============ SETTINGS SYSTEM ============
+    let lookSensitivitySetting = 30; // -> inputState.sensitivity 0.55
+    const applyLookSensitivity = (value) => {
+      lookSensitivitySetting = value;
+      inputState.sensitivity = 0.25 + value * 0.01;
+    };
     const SETTINGS_DEFAULTS = {
-      sensitivity: 38, adsSensitivity: 26, fov: 92, invertY: false, vibration: true,
+      sensitivity: 30, adsSensitivity: 26, fov: 92, invertY: false, vibration: true,
       master: 78, effects: 64, comms: 55, music: 22, voiceActivation: false, muteOnFocus: true,
       quality: "HIGH", brightness: 58, filmGrain: true, motionBlur: false,
       hudOpacity: 86, compassTicks: true, reduceShake: true, uiMotion: true
@@ -1892,10 +1917,14 @@
       const hasStarted = useGameStore((state) => state.hasStarted);
       const notify = useGameStore((state) => state.notify);
       const [tab, setTab] = useState("controls");
-      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS }));
+      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting }));
 
-      const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
+      const update = (key, value) => {
+        if (key === "sensitivity") applyLookSensitivity(value);
+        setSettings((current) => ({ ...current, [key]: value }));
+      };
       const reset = () => {
+        applyLookSensitivity(SETTINGS_DEFAULTS.sensitivity);
         setSettings({ ...SETTINGS_DEFAULTS });
         notify("DEFAULT PROFILE RESTORED // UNSAVED CHANGES CLEARED");
       };
@@ -2144,14 +2173,15 @@
     });
 
     // === [UI: TOUCH_CONTROLS] ===
-    // Floating dual sticks: left half = move, right half = aim, plus a hold-
-    // to-fire button. Stick visuals are driven through refs (no re-render per
-    // pointermove); vectors land in the shared inputState the world reads.
+    // Strictly side-isolated touch: left half can only move, right half can
+    // only aim. A pointer that crosses the screen midline is ended instead
+    // of being allowed to drive the other side. Right-side aiming is direct
+    // drag-look (not a constant-rate stick), matching the lower sensitivity.
     const TouchControls = React.memo(function TouchControls() {
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
-      const moveRef = React.useRef({ id: null, ox: 0, oy: 0 });
-      const aimRef = React.useRef({ id: null, ox: 0, oy: 0 });
+      const moveRef = React.useRef({ id: null, ox: 0, oy: 0, lx: 0, ly: 0 });
+      const aimRef = React.useRef({ id: null, ox: 0, oy: 0, lx: 0, ly: 0 });
       const moveBaseRef = React.useRef(null);
       const moveNubRef = React.useRef(null);
       const aimBaseRef = React.useRef(null);
@@ -2161,6 +2191,10 @@
 
       useEffect(() => () => {
         if (fireTimerRef.current) clearInterval(fireTimerRef.current);
+        inputState.moveX = 0;
+        inputState.moveY = 0;
+        inputState.aimX = 0;
+        inputState.aimY = 0;
       }, []);
 
       if (!hasStarted || isMenuOpen) return null;
@@ -2179,37 +2213,48 @@
         if (base) base.style.display = "none";
         if (nub) nub.style.display = "none";
       };
-      const stickHandlers = (stick, baseRef, nubRef, apply) => ({
-        onPointerDown: (event) => {
-          if (event.pointerType === "mouse" || stick.id !== null) return;
-          stick.id = event.pointerId;
-          stick.ox = event.clientX;
-          stick.oy = event.clientY;
-          event.currentTarget.setPointerCapture(event.pointerId);
-          place(baseRef.current, nubRef.current, stick.ox, stick.oy, 0, 0);
-        },
-        onPointerMove: (event) => {
-          if (stick.id !== event.pointerId) return;
-          let dx = event.clientX - stick.ox;
-          let dy = event.clientY - stick.oy;
-          const len = Math.hypot(dx, dy);
-          if (len > MAX) { dx = (dx / len) * MAX; dy = (dy / len) * MAX; }
-          place(baseRef.current, nubRef.current, stick.ox, stick.oy, dx, dy);
-          apply(dx / MAX, dy / MAX);
-        },
-        onPointerUp: (event) => {
+      const stickHandlers = (stick, baseRef, nubRef, apply, side) => {
+        const end = (event) => {
           if (stick.id !== event.pointerId) return;
           stick.id = null;
           hide(baseRef.current, nubRef.current);
-          apply(0, 0);
-        },
-        onPointerCancel: (event) => {
-          if (stick.id !== event.pointerId) return;
-          stick.id = null;
-          hide(baseRef.current, nubRef.current);
-          apply(0, 0);
-        },
-      });
+          apply(0, 0, 0, 0);
+        };
+        return {
+          onPointerDown: (event) => {
+            if (event.pointerType === "mouse" || stick.id !== null) return;
+            const mid = window.innerWidth * 0.5;
+            if ((side === "left" && event.clientX >= mid) || (side === "right" && event.clientX < mid)) return;
+            stick.id = event.pointerId;
+            stick.ox = event.clientX;
+            stick.oy = event.clientY;
+            stick.lx = event.clientX;
+            stick.ly = event.clientY;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            place(baseRef.current, nubRef.current, stick.ox, stick.oy, 0, 0);
+          },
+          onPointerMove: (event) => {
+            if (stick.id !== event.pointerId) return;
+            const mid = window.innerWidth * 0.5;
+            if ((side === "left" && event.clientX >= mid) || (side === "right" && event.clientX < mid)) {
+              end(event);
+              return;
+            }
+            const stepX = event.clientX - stick.lx;
+            const stepY = event.clientY - stick.ly;
+            stick.lx = event.clientX;
+            stick.ly = event.clientY;
+            let dx = event.clientX - stick.ox;
+            let dy = event.clientY - stick.oy;
+            const len = Math.hypot(dx, dy);
+            if (len > MAX) { dx = (dx / len) * MAX; dy = (dy / len) * MAX; }
+            place(baseRef.current, nubRef.current, stick.ox, stick.oy, dx, dy);
+            apply(dx / MAX, dy / MAX, stepX, stepY);
+          },
+          onPointerUp: end,
+          onPointerCancel: end,
+        };
+      };
 
       const stopFire = () => {
         if (fireTimerRef.current) {
@@ -2232,16 +2277,18 @@
             {...stickHandlers(moveRef.current, moveBaseRef, moveNubRef, (x, y) => {
               inputState.moveX = x;
               inputState.moveY = -y;
-            })}
+            }, "left")}
           >
             <span className="stick-hint hint-left"><i />MOVE</span>
           </div>
           <div
             className="stick-zone zone-right"
-            {...stickHandlers(aimRef.current, aimBaseRef, aimNubRef, (x, y) => {
-              inputState.aimX = x;
-              inputState.aimY = y;
-            })}
+            {...stickHandlers(aimRef.current, aimBaseRef, aimNubRef, (x, y, stepX, stepY) => {
+              inputState.aimX = 0;
+              inputState.aimY = 0;
+              inputState.lookDX += stepX || 0;
+              inputState.lookDY += stepY || 0;
+            }, "right")}
           >
             <span className="stick-hint hint-right"><i />AIM</span>
           </div>

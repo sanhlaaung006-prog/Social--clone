@@ -90,7 +90,7 @@ fn raw_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn ironveil_abi_version() -> u32 {
-    4
+    5
 }
 
 /// Raw terrain height before JS-side river carving / objective flattening.
@@ -828,4 +828,41 @@ pub extern "C" fn ironveil_physics_step() -> u32 {
         b[31] = vx.hypot(vz);
     }
     1
+}
+
+// =============================== ABI v5 ===============================
+// Safety-report sink for the anti-underground sweep. Reports are kept in
+// a fixed 32-entry ring (stride 6: code, x, y, z, groundY, simSeconds),
+// so reporting a rescue never allocates in either JS or Rust.
+static mut SAFETY_REPORTS: [f64; 32 * 6] = [0.0; 32 * 6];
+static mut SAFETY_REPORT_COUNT: u32 = 0;
+
+#[no_mangle]
+pub extern "C" fn ironveil_safety_reports_ptr() -> *const f64 {
+    core::ptr::addr_of!(SAFETY_REPORTS) as *const f64
+}
+
+#[no_mangle]
+pub extern "C" fn ironveil_safety_report_count() -> u32 {
+    unsafe { *core::ptr::addr_of!(SAFETY_REPORT_COUNT) }
+}
+
+#[no_mangle]
+pub extern "C" fn ironveil_safety_report(
+    code: u32, x: f64, y: f64, z: f64, ground_y: f64, sim_seconds: f64,
+) -> u32 {
+    unsafe {
+        let count = *core::ptr::addr_of!(SAFETY_REPORT_COUNT);
+        let base = ((count % 32) * 6) as usize;
+        let reports = &mut *core::ptr::addr_of_mut!(SAFETY_REPORTS);
+        reports[base] = code as f64;
+        reports[base + 1] = x;
+        reports[base + 2] = y;
+        reports[base + 3] = z;
+        reports[base + 4] = ground_y;
+        reports[base + 5] = sim_seconds;
+        let next = count.wrapping_add(1);
+        *core::ptr::addr_of_mut!(SAFETY_REPORT_COUNT) = next;
+        next
+    }
 }
