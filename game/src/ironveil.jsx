@@ -329,6 +329,7 @@
         ["CHUNK BUILD", d.chunkBuildMs.toFixed(1) + " MS MAX"],
         ["MOVEMENT", "KINEMATIC"],
         ["TERRAIN CORE", d.terrainCore + (d.terrainCore === "RUST" ? " WASM" : "") + " " + d.rustChunks],
+        ["RUST V3", "MESH " + (d.rustMeshes || 0) + " SCAT " + (d.rustScatterBatches || 0) + " AI " + (d.rustAiBatches || 0) + " SKY " + (d.rustSky ? "LUT" : "JS")],
         ["MOVE", (d.grounded ? "GND" : "AIR") + " " + d.speed.toFixed(1) + " M/S VY " + d.vy.toFixed(1)],
         ["SEASON", d.season + " D" + d.seasonDay + "/10"],
         ["WEATHER", d.weather + " " + Math.round(d.weatherBlend * 100) + "%"],

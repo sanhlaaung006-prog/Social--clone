@@ -12,7 +12,7 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { rustCore, rustRawHeight, rustChunkTerrain } from "./wasm/ironveil-core.js";
+import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample } from "./wasm/ironveil-core.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -50,7 +50,7 @@ export const debugStats = {
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
   grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
   grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
-  terrainCore: "JS", rustChunks: 0,
+  terrainCore: "JS", rustChunks: 0, rustMeshes: 0, rustScatter: 0, rustScatterBatches: 0, rustAiBatches: 0, rustPaths: 0, rustSky: 0,
   season: "COOL", weather: "SUNNY", macroDay: 0, seasonDay: 1,
   seasonBlend: 1, weatherBlend: 1, weatherRollS: 600, weatherRolls: 0,
   aiLosM: 300, dronesEngaged: 0, rain: 0, mud: 0, seasonTint: "ffffff",
@@ -515,6 +515,18 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const terrainMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
   });
+  // Rust v3 terrain meshes carry aSplat [rock,dry,wet,roughness]. Only
+  // roughness needs shader support (the tint is already in vertex color);
+  // JS-fallback geometries omit the attribute and WebGL's default
+  // (0,0,0,1) keeps roughness at 1.
+  terrainMaterial.onBeforeCompile = (shader) => {
+    shader.vertexShader = "attribute vec4 aSplat;\nvarying vec4 vSplat;\n" + shader.vertexShader
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vSplat = aSplat;");
+    shader.fragmentShader = "varying vec4 vSplat;\n" + shader.fragmentShader
+      .replace("#include <roughnessmap_fragment>",
+        "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(vSplat.w, 0.25, 1.0);");
+  };
+  terrainMaterial.customProgramCacheKey = () => "ironveil-terrain-splat-v1";
   const terrainGroup = new THREE.Group();
   terrainGroup.name = "terrain-chunks";
   scene.add(terrainGroup);
@@ -549,7 +561,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const b = chunkBounds(ix, iz);
     const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, score: 1e9 };
+    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, final: null, rustTried: false, score: 1e9 };
     chunkJobs.set(key, job);
     chunkQueue.push(key);
     return job;
@@ -600,21 +612,48 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (job.raw) debugStats.rustChunks++;
       }
       const rawRowW = job.seg + 1;
+      if (!job.final) job.final = new Float64Array(pos.count);
       while (job.i < pos.count) {
         const wx = pos.getX(job.i) + b.cx, wz = pos.getZ(job.i) + b.cz;
-        if (job.raw) {
-          const col = Math.round((wx - b.minX) / (CHUNK_SIZE_M / job.seg));
-          const row = Math.round((wz - b.minZ) / (CHUNK_SIZE_M / job.seg));
-          pos.setY(job.i, terrainHeightFromRaw(job.raw[row * rawRowW + col], wx, wz));
-        } else {
-          pos.setY(job.i, terrainHeight(wx, wz));
-        }
+        const col = Math.round((wx - b.minX) / (CHUNK_SIZE_M / job.seg));
+        const row = Math.round((wz - b.minZ) / (CHUNK_SIZE_M / job.seg));
+        const y = job.raw
+          ? terrainHeightFromRaw(job.raw[row * rawRowW + col], wx, wz)
+          : terrainHeight(wx, wz);
+        job.final[row * rawRowW + col] = y;
+        pos.setY(job.i, y);
         job.i++;
         if ((job.i & 127) === 0 && performance.now() > deadline) return false;
       }
       job.colors = new Float32Array(pos.count * 3);
       job.stage = "colors";
       job.i = 0;
+    }
+    // Rust v3 can now finish the whole mesh (positions/normals/colors/
+    // splat/indices) from the final-height grid. If it is unavailable,
+    // the original JS color loop below remains the exact fallback.
+    if (!job.rustTried) {
+      job.rustTried = true;
+      const rustMesh = job.final ? rustBuildChunkMesh(
+        job.final, NOISE_SEED, b.minX, b.minZ, CHUNK_SIZE_M, job.seg,
+        [_cLow.r, _cLow.g, _cLow.b, _cMid.r, _cMid.g, _cMid.b,
+         _cRock.r, _cRock.g, _cRock.b, _cPeak.r, _cPeak.g, _cPeak.b]
+      ) : null;
+      if (rustMesh) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(rustMesh.positions, 3));
+        geo.setAttribute("normal", new THREE.BufferAttribute(rustMesh.normals, 3));
+        geo.setAttribute("color", new THREE.BufferAttribute(rustMesh.colors, 3));
+        geo.setAttribute("aSplat", new THREE.BufferAttribute(rustMesh.splat, 4));
+        geo.setIndex(new THREE.BufferAttribute(rustMesh.indices, 1));
+        job.geo.dispose();
+        job.geo = geo;
+        job.pos = geo.attributes.position;
+        job.light = rustMesh.light;
+        debugStats.rustMeshes++;
+        finishChunkJob(job);
+        return true;
+      }
     }
     // Slope for coloring comes from the height gradient over grid
     // neighbours — the material is flat-shaded (fragment-derivative
@@ -978,6 +1017,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       rocks.setMatrixAt(rockN++, dummy.matrix);
     }
 
+    const rustPebbles = rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M);
+    if (rustPebbles) {
+      debugStats.rustScatterBatches++;
+      for (let ri = 0; ri < rustPebbles.length && rockN < ROCK_N; ri += 10) {
+        const x = rustPebbles[ri + 1], z = rustPebbles[ri + 2];
+        const dx = x - cx, dz = z - cz;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfo(x, z).d < 4.8) continue;
+        dummy.position.set(x, terrainHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
+        dummy.rotation.set(rustPebbles[ri + 6], rustPebbles[ri + 7], rustPebbles[ri + 8]);
+        dummy.scale.set(rustPebbles[ri + 3], rustPebbles[ri + 4], rustPebbles[ri + 5]);
+        dummy.updateMatrix();
+        rocks.setMatrixAt(rockN++, dummy.matrix);
+        pebbleN++;
+        debugStats.rustScatter++;
+      }
+    } else {
     // Supplement the sparse global rock field with deterministic small
     // pebbles in a 6m world grid, compacted into the same InstancedMesh.
     {
@@ -1001,7 +1056,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         }
       }
     }
+    }
 
+    const rustGrass = rustLocalScatter(NOISE_SEED, 1, cx, cz, CULL_NEAR_M);
+    if (rustGrass) {
+      debugStats.rustScatterBatches++;
+      for (let ri = 0; ri < rustGrass.length && grassN < 900; ri += 10) {
+        const x = rustGrass[ri + 1], z = rustGrass[ri + 2];
+        const dx = x - cx, dz = z - cz;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfo(x, z).d < 4.7) continue;
+        dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
+        dummy.rotation.set(0, rustGrass[ri + 7], 0);
+        dummy.scale.setScalar(rustGrass[ri + 3]);
+        dummy.updateMatrix();
+        grassTufts.setMatrixAt(grassN++, dummy.matrix);
+        debugStats.rustScatter++;
+      }
+    } else {
     // Dense deterministic grass within the 60m detail radius (4m cells).
     {
       const cell = 4;
@@ -1021,6 +1092,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           grassTufts.setMatrixAt(grassN++, dummy.matrix);
         }
       }
+    }
     }
 
     for (const p of treePlacements) {
@@ -1127,6 +1199,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     scene.add(group);
     drones.push({
       group, body, eye, ax, az, cx: ax, cz: az, engaged: false,
+      rustLos: true, rustThreat: 0, rustWayX: ax, rustWayZ: az,
+      path: null, pathI: 0, nextPathAt: 0,
       hoverH: 6.5 + rand() * 4,
       phase: rand() * Math.PI * 2,
       orbitR: 4 + rand() * 4.5,
@@ -1134,6 +1208,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       alive: true, vy: 0, respawnAt: 0,
     });
   }
+
+  const rustAiAgents = new Float32Array(Math.max(1, drones.length) * 6);
+  let lastRustAiT = -1;
 
   // ----- impact particles (pooled) -----
   const PMAX = 300;
@@ -1687,6 +1764,33 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const nowSec = performance.now() / 1000;
     const losM = climateNow.losM;
     const renderRange = Math.max(CULL_MID_M, losM);
+    if (playing && t - lastRustAiT >= 0.25) {
+      lastRustAiT = t;
+      let aiN = 0;
+      for (const d of drones) {
+        const a = t * d.speed + d.phase;
+        const x = d.cx + Math.cos(a) * d.orbitR;
+        const z = d.cz + Math.sin(a) * d.orbitR;
+        rustAiAgents.set([x, terrainHeight(x, z) + d.hoverH, z, d.ax, d.az, d.hoverH], aiN * 6);
+        aiN++;
+      }
+      const aiOut = rustAiBatch(
+        NOISE_SEED, rustAiAgents.subarray(0, aiN * 6),
+        camera.position.x, camera.position.y, camera.position.z,
+        losM, mapPreset.half, mapPreset.rimStart
+      );
+      if (aiOut) {
+        debugStats.rustAiBatches++;
+        for (let i = 0; i < aiN; i++) {
+          const d = drones[i], o = i * 8;
+          d.rustLos = aiOut[o + 1] > 0.5;
+          d.rustThreat = aiOut[o + 2];
+          d.rustWayX = aiOut[o + 3];
+          d.rustWayZ = aiOut[o + 4];
+          if (d.rustLos) d.path = null;
+        }
+      }
+    }
     let visibleN = 0, engagedN = 0;
     for (let di = 0; di < drones.length; di++) {
       const d = drones[di];
@@ -1710,7 +1814,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         let x = d.cx + Math.cos(a) * d.orbitR;
         let z = d.cz + Math.sin(a) * d.orbitR;
         const actualDist = Math.hypot(x - camera.position.x, z - camera.position.z);
-        d.engaged = playing && actualDist <= losM;
+        d.engaged = playing && actualDist <= losM && d.rustLos !== false;
         if (d.engaged) engagedN++;
         d.eye.material.color.set(d.engaged ? 0xff5040 : 0xffb347);
         // Positional updates remain quarter-rate at 60m+, as before.
@@ -1722,17 +1826,36 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         // Hunt inside a 28m anchor leash while engaged; drift home when
         // weather LOS no longer reaches the player.
         let targetX = d.ax, targetZ = d.az;
-        if (d.engaged) {
+        let huntX = targetX, huntZ = targetZ;
+        if (playing && actualDist <= losM) {
           const hx = camera.position.x - d.ax, hz = camera.position.z - d.az;
           const hd = Math.hypot(hx, hz) || 1;
           const leash = Math.min(28, hd);
-          targetX = d.ax + (hx / hd) * leash;
-          targetZ = d.az + (hz / hd) * leash;
+          huntX = d.ax + (hx / hd) * leash;
+          huntZ = d.az + (hz / hd) * leash;
+          if (d.engaged) { targetX = huntX; targetZ = huntZ; }
+        }
+        // Blocked by terrain: move through the Rust tactical waypoint,
+        // following a coarse Rust A* path when one is available.
+        if (playing && actualDist <= losM && d.rustLos === false) {
+          huntX = d.rustWayX; huntZ = d.rustWayZ;
+          if (!d.path && t >= d.nextPathAt) {
+            d.nextPathAt = t + 3;
+            const p = rustFindPath(NOISE_SEED, d.cx, d.cz, huntX, huntZ, mapPreset.half, mapPreset.rimStart);
+            if (p && p.length >= 4) { d.path = p; d.pathI = 2; debugStats.rustPaths++; }
+          }
+          targetX = huntX; targetZ = huntZ;
+        }
+        if (d.path) {
+          while (d.pathI < d.path.length
+            && Math.hypot(d.path[d.pathI] - d.cx, d.path[d.pathI + 1] - d.cz) < 2.5) d.pathI += 2;
+          if (d.pathI < d.path.length) { targetX = d.path[d.pathI]; targetZ = d.path[d.pathI + 1]; }
+          else d.path = null;
         }
         const mx2 = targetX - d.cx, mz2 = targetZ - d.cz;
         const md = Math.hypot(mx2, mz2);
         if (md > 0.001) {
-          const step = Math.min(md, (d.engaged ? 0.9 : 0.55) * stepDt);
+          const step = Math.min(md, ((d.engaged || d.path) ? 0.9 : 0.55) * stepDt);
           d.cx += (mx2 / md) * step;
           d.cz += (mz2 / md) * step;
           x = d.cx + Math.cos(a) * d.orbitR;
@@ -1802,6 +1925,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     hemiDay: new THREE.Color(0xaec6de), hemiNight: new THREE.Color(0x243049),
   };
   const _c1 = new THREE.Color(), _c2 = new THREE.Color();
+  const _skyLutOut = new Float32Array(12);
   let ambAcc = 1;
 
   // ----- macro seasons + micro weather -----
@@ -1842,6 +1966,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     },
   };
   const WEATHER_FIELDS = ["density", "tintStrength", "sunMul", "hemiMul", "exposureMul", "cloud", "sunGlow", "rain", "mud", "losM", "blobOpacity"];
+  const WEATHER_CODE = { sunny: 0, mist: 1, monsoon: 2 };
   function normalizeSeason(name) {
     name = String(name || "").toLowerCase();
     return SEASON_ORDER.includes(name) ? name : null;
@@ -1896,6 +2021,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   let weatherName = "sunny";
+  let weatherFromName = "sunny";
   let weatherFrom = snapshotWeather(WEATHER_TARGETS.sunny);
   let weatherTo = snapshotWeather(WEATHER_TARGETS.sunny);
   let weatherBlend = 1;
@@ -1907,6 +2033,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     name = normalizeWeather(name);
     if (!name || name === weatherName && weatherBlend >= 1) return;
     weatherFrom = snapshotWeather(climateNow);
+    weatherFromName = weatherName;
     weatherTo = snapshotWeather(WEATHER_TARGETS[name]);
     weatherName = name;
     weatherBlend = 0;
@@ -2048,10 +2175,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     skyUniforms.uMoonDir.value.copy(sunDir).multiplyScalar(-1);
     skyUniforms.uNight.value = nightness * (1 - climate.cloud * 0.75);
     skyUniforms.uSunGlow.value = climate.sunGlow * daylight;
-    skyUniforms.uSunColor.value.lerpColors(SKY.sunLow, SKY.sunHigh, clamp(elev * 1.7, 0, 1));
-    skyUniforms.uZenith.value.lerpColors(SKY.zenNight, SKY.zenDay, daylight);
-    _c1.lerpColors(SKY.horNight, SKY.horDay, daylight).lerp(SKY.horDusk, duskness * 0.72);
-    _c1.lerp(climate.tint, climate.tintStrength * (0.35 + 0.65 * daylight));
+    let usedSkyLut = false;
+    if (rustSkySample(cycleT, WEATHER_CODE[weatherFromName] ?? 0,
+      WEATHER_CODE[weatherName] ?? 0, weatherBlend, _skyLutOut)) {
+      usedSkyLut = true;
+      debugStats.rustSky = 1;
+      skyUniforms.uZenith.value.setRGB(_skyLutOut[0], _skyLutOut[1], _skyLutOut[2], THREE.SRGBColorSpace);
+      _c1.setRGB(_skyLutOut[3], _skyLutOut[4], _skyLutOut[5], THREE.SRGBColorSpace);
+      skyUniforms.uSunColor.value.setRGB(_skyLutOut[6], _skyLutOut[7], _skyLutOut[8], THREE.SRGBColorSpace);
+      _c2.setRGB(_skyLutOut[9], _skyLutOut[10], _skyLutOut[11], THREE.SRGBColorSpace);
+    } else {
+      skyUniforms.uSunColor.value.lerpColors(SKY.sunLow, SKY.sunHigh, clamp(elev * 1.7, 0, 1));
+      skyUniforms.uZenith.value.lerpColors(SKY.zenNight, SKY.zenDay, daylight);
+      _c1.lerpColors(SKY.horNight, SKY.horDay, daylight).lerp(SKY.horDusk, duskness * 0.72);
+      _c1.lerp(climate.tint, climate.tintStrength * (0.35 + 0.65 * daylight));
+    }
     skyUniforms.uHorizon.value.copy(_c1);
     scene.fog.color.copy(_c1); // exact weather-tinted sky horizon: no seam
     scene.fog.density = climate.density * lerp(1.28, 1, daylight);
@@ -2065,7 +2203,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     moonLight.target.position.copy(camera.position);
     moonLight.intensity = 0.55 * nightness * (1 - climate.cloud * 0.6);
     hemi.intensity = lerp(0.23, 0.8, daylight) * climate.hemiMul;
-    hemi.color.lerpColors(SKY.hemiNight, SKY.hemiDay, daylight);
+    if (usedSkyLut) hemi.color.copy(_c2).lerp(skyUniforms.uZenith.value, 0.35);
+    else hemi.color.lerpColors(SKY.hemiNight, SKY.hemiDay, daylight);
     renderer.toneMappingExposure = lerp(1.0, 1.08, daylight) * climate.exposureMul;
 
     starMat.opacity = nightness * (0.78 + 0.22 * Math.sin(elapsed * 2.7)) * (1 - climate.cloud * 0.82);
