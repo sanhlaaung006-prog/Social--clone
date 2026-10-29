@@ -90,7 +90,7 @@ fn raw_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn ironveil_abi_version() -> u32 {
-    2
+    3
 }
 
 /// Raw terrain height before JS-side river carving / objective flattening.
