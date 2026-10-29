@@ -250,16 +250,22 @@ export const sfx = {
     tone({ t0, dur: 0.3, type: "sawtooth", from: 1400, to: 120, peak: 0.18 });
     noiseBurst({ t0: t0 + 0.05, dur: 0.4, type: "lowpass", from: 900, to: 90, q: 0.5, peak: 0.55 });
   },
-  step(inWater) {
+  step(inWater, opts = {}) {
     if (!ensure()) return;
     const t0 = ctx.currentTime;
+    const intensity = Math.max(0.2, Math.min(1.4, opts.intensity || 0.7));
+    const depth = Math.max(0, Math.min(1.5, opts.depth || 0));
     if (inWater) {
-      noiseBurst({ t0, dur: 0.16, type: "bandpass", from: 800 + Math.random() * 300, to: 420, q: 1, peak: 0.3 });
+      // Slap as the boot breaks the surface, then a lower drag wash that
+      // deepens with wading depth.
+      noiseBurst({ t0, dur: 0.16, type: "bandpass", from: 820 + Math.random() * 320, to: 420, q: 1, peak: 0.16 + 0.22 * intensity });
+      noiseBurst({ t0: t0 + 0.05, dur: 0.22, type: "lowpass", from: 620 - depth * 180, to: 180, q: 0.7, peak: 0.08 + 0.16 * intensity + depth * 0.08 });
       tone({ t0: t0 + 0.03, dur: 0.09, type: "sine", from: 700 + Math.random() * 200, to: 300, peak: 0.05 });
     } else {
-      // grass / dirt: soft scuff
-      noiseBurst({ t0, dur: 0.09, type: "lowpass", from: 520 + Math.random() * 140, peak: 0.16 });
+      // grass / dirt: soft scuff, heavier with a thud at sprint effort
+      noiseBurst({ t0, dur: 0.09, type: "lowpass", from: 520 + Math.random() * 140, peak: 0.1 + 0.1 * intensity });
       noiseBurst({ t0, dur: 0.05, type: "bandpass", from: 2800, q: 0.7, peak: 0.035 });
+      if (intensity > 0.95) tone({ t0, dur: 0.07, type: "sine", from: 110, to: 60, peak: 0.1 });
     }
   },
   land() {
@@ -268,8 +274,11 @@ export const sfx = {
     noiseBurst({ t0, dur: 0.14, type: "lowpass", from: 420, to: 110, q: 0.6, peak: 0.42 });
     tone({ t0, dur: 0.09, type: "sine", from: 95, to: 45, peak: 0.22 });
   },
-  splash() {
+  splash(intensity = 1) {
     if (!ensure()) return;
-    noiseBurst({ t0: ctx.currentTime, dur: 0.35, type: "bandpass", from: 1000, to: 380, q: 0.8, peak: 0.4 });
+    const t0 = ctx.currentTime;
+    const k = Math.max(0.3, Math.min(1.5, intensity));
+    noiseBurst({ t0, dur: 0.35, type: "bandpass", from: 1000, to: 380, q: 0.8, peak: 0.34 * k });
+    noiseBurst({ t0: t0 + 0.07, dur: 0.3, type: "lowpass", from: 520, to: 150, q: 0.6, peak: 0.2 * k });
   },
 };

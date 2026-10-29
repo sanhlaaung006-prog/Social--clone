@@ -248,14 +248,27 @@
         set({ ammo: state.ammo + load, reserveAmmo: state.reserveAmmo - load });
         get().notify(`RELOADED // ${load} ROUNDS`);
       },
+      // Stamina consumables share one boost channel into the world sim.
+      // Soda/stimulant items join later and only need to call this.
+      boostStamina: (kind = "medicine", opts = {}) => {
+        const presets = {
+          soda: { amount: 30, duration: 8, regen: 9, powerFloor: 0.45, label: "SODA" },
+          stimulant: { amount: 45, duration: 12, regen: 7, powerFloor: 0.65, label: "STIMULANT" },
+          medicine: { amount: 35, duration: 6, regen: 6, powerFloor: 0.35, label: "MEDICINE" },
+        };
+        const boost = { ...(presets[kind] || presets.medicine), ...opts };
+        inputState.staminaBoost = boost;
+        if (!opts.silent) get().notify(`${boost.label} // STAMINA BOOST ONLINE`);
+      },
       heal: (amount = 18) => {
         const state = get();
         if (state.health >= state.maxHealth) {
-          get().notify("VITALS NOMINAL // NO TREATMENT REQUIRED");
+          get().boostStamina("medicine");
           return;
         }
         set({ health: Math.min(state.maxHealth, state.health + amount) });
-        get().notify(`TRAUMA KIT APPLIED // +${Math.min(amount, state.maxHealth - state.health)} VITALS`);
+        get().boostStamina("medicine", { silent: true });
+        get().notify(`TRAUMA KIT APPLIED // +${Math.min(amount, state.maxHealth - state.health)} VITALS + STAMINA`);
       },
 
       equipItem: (id) => {
@@ -386,7 +399,10 @@
         ["GROUND <=35M", d.grass + "G " + d.pebbles + "P " + d.blobShadows + "B"],
         ["TREES <=150M", d.cullMid],
         ["SAFETY", "R " + (d.safetyReports || 0) + " RUST " + (d.safetyRustReports || 0) + " RESCUE " + (d.safetyRescues || 0)],
-        ["STAMINA/SPRINT", Math.round(d.stamina || 0) + (d.sprinting ? " SPRINT" : " " + (d.sprintHold || 0).toFixed(2) + "S")],
+        ["STAMINA/SPRINT", Math.round(d.stamina || 0) + " FX " + (d.sprintEffect || 0).toFixed(2) + (d.staminaBoostT > 0 ? " BOOST " + d.staminaBoostT + "S" : "")],
+        ["FOV", (d.fov || 71).toFixed(1) + " DEG"],
+        ["WADE/SPLASH", (d.wadeDepth || 0).toFixed(2) + "M / " + (d.splashBursts || 0)],
+        ["GROUNDED OBJECTS", (d.groundedObjects || 0) + " FIX " + (d.groundingCorrections || 0)],
         ["CULLED >150M", d.cullFar],
         ["DRONES VIS", d.dronesVisible + "/6"],
         ["SIM TIME", d.simSeconds.toFixed(1) + " S"],
@@ -428,9 +444,9 @@
             sfx.droneDown();
             gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1");
           },
-          onStep: (inWater) => sfx.step(!!inWater),
+          onStep: (inWater, opts) => sfx.step(!!inWater, opts || {}),
           onLand: () => sfx.land(),
-          onSplash: () => sfx.splash(),
+          onSplash: (intensity) => sfx.splash(intensity || 1),
           onAmbience: (a) => sfx.setAmbience(a),
           onOutOfBoundsChange: (active) => {
             gameStore.setState({ isOutOfBounds: active });
@@ -614,6 +630,40 @@
       );
     });
 
+    // Dedicated thumb reload, seated immediately LEFT of the weapon slots.
+    // It is its own control — not hidden inside the active-slot click.
+    const HudReloadButton = React.memo(function HudReloadButton() {
+      const reload = useGameStore((state) => state.reload);
+      const ammo = useGameStore((state) => state.ammo);
+      const reserveAmmo = useGameStore((state) => state.reserveAmmo);
+      const magazineSize = useGameStore((state) => state.magazineSize);
+      const lastRef = React.useRef(0);
+      const low = ammo <= 8 && reserveAmmo > 0;
+      const doReload = (event) => {
+        event.preventDefault();
+        const now = performance.now();
+        if (now - lastRef.current < 400) return; // pointerdown + click double-fire guard
+        lastRef.current = now;
+        reload();
+      };
+      return (
+        <button
+          type="button"
+          className={`hud-reload-btn ${low ? "is-low" : ""}`}
+          onPointerDown={doReload}
+          onClick={doReload}
+          onContextMenu={(event) => event.preventDefault()}
+          aria-label={`Reload weapon, ${ammo} of ${magazineSize} in magazine, ${reserveAmmo} in reserve`}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="M20 11A8 8 0 1 1 17.2 4.4M20 2v9h-9" />
+          </svg>
+          <span>RLD</span>
+          <small>RELOAD</small>
+        </button>
+      );
+    });
+
     const WeaponSlots = React.memo(function WeaponSlots() {
       const primary = useGameStore((state) => state.equipped.primary);
       const secondary = useGameStore((state) => state.equipped.secondary);
@@ -624,6 +674,7 @@
       ];
       return (
         <section className="weapon-slots" aria-label="Weapon slots">
+          <HudReloadButton />
           {slots.map((slot) => slot.item ? (
             <button
               key={slot.key}
@@ -1380,7 +1431,7 @@
                       <p>Hold Relay Station 04-C on the Karst-9 ridge until exfil arrives. Phase 02 of 03 is active and the objective is 68% secured — hostiles are probing the trench line at Grid 03. Keep your magazine topped up, watch your vitals, and do not break the line.</p>
                       <div className="brief-controls">
                         <span className="brief-control"><kbd>WASD / L-STICK</kbd> MOVE</span>
-                        <span className="brief-control"><kbd>DRAG / R-STICK</kbd> AIM</span>
+                        <span className="brief-control"><kbd>DRAG RIGHT SIDE</kbd> AIM</span>
                         <span className="brief-control"><kbd>LMB / FIRE BTN</kbd> FIRE</span>
                         <span className="brief-control"><kbd>SPACE / JUMP BTN</kbd> JUMP</span>
                         <span className="brief-control"><kbd>R</kbd> RELOAD</span>
@@ -1852,8 +1903,14 @@
       inputState.quality = value;
     };
     applyRenderQuality(renderQualitySetting);
+    let fovSetting = 71; // base vertical FOV; sprint/walk/wade effects add on top in world.js
+    const applyFov = (value) => {
+      fovSetting = Math.max(55, Math.min(100, Math.round(value) || 71));
+      inputState.fov = fovSetting;
+    };
+    applyFov(fovSetting);
     const SETTINGS_DEFAULTS = {
-      sensitivity: 30, adsSensitivity: 26, fov: 92, invertY: false, vibration: true,
+      sensitivity: 30, adsSensitivity: 26, fov: 71, invertY: false, vibration: true,
       master: 78, effects: 64, comms: 55, music: 22, voiceActivation: false, muteOnFocus: true,
       quality: "MED", brightness: 58, filmGrain: true, motionBlur: false,
       hudOpacity: 86, compassTicks: true, reduceShake: true, uiMotion: true
@@ -1958,16 +2015,18 @@
       const showDebug = useGameStore((state) => state.showDebug);
       const setShowDebug = useGameStore((state) => state.setShowDebug);
       const [tab, setTab] = useState("controls");
-      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, quality: renderQualitySetting }));
+      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, quality: renderQualitySetting, fov: fovSetting }));
 
       const update = (key, value) => {
         if (key === "sensitivity") applyLookSensitivity(value);
         if (key === "quality") applyRenderQuality(value);
+        if (key === "fov") applyFov(value);
         setSettings((current) => ({ ...current, [key]: value }));
       };
       const reset = () => {
         applyLookSensitivity(SETTINGS_DEFAULTS.sensitivity);
         applyRenderQuality(SETTINGS_DEFAULTS.quality);
+        applyFov(SETTINGS_DEFAULTS.fov);
         setShowDebug(false);
         setSettings({ ...SETTINGS_DEFAULTS });
         notify("DEFAULT PROFILE RESTORED // UNSAVED CHANGES CLEARED");
@@ -2077,7 +2136,7 @@
               {tab === "display" && (
                 <div className="settings-sections">
                   <SettingSection title="OPTICS / FIELD OF VIEW">
-                    <SettingSlider label="FIELD OF VIEW" hint="Wider view, smaller targets. Tactical trade-off." value={settings.fov} min={70} max={110} unit="°" onChange={(value) => update("fov", value)} />
+                    <SettingSlider label="FIELD OF VIEW" hint="Base view angle. Sprint stretch, walk pulse and wading push add on top, then fade with stamina." value={settings.fov} min={55} max={100} unit="°" onChange={(value) => update("fov", value)} />
                     <SettingSlider label="BRIGHTNESS" hint="Lift the shadows without losing the dark." value={settings.brightness} onChange={(value) => update("brightness", value)} />
                     <div className="setting-row">
                       <div className="setting-copy"><span className="setting-label">RENDER QUALITY</span><small>Preset applied after the next respawn.</small></div>
@@ -2225,19 +2284,17 @@
     });
 
     // === [UI: TOUCH_CONTROLS] ===
-    // Strictly side-isolated touch: left half can only move, right half can
-    // only aim. A pointer that crosses the screen midline is ended instead
-    // of being allowed to drive the other side. Right-side aiming is direct
-    // drag-look (not a constant-rate stick), matching the lower sensitivity.
+    // Strictly side-isolated touch: left half is the MOVE joystick, right
+    // half is a plain drag surface for aiming — deliberately NO aim
+    // joystick: no base, no nub, no rate stick. The camera follows the
+    // thumb's drag delta directly and stops the instant the thumb stops.
     const TouchControls = React.memo(function TouchControls() {
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
       const moveRef = React.useRef({ id: null, ox: 0, oy: 0, lx: 0, ly: 0 });
-      const aimRef = React.useRef({ id: null, ox: 0, oy: 0, lx: 0, ly: 0 });
+      const aimRef = React.useRef({ id: null, lx: 0, ly: 0 });
       const moveBaseRef = React.useRef(null);
       const moveNubRef = React.useRef(null);
-      const aimBaseRef = React.useRef(null);
-      const aimNubRef = React.useRef(null);
       const fireTimerRef = React.useRef(null);
       const [crouchOn, setCrouchOn] = useState(false);
       const MAX = 64;
@@ -2267,47 +2324,72 @@
         if (base) base.style.display = "none";
         if (nub) nub.style.display = "none";
       };
-      const stickHandlers = (stick, baseRef, nubRef, apply, side) => {
-        const end = (event) => {
+      // MOVE: the one and only joystick.
+      const stick = moveRef.current;
+      const endMove = (event) => {
+        if (stick.id !== event.pointerId) return;
+        stick.id = null;
+        hide(moveBaseRef.current, moveNubRef.current);
+        inputState.moveX = 0;
+        inputState.moveY = 0;
+      };
+      const moveStickHandlers = {
+        onPointerDown: (event) => {
+          if (event.pointerType === "mouse" || stick.id !== null) return;
+          if (event.clientX >= window.innerWidth * 0.5) return;
+          stick.id = event.pointerId;
+          stick.ox = event.clientX;
+          stick.oy = event.clientY;
+          stick.lx = event.clientX;
+          stick.ly = event.clientY;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          place(moveBaseRef.current, moveNubRef.current, stick.ox, stick.oy, 0, 0);
+        },
+        onPointerMove: (event) => {
           if (stick.id !== event.pointerId) return;
-          stick.id = null;
-          hide(baseRef.current, nubRef.current);
-          apply(0, 0, 0, 0);
-        };
-        return {
-          onPointerDown: (event) => {
-            if (event.pointerType === "mouse" || stick.id !== null) return;
-            const mid = window.innerWidth * 0.5;
-            if ((side === "left" && event.clientX >= mid) || (side === "right" && event.clientX < mid)) return;
-            stick.id = event.pointerId;
-            stick.ox = event.clientX;
-            stick.oy = event.clientY;
-            stick.lx = event.clientX;
-            stick.ly = event.clientY;
-            event.currentTarget.setPointerCapture(event.pointerId);
-            place(baseRef.current, nubRef.current, stick.ox, stick.oy, 0, 0);
-          },
-          onPointerMove: (event) => {
-            if (stick.id !== event.pointerId) return;
-            const mid = window.innerWidth * 0.5;
-            if ((side === "left" && event.clientX >= mid) || (side === "right" && event.clientX < mid)) {
-              end(event);
-              return;
-            }
-            const stepX = event.clientX - stick.lx;
-            const stepY = event.clientY - stick.ly;
-            stick.lx = event.clientX;
-            stick.ly = event.clientY;
-            let dx = event.clientX - stick.ox;
-            let dy = event.clientY - stick.oy;
-            const len = Math.hypot(dx, dy);
-            if (len > MAX) { dx = (dx / len) * MAX; dy = (dy / len) * MAX; }
-            place(baseRef.current, nubRef.current, stick.ox, stick.oy, dx, dy);
-            apply(dx / MAX, dy / MAX, stepX, stepY);
-          },
-          onPointerUp: end,
-          onPointerCancel: end,
-        };
+          if (event.clientX >= window.innerWidth * 0.5) { endMove(event); return; }
+          stick.lx = event.clientX;
+          stick.ly = event.clientY;
+          let dx = event.clientX - stick.ox;
+          let dy = event.clientY - stick.oy;
+          const len = Math.hypot(dx, dy);
+          if (len > MAX) { dx = (dx / len) * MAX; dy = (dy / len) * MAX; }
+          place(moveBaseRef.current, moveNubRef.current, stick.ox, stick.oy, dx, dy);
+          inputState.moveX = dx / MAX;
+          inputState.moveY = -(dy / MAX);
+        },
+        onPointerUp: endMove,
+        onPointerCancel: endMove,
+      };
+
+      // AIM: naked drag surface. Deltas feed lookDX/lookDY 1:1 through the
+      // sensitivity curve; releasing or crossing the midline ends the drag.
+      const aim = aimRef.current;
+      const endAim = (event) => {
+        if (aim.id !== event.pointerId) return;
+        aim.id = null;
+      };
+      const aimDragHandlers = {
+        onPointerDown: (event) => {
+          if (event.pointerType === "mouse" || aim.id !== null) return;
+          if (event.clientX < window.innerWidth * 0.5) return;
+          aim.id = event.pointerId;
+          aim.lx = event.clientX;
+          aim.ly = event.clientY;
+          event.currentTarget.setPointerCapture(event.pointerId);
+        },
+        onPointerMove: (event) => {
+          if (aim.id !== event.pointerId) return;
+          if (event.clientX < window.innerWidth * 0.5) { endAim(event); return; }
+          inputState.aimX = 0;
+          inputState.aimY = 0;
+          inputState.lookDX += event.clientX - aim.lx;
+          inputState.lookDY += event.clientY - aim.ly;
+          aim.lx = event.clientX;
+          aim.ly = event.clientY;
+        },
+        onPointerUp: endAim,
+        onPointerCancel: endAim,
       };
 
       const stopFire = () => {
@@ -2326,30 +2408,12 @@
 
       return (
         <div className="touch-controls" aria-hidden="true">
-          <div
-            className="stick-zone zone-left"
-            {...stickHandlers(moveRef.current, moveBaseRef, moveNubRef, (x, y) => {
-              inputState.moveX = x;
-              inputState.moveY = -y;
-            }, "left")}
-          >
+          <div className="stick-zone zone-left" {...moveStickHandlers}>
             <span className="stick-hint hint-left"><i />MOVE</span>
           </div>
-          <div
-            className="stick-zone zone-right"
-            {...stickHandlers(aimRef.current, aimBaseRef, aimNubRef, (x, y, stepX, stepY) => {
-              inputState.aimX = 0;
-              inputState.aimY = 0;
-              inputState.lookDX += stepX || 0;
-              inputState.lookDY += stepY || 0;
-            }, "right")}
-          >
-            <span className="stick-hint hint-right"><i />AIM</span>
-          </div>
+          <div className="aim-drag-zone zone-right" {...aimDragHandlers} />
           <span ref={moveBaseRef} className="stick-base" />
           <span ref={moveNubRef} className="stick-nub" />
-          <span ref={aimBaseRef} className="stick-base" />
-          <span ref={aimNubRef} className="stick-nub" />
           <button
             type="button"
             className="fire-btn"

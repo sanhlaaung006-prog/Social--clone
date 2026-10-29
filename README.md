@@ -1,6 +1,8 @@
 ## IRONVEIL — Tactical Operations (game)
 
-**Play online:** <https://ironveil-game.vercel.app>
+**Status:** in active development — **not publicly published yet**. The
+earlier Vercel project was paused at the owner's direction and stays paused
+until the game is explicitly declared ready. Run it locally (below).
 
 A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
 [`game/`](game/) — run `cd game && npm install && npm run dev`, then open
@@ -8,7 +10,8 @@ A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
 terrain (procedurally generated Karst-9 ridges, the relay-station objective,
 hostile hover drones) — **WASD + drag-aim** on desktop and strictly
 side-isolated touch controls (**left half = MOVE only, right half =
-direct drag AIM only**, plus FIRE / JUMP buttons) on touch devices
+direct drag AIM only**, plus FIRE / JUMP / RLD (reload) / CRCH (crouch
+toggle) thumb buttons) on touch devices
 (`SPACE` jumps on desktop). A realistic day/night cycle (one 15-minute macro day: 10-minute daylight,
 5-minute night; sun, moon, stars, spiral galaxies — `T` skips +3h, `?phase=0.75`
 starts at midnight) plays over a river-carved valley with a plank bridge,
@@ -20,9 +23,10 @@ Two map presets are selectable on the start screen (or via `?map=br` /
 `?map=survival`): **Battle Royale — 2×2 km** (4 chunks) and **Survival —
 4×4 km** (16 chunks). Terrain streams in 1 km chunks around a center spawn
 at `(0, heightAt(0,0), 0)`; the relay and river are seeded per session
-(`?seed=` reproduces a layout). The river is now a real crossing obstacle:
-about **17.2 m of water surface** with its bed **1.65 m (5.4 ft) below the
-water**, spanned by a longer plank bridge. Combat rendering keeps grass,
+(`?seed=` reproduces a layout). The river is a real crossing obstacle: a
+gentle **58 m valley cross-section** with a monotonic north-to-south bed
+profile and **0.9 m waist-deep wading** (deep spots and the southern sea
+shallows buoy the camera with a swim float), spanned by a plank bridge. Combat rendering keeps grass,
 pebbles and rocks inside **35 m**; five Myanmar tree archetypes (teak,
 padauk, rain tree, banyan and toddy/coconut palm) use one unified
 whole-tree mesh per LOD band — full detail to 45 m, low-poly to 95 m and a
@@ -105,12 +109,12 @@ Rust-baked AO (eight-direction horizon slope + concavity, faded to 1.0 at
 chunk borders to avoid seams). Streamed work uses the Worker; teleport
 destination cuts still finish synchronously on the main thread so arrival
 never shows a terrain hole, and if Worker or WASM fails the game
-falls back fully to the main-thread Rust/JS paths. The 113,787-byte compiled
+falls back fully to the main-thread Rust/JS paths. The 112,916-byte compiled
 asset is committed at `game/public/wasm/ironveil_core.wasm` and loaded
 locally — **fully offline at runtime, no CDN**. The production build uses a
 relative Vite base, and the loader validates the WASM magic across root,
-subpath and Worker-relative candidates, so the same build runs from the
-Vercel domain above or a repository subpath. The debug overlay shows
+subpath and Worker-relative candidates, so the same build runs from a
+domain root or a repository subpath. The debug overlay shows
 `PHYSICS: RUST KINEMATIC`, `WORKER: RUST`, and live main-thread CPU ms when
 active. Rebuild it with the *Build Rust WASM terrain core* GitHub Action
 (or `cargo build --release --target wasm32-unknown-unknown` locally).
@@ -210,3 +214,111 @@ at the +1000 m line, and midnight under the stars and galaxies.
 **Pause menu (mobile):**
 
 ![IRONVEIL pause menu on mobile](screenshots/ironveil-pause-mobile.png)
+
+## Corrective round — terrain, collision, trees, F3, mobile-first HUD
+
+After field reports of walking into hills / seeing inside terrain, detached
+tree segments, square terrain, a mountain-everywhere map and a PC-first HUD,
+this round reworked the foundations (verified by actually walking the river,
+a steep hillside and the southern coast in a real browser, JS fallback and
+Rust/WASM paths alike):
+
+- **Myanmar-balanced terrain.** Quintic, domain-rotated FBM noise feeds a
+  biome-masked height model: southern Ayeyarwady-style delta easing through a
+  beach into a shallow sea (`SEA_LEVEL 0.25`), central Dry-Zone lowland, hill
+  belts only to the north/west and a lower eastern plateau. Map-wide sample:
+  ~3% sea, ~20% delta, ~22% lowland, ~36% hills, ~18% high rim/belts. Smooth
+  shading, 96-segment near chunks (LOD 96/64/32/16) and a vibrant biome
+  palette plus world-space detail in the existing material — no extra draw
+  calls. Analytic-vs-rendered-mesh height error dropped from **0.569 m
+  average (15,252 of 123,201 samples > 1 m)** to **0.026 m average (16 > 1 m)**.
+- **Surface-true collision.** Physics (JS and Rust ABI v5 share the host
+  ground provider) now steps on the *rendered triangle surface*, dilated by
+  capsule-shoulder samples, integrated at 120 Hz substeps so slopes are
+  resolved instead of tunneled — the same discipline future fast vehicles
+  need. Nearby tree trunks, boulders and the relay mast are solid via a
+  preallocated local-obstacle resolver, and a final camera-clearance lift
+  keeps the near plane out of hillsides. Scatter, drones and the safety
+  sweep all read the same surface, and nothing scatters under the sea.
+- **Connected trees.** All five species × three LODs are now built from
+  limbs authored endpoint-to-endpoint with joint blobs at every fork and
+  root flares buried below grade (banyan aerial roots reach the ground;
+  palm trunks are jointed chains into a crown bulb). Species are chosen by
+  biome — palms/banyans in the wet south, teak/padauk in hill forest,
+  rain trees and toddy palms in the Dry Zone.
+- **F3 debug/perf menu has a real switch.** One shared store flag drives the
+  `F3` key, the HUD **F3 ON/OFF** chip, Settings → Interface → *F3 DEBUG /
+  PERF OVERLAY*, and the overlay's own header button. It is **off by
+  default** and its 4 Hz tick stops while hidden.
+- **Mobile-first HUD and controls.** Larger floating sticks (128 px base /
+  64 px throw), a 92 px FIRE button with dedicated 64 px **RLD** and
+  **CRCH** buttons, compact coarse-pointer vitals/ammo, touch-first hints
+  and bindings, and a phone-landscape title layout where START, INVENTORY
+  and SETTINGS fit with zero scrolling (verified at 844×390: buttons
+  visible, CRCH toggles crouch, stick drag moves the player, F3 chip works
+  by touch). Browser walks on the rebuilt WASM show Rust terrain/physics/
+  Worker active, grounded movement at the river (wading), uphill and along
+  the coast with **0 safety rescues**.
+
+![IRONVEIL corrective round — waist-deep river wading](screenshots/corrective-river-wading.png)
+
+![IRONVEIL corrective round — hillside trees and smooth terrain](screenshots/corrective-hillside-trees.png)
+
+![IRONVEIL corrective round — southern delta coast and sea](screenshots/corrective-southern-coast.png)
+
+![IRONVEIL corrective round — mobile title fits START on screen](screenshots/corrective-mobile-title.png)
+
+![IRONVEIL corrective round — mobile-first HUD with RLD/CRCH/FIRE cluster](screenshots/corrective-mobile-hud.png)
+
+![IRONVEIL corrective round — F3 toggled on by touch](screenshots/corrective-mobile-f3.png)
+
+## Physics grounding, FOV feel and stamina round
+
+- **Everything physical is grounded before its first frame.** Rocks and
+  future vehicle-style bodies rest on the highest rendered ground inside
+  their footprint (`groundSupportHeight` / `groundedBodyY`); trees seat
+  their root disc on the lowest point so downhill roots touch; pebbles and
+  grass roots are buried a few cm; drones spawn settled above their
+  anchors. A shot-down drone tumbles once, then **rests on top of the
+  terrain as a solid wreck** — the safety sweep re-seats it if anything
+  ever pushes it under. Impact debris also lands and skids instead of
+  falling through the world. Player collision now also covers banyan
+  aerial roots, larger pebbles, the relay equipment hut/crates and drone
+  wrecks, and the relay platform itself is a walkable deck in the physics
+  ground provider. Browser check: walking straight at the relay mast stops
+  at **0.9 m** with zero safety rescues; 21,556 placements report grounded.
+- **Trees read as one grown organism.** Limbs are thicker and driven
+  deeper into enlarged joint blobs at every fork, and every trunk now ends
+  in a wide root-flare skirt that welds it into the soil.
+- **FOV is real and alive.** Settings → Display → *FIELD OF VIEW* (55–100°,
+  default 71°) drives the camera. On top of the base angle: a sprint
+  stretch up to +7°, a subtle walk-cycle pulse, a small wading push and a
+  landing punch-in — all smoothed. The gun mirrors it: sprinting cants the
+  rifle across the body and pumps it with the stride; wading raises it
+  clear of the surface.
+- **Sprint fades with stamina.** Sprint is available whenever stamina
+  remains, at full power down to ~55 stamina; below that, speed (7.6 →
+  5.2 m/s), FOV kick and gun pose taper smoothly to a jog instead of
+  cutting off. Verification series: stamina 100 → 34 saw effect 1.00 →
+  0.70, speed 7.6 → 6.9 m/s, FOV 79.4° → 77.5°. Soda, stimulants and
+  medicine share one boost channel (instant restore + timed regen +
+  sprint-power floor); the trauma kit already feeds it, and drink/drug
+  items can call `boostStamina(kind)` when they land.
+- **Water you can feel.** Entering water fires a splash burst + sound;
+  every submerged step kicks pooled droplets at the alternating foot and
+  plays depth-graded slap/drag audio. Verified wading at 0.86 m depth.
+- **No aim joystick.** The right half of the touchscreen is now a naked
+  drag surface (no base, nub or hint) — the camera follows the thumb 1:1.
+  Only the left MOVE stick remains. A dedicated round **RLD** button sits
+  immediately left of the weapon slots (pulses red at low ammo); mobile
+  verification fired 30 → 26 and reloaded to 30/116 through it.
+
+![IRONVEIL physics round — mobile HUD, left RLD button, single MOVE stick](screenshots/physics-fov-mobile-hud.png)
+
+![IRONVEIL physics round — stopped by the relay mast](screenshots/physics-relay-collision.png)
+
+![IRONVEIL physics round — wading with raised rifle](screenshots/physics-river-wading-splash.png)
+
+![IRONVEIL physics round — sprint FOV stretch](screenshots/physics-sprint-fov.png)
+
+![IRONVEIL physics round — grounded trees and rocks](screenshots/physics-grounded-trees.png)

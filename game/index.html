@@ -403,6 +403,22 @@
       border-color: rgba(255,255,255,.28); background: rgba(239,68,68,.22); color: #fff; font-size: 12px; line-height: 1;
     }
     .weapon-slots { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); display: flex; gap: 6px; align-items: flex-end; justify-content: center; flex: none; }
+    .hud-reload-btn {
+      width: 54px; height: 54px; flex: none; align-self: flex-end;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+      border-radius: 50%; border: 1px solid rgba(250,204,21,.55);
+      background: radial-gradient(circle at 50% 36%, rgba(250,204,21,.16), rgba(8,13,9,.66) 74%);
+      color: #facc15; font-family: var(--mono); pointer-events: auto; touch-action: none;
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    }
+    .hud-reload-btn svg { width: 17px; height: 17px; }
+    .hud-reload-btn span { font-size: 9px; font-weight: 700; letter-spacing: .1em; line-height: 1; }
+    .hud-reload-btn small { font-size: 5.5px; letter-spacing: .12em; opacity: .75; line-height: 1; }
+    .hud-reload-btn:active { background: radial-gradient(circle at 50% 36%, rgba(250,204,21,.42), rgba(8,13,9,.7) 74%); color: #fff3b0; }
+    .hud-reload-btn.is-low { border-color: rgba(248,113,113,.85); color: #f87171; animation: reloadPulse 1.1s ease-in-out infinite; }
+    @keyframes reloadPulse { 50% { box-shadow: 0 0 0 5px rgba(248,113,113,.14); } }
+    @media (pointer: coarse) { .hud-reload-btn { width: 60px; height: 60px; } }
+    @media (max-width: 520px) { .hud-reload-btn { width: 50px; height: 50px; } }
     @media (max-width: 760px) {
       .hud-bottom-spacer { display: none; }
       .vitals-stripes { width: min(38vw, 178px); padding: 6px 7px 7px; gap: 4px; }
@@ -1660,6 +1676,31 @@
       .pipeline-card { display: none; }
       .console-footer { min-height: 31px; }
     }
+    /* Phone-landscape heights (~<=500px CSS): the title stack must fit
+       START on screen with zero scrolling — it is the game's front door.
+       Decorative meta/intel rows yield; actions stay one thumb away. */
+    @media (max-height: 500px) {
+      .console-header { min-height: 40px; }
+      .console-main { padding-top: 4px; }
+      .console-footer { display: none; }
+      .menu-topline { display: none; }
+      .menu-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      .intel-side { display: none; }
+      .menu-primary .pause-label { display: none; }
+      .start-title { font-size: 38px; margin-top: 0; }
+      .operation-line { margin-top: 2px; }
+      .mission-meta { display: none; }
+      .map-mode-select { margin-top: 6px; }
+      .map-mode-head { display: none; }
+      .map-mode-btn { padding: 6px 9px; }
+      .start-loading { margin-top: 6px; padding: 5px 8px 6px; }
+      .start-percent { font-size: 15px; }
+      .menu-actions { margin-top: 6px; gap: 3px; }
+      .menu-action { min-height: 36px; padding-top: 3px; padding-bottom: 3px; }
+      .action-copy strong { font-size: 15px; }
+      .action-copy small { display: none; }
+      .menu-hints { display: none; }
+    }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
       .scene-scan { display: none; }
@@ -1767,9 +1808,9 @@
     /* ============ TOUCH CONTROLS (dual sticks + fire) ============ */
     .touch-controls { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
     @media (pointer: coarse) { .touch-controls { display: block; } }
-    .stick-zone { position: absolute; top: 16%; bottom: 0; width: 50%; pointer-events: auto; touch-action: none; }
+    .stick-zone, .aim-drag-zone { position: absolute; top: 16%; bottom: 0; width: 50%; pointer-events: auto; touch-action: none; }
     .stick-zone.zone-left { left: 0; }
-    .stick-zone.zone-right { right: 0; }
+    .aim-drag-zone.zone-right { right: 0; }
     .stick-hint {
       position: absolute; bottom: 24%; display: flex; flex-direction: column; align-items: center; gap: 7px;
       color: rgba(205, 220, 196, 0.5); font-size: 7px; letter-spacing: .22em; text-transform: uppercase;
@@ -1781,7 +1822,6 @@
       background: radial-gradient(circle, rgba(200, 244, 92, 0.1) 0 8px, transparent 9px);
     }
     .hint-left { left: 40px; }
-    .hint-right { right: 40px; }
     .stick-base, .stick-nub {
       position: fixed; left: 0; top: 0; display: none; border-radius: 50%; pointer-events: none; z-index: 16;
     }

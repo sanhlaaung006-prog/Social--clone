@@ -35,6 +35,8 @@ export const inputState = {
   lookDY: 0,
   sensitivity: 0.55, // lower default look multiplier (settings slider writes this)
   quality: "MED", // render-quality preset (settings writes this; DPR caps read it live)
+  fov: 71, // base vertical FOV in degrees (Settings > Display writes this)
+  staminaBoost: null, // queued {amount,duration,regen,powerFloor} from soda/drugs/medicine
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
   jump: false, // pulsed by the touch JUMP button; the world consumes it
@@ -53,7 +55,9 @@ export const debugStats = {
   chunksLoaded: 0, chunksVisible: 0, chunksTotal: 16,
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
   grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
-  stamina: 100, sprinting: 0, sprintHold: 0, reloadT: 0,
+  stamina: 100, sprinting: 0, sprintHold: 0, sprintEffect: 0, staminaBoostT: 0, reloadT: 0,
+  fov: 71, heading: 0, wadeDepth: 0, splashBursts: 0,
+  groundedObjects: 0, groundingCorrections: 0,
   safetyRescues: 0, safetyReports: 0, safetyRustReports: 0, safetyLastCode: 0,
   treeLodFull: 0, treeLodMid: 0, treeLodFar: 0, dpr: 1,
   grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
@@ -484,6 +488,33 @@ export function collisionHeight(x, z) {
     terrainHeight(x, z + r), terrainHeight(x, z - r)
   );
   return Math.max(centre, shoulder - 0.16);
+}
+
+// Footprint-aware support for physical props. A rigid rock/wreck/vehicle
+// body rests on the HIGHEST rendered ground inside its footprint (so no
+// corner can sink under a slope), while a rooted tree seats on the LOWEST
+// point inside its root disc (so the downhill root edge touches instead of
+// hovering). Every placement in the world funnels through these helpers,
+// which is what guarantees nothing spawns floating or buried.
+export function groundSupportHeight(x, z, radius = 0, support = "max") {
+  const centre = terrainSurfaceHeight(x, z);
+  if (!(radius > 0.04)) return centre;
+  const diag = radius * 0.7071;
+  const samples = [
+    centre,
+    terrainSurfaceHeight(x + radius, z), terrainSurfaceHeight(x - radius, z),
+    terrainSurfaceHeight(x, z + radius), terrainSurfaceHeight(x, z - radius),
+    terrainSurfaceHeight(x + diag, z + diag), terrainSurfaceHeight(x - diag, z + diag),
+    terrainSurfaceHeight(x + diag, z - diag), terrainSurfaceHeight(x - diag, z - diag),
+  ];
+  return support === "min" ? Math.min(...samples) : Math.max(...samples);
+}
+
+// Resting centre-Y for a grounded body: support point + half height,
+// optionally embedded a few cm so contact reads as weight, not hovering.
+// Future vehicles settle through this same helper before their first frame.
+export function groundedBodyY(x, z, radius = 0, halfHeight = 0, embed = 0.04, support = "max") {
+  return groundSupportHeight(x, z, radius, support) + halfHeight - embed;
 }
 
 // ---------- world factory ----------
@@ -1262,6 +1293,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           // road markings from a hillside.
           flow *= 0.72 + 0.28 * sin(vUv.x * 11.0 + vUv.y * 23.0 + uTime * 0.7);
           float glint = pow(clamp(flow, 0.0, 1.0), 7.0) * uDay;
+          // Fade the sparkle with view distance so the ribbon does not
+          // alias into dashed road markings from a hillside.
+          glint *= clamp(1.0 - vFogDepth / 240.0, 0.12, 1.0);
           float edge = smoothstep(0.0, 0.14, vUv.x) * smoothstep(1.0, 0.86, vUv.x);
           vec3 deep = mix(vec3(0.012, 0.05, 0.09), vec3(0.05, 0.21, 0.26), uDay);
           vec3 col = mix(deep, uHorizon * 0.55, 0.38 * uDay);
@@ -1318,12 +1352,19 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     scene.add(group);
     return { cx: c.x, cz: c.z, deckY, ax: axis.x, az: axis.y, px: -axis.y, pz: axis.x };
   })();
+  let relayDeckY = -Infinity; // set when the relay platform is built below
   function groundHeightWithBridge(x, z) {
     let y = collisionHeight(x, z);
     const dx = x - bridge.cx, dz = z - bridge.cz;
     const along = dx * bridge.ax + dz * bridge.az;
     const across = dx * bridge.px + dz * bridge.pz;
     if (Math.abs(along) < 13.2 && Math.abs(across) < 1.8) y = Math.max(y, bridge.deckY);
+    // The relay platform is a solid walkable deck (8.2m radius), not a
+    // visual the player sinks through: step/jump onto it like any ledge.
+    if (relayDeckY > -Infinity) {
+      const rdx = x - WORLD.relay.x, rdz = z - WORLD.relay.z;
+      if (rdx * rdx + rdz * rdz < 67.24) y = Math.max(y, relayDeckY);
+    }
     return y;
   }
   setRustGroundProvider(groundHeightWithBridge);
@@ -1373,12 +1414,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   );
   scatter(ROCK_N, (x, y, z, i) => {
     const s = 0.6 + rand() * 2.6;
-    dummy.position.set(x, y + s * 0.25, z);
+    const sy = s * (0.55 + rand() * 0.5);
+    // Rigid-body seating before the first frame: rest on the highest ground
+    // inside the boulder footprint, embedded a third of its height, so it
+    // can neither hover on a downhill edge nor sink through a crest.
+    const support = groundSupportHeight(x, z, Math.min(1.35, s * 0.58), "max");
+    dummy.position.set(x, support + sy * 0.34, z);
     dummy.rotation.set(rand() * 3, rand() * 3, rand() * 3);
-    dummy.scale.set(s, s * (0.55 + rand() * 0.5), s);
+    dummy.scale.set(s, sy, s);
     dummy.updateMatrix();
     rockPlacements.push({
-      x, y: dummy.position.y, z,
+      x, y: dummy.position.y, z, groundY: support,
       rx: dummy.rotation.x, ry: dummy.rotation.y, rz: dummy.rotation.z,
       sx: dummy.scale.x, sy: dummy.scale.y, sz: dummy.scale.z,
     });
@@ -1420,15 +1466,25 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function partLimb(x1, y1, z1, x2, y2, z2, r1, r2, seg, hex) {
     const start = new THREE.Vector3(x1, y1, z1), end = new THREE.Vector3(x2, y2, z2);
     const dir = end.clone().sub(start);
-    const len = Math.max(0.05, dir.length()) + (r1 + r2) * 0.55;
-    const g = new THREE.CylinderGeometry(r2, r1, len, seg);
+    // Thicker limbs pushed deeper into both joints: at gameplay distance a
+    // branch must read as one grown piece of wood, never as segments that
+    // merely meet at a point.
+    const len = Math.max(0.05, dir.length()) + (r1 + r2) * 0.95;
+    const g = new THREE.CylinderGeometry(r2 * 1.22, r1 * 1.18, len, seg);
     const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
     const mid = start.add(end).multiplyScalar(0.5);
     g.applyMatrix4(new THREE.Matrix4().compose(mid, quat, new THREE.Vector3(1, 1, 1)));
     return coloredPart(g, hex);
   }
-  function partJoint(r, x, y, z, hex) { return partBlob(r, 1, 0.92, 1, x, y, z, hex); }
-  function partRoot(rTop, rBottom, hex) { return partCyl(rTop, rBottom, 1.15, 6, 0, -0.06, 0, hex); }
+  function partJoint(r, x, y, z, hex) { return partBlob(r * 1.3, 1.08, 0.96, 1.08, x, y, z, hex); }
+  function partRoot(rTop, rBottom, hex) {
+    // Shaft + a wide flare skirt: the skirt is the visual weld between
+    // trunk and soil, spreading past the placement sink on every side.
+    const shaft = partCyl(rTop, rBottom, 1.2, 7, 0, -0.08, 0, hex);
+    const flareGeo = new THREE.CylinderGeometry(rTop * 0.95, rBottom * 1.6, 0.55, 7);
+    flareGeo.translate(0, 0.16, 0);
+    return mergeGeometries([shaft, coloredPart(flareGeo, hex)], false);
+  }
   function partCone(r, h, seg, x, y, z, hex) {
     const g = new THREE.ConeGeometry(r, h, seg); g.translate(x, y, z);
     return coloredPart(g, hex);
@@ -1478,14 +1534,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const grassGeometry = (() => {
     const verts = [];
     const normals = [];
+    // Knee-height tufts: the old 0.72-0.9m blades at up to 1.6x instance
+    // scale read as waist-high black fins across every screenshot.
     const blades = [
-      { a: 0.2, h: 0.72, bend: 0.10 },
-      { a: 2.25, h: 0.9, bend: 0.14 },
-      { a: 4.2, h: 0.78, bend: 0.08 },
+      { a: 0.2, h: 0.5, bend: 0.08 },
+      { a: 2.25, h: 0.62, bend: 0.11 },
+      { a: 4.2, h: 0.55, bend: 0.06 },
     ];
     for (const b of blades) {
       const dx = Math.sin(b.a), dz = Math.cos(b.a);
-      const sx = dz * 0.14, sz = -dx * 0.14;
+      const sx = dz * 0.09, sz = -dx * 0.09;
       verts.push(-sx, 0, -sz, sx, 0, sz, dx * b.bend, b.h, dz * b.bend);
       normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
     }
@@ -1515,7 +1573,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     else if (hill > 0.45) type = r < 0.58 ? 0 : r < 0.82 ? 1 : r < 0.94 ? 3 : 2;
     else if (dry > 0.58) type = r < 0.36 ? 2 : r < 0.58 ? 1 : r < 0.78 ? 4 : r < 0.91 ? 3 : 0;
     else type = r < 0.28 ? 0 : r < 0.52 ? 1 : r < 0.72 ? 2 : r < 0.88 ? 3 : 4;
-    treePlacements.push({ x, y, z, s, rot, type });
+    // Rooted seating: anchor on the LOWEST ground inside the root disc so
+    // the downhill side of the flare touches soil on any slope.
+    const seatY = groundSupportHeight(x, z, 0.55 * s, "min");
+    treePlacements.push({ x, y: seatY, z, s, rot, type });
   });
   scene.add(treeBlobShadows, grassTufts);
   for (const mesh of [rocks, treeBlobShadows, grassTufts, ...treeLodMeshes.flat()]) {
@@ -1571,11 +1632,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const x = rustPebbles[ri + 1], z = rustPebbles[ri + 2];
         const dx = x - cx, dz = z - cz;
         if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
-        dummy.position.set(x, terrainSurfaceHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
+        dummy.position.set(x, groundedBodyY(x, z, Math.min(0.35, rustPebbles[ri + 3] * 0.5), rustPebbles[ri + 4] * 0.34, 0.02), z);
         dummy.rotation.set(rustPebbles[ri + 6], rustPebbles[ri + 7], rustPebbles[ri + 8]);
         dummy.scale.set(rustPebbles[ri + 3], rustPebbles[ri + 4], rustPebbles[ri + 5]);
         dummy.updateMatrix();
         rocks.setMatrixAt(rockN++, dummy.matrix);
+        if (Math.max(rustPebbles[ri + 3], rustPebbles[ri + 5]) >= 0.55) {
+          addLocalObstacle(x, z, Math.max(rustPebbles[ri + 3], rustPebbles[ri + 5]) * 0.62, dummy.position.y + rustPebbles[ri + 4] * 0.8);
+        }
         pebbleN++;
         debugStats.rustScatter++;
       }
@@ -1594,7 +1658,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const dx = x - cx, dz = z - cz;
           if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
           const s = 0.13 + hash2(gx * 29 + 3, gz * 31 + 9) * 0.34;
-          dummy.position.set(x, terrainSurfaceHeight(x, z) + s * 0.22, z);
+          dummy.position.set(x, groundedBodyY(x, z, s * 0.5, s * 0.62 * 0.34, 0.02), z);
           dummy.rotation.set(hash2(gx, gz) * 3, hash2(gx + 9, gz - 4) * 3, hash2(gx - 6, gz + 8) * 3);
           dummy.scale.set(s, s * 0.62, s * (0.75 + hash2(gx + 2, gz + 2) * 0.45));
           dummy.updateMatrix();
@@ -1612,7 +1676,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const x = rustGrass[ri + 1], z = rustGrass[ri + 2];
         const dx = x - cx, dz = z - cz;
         if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
-        dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.02, z);
+        dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.06, z); // roots buried, never floating
         dummy.rotation.set(0, rustGrass[ri + 7], 0);
         dummy.scale.setScalar(rustGrass[ri + 3]);
         dummy.updateMatrix();
@@ -1632,7 +1696,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const z = (gz + 0.2 + hash2(gx * 23 - 41, gz * 29 + 13) * 0.6) * cell;
           const dx = x - cx, dz = z - cz;
           if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
-          dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.02, z);
+          dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.06, z); // roots buried, never floating
           dummy.rotation.set(0, hash2(gx * 43, gz * 47) * Math.PI * 2, 0);
           dummy.scale.setScalar(0.75 + hash2(gx * 53 + 7, gz * 59 - 5) * 0.85);
           dummy.updateMatrix();
@@ -1658,13 +1722,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         treeLodCounts[type][band] = slot + 1;
         if (band === 0) treeFullN++; else if (band === 1) treeMidN++; else treeFarN++;
         if (d2 <= CULL_NEAR2) {
-          const trunkR = (type === 3 ? 0.62 : type === 4 ? 0.25 : 0.36) * p.s;
+          const trunkR = (type === 3 ? 0.74 : type === 4 ? 0.3 : 0.43) * p.s;
           addLocalObstacle(p.x, p.z, trunkR, p.y + (type === 4 ? 5.2 : 3.4) * p.s);
+          if (type === 3) {
+            // Banyan aerial roots are solid too — no walking through the
+            // root cage. Local root discs rotated into world space.
+            const c = Math.cos(p.rot), sn = Math.sin(p.rot);
+            const roots = [[1.34, -0.24], [-1.3, 0.28], [0.24, 1.28], [-0.24, -1.26]];
+            for (let rI = 0; rI < roots.length; rI++) {
+              const lx = roots[rI][0] * p.s, lz = roots[rI][1] * p.s;
+              addLocalObstacle(p.x + lx * c + lz * sn, p.z - lx * sn + lz * c, 0.14 * p.s, p.y + 3.5 * p.s);
+            }
+          }
         }
       }
       if (band < 2 && blobN < 768) {
         dummy.rotation.set(0, p.rot, 0);
-        dummy.position.set(p.x, p.y + 0.045, p.z);
+        dummy.position.set(p.x, terrainSurfaceHeight(p.x, p.z) + 0.045, p.z);
         dummy.scale.setScalar(2.3 * p.s);
         dummy.updateMatrix();
         treeBlobShadows.setMatrixAt(blobN++, dummy.matrix);
@@ -1688,7 +1762,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // lighting once the objective is outside the 150m combat band.
     const rdx = WORLD.relay.x - cx, rdz = WORLD.relay.z - cz;
     beaconLight.visible = rdx * rdx + rdz * rdz <= CULL_MID2;
-    if (rdx * rdx + rdz * rdz <= CULL_NEAR2) addLocalObstacle(WORLD.relay.x, WORLD.relay.z, 0.55, relayY + 27);
+    if (rdx * rdx + rdz * rdz <= CULL_NEAR2) {
+      addLocalObstacle(WORLD.relay.x, WORLD.relay.z, 0.55, relayY + 27); // mast
+      // Equipment hut + crates on the deck are solid bodies, not ghosts.
+      addLocalObstacle(WORLD.relay.x - 3.4, WORLD.relay.z + 2.2, 1.75, relayY + 2.4);
+      addLocalObstacle(WORLD.relay.x + 3.6, WORLD.relay.z - 2.6, 1.05, relayY + 2.25);
+      addLocalObstacle(WORLD.relay.x + 4.6, WORLD.relay.z - 1.4, 0.78, relayY + 1.85);
+      addLocalObstacle(WORLD.relay.x - 4.4, WORLD.relay.z - 3.0, 0.92, relayY + 2.05);
+    }
+    // A downed drone wreck resting on the ground is a solid obstacle.
+    for (let di = 0; di < drones.length; di++) {
+      const d = drones[di];
+      if (d.alive || !d.landed) continue;
+      const dx = d.group.position.x - cx, dz = d.group.position.z - cz;
+      if (dx * dx + dz * dz <= CULL_NEAR2) {
+        addLocalObstacle(d.group.position.x, d.group.position.z, 0.9, d.group.position.y + 0.75);
+      }
+    }
 
     debugStats.cullNear = rockN + treeFullN;
     debugStats.cullMid = treeMidN + treeFarN;
@@ -1705,7 +1795,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   // ----- relay station -----
   const relay = new THREE.Group();
-  const relayY = terrainSurfaceHeight(WORLD.relay.x, WORLD.relay.z);
+  // Seat the whole station on the lowest ground inside the platform disc so
+  // no edge hovers; the deck top then becomes walkable physics ground.
+  const relayY = groundSupportHeight(WORLD.relay.x, WORLD.relay.z, 8.4, "min");
+  relayDeckY = relayY + 0.95;
   relay.position.set(WORLD.relay.x, relayY, WORLD.relay.z);
   const metal = new THREE.MeshStandardMaterial({ color: 0x2b322a, roughness: 0.55, metalness: 0.55 });
   const darkMetal = new THREE.MeshStandardMaterial({ color: 0x171c16, roughness: 0.7, metalness: 0.35 });
@@ -1759,18 +1852,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     eye.position.set(0, -0.28, 0);
     group.add(body, eye);
     scene.add(group);
+    const hoverH = 6.5 + rand() * 4;
+    // Settled above its anchor before the first frame — never spawned at
+    // the origin or inside the terrain waiting for an update to rescue it.
+    group.position.set(ax, terrainSurfaceHeight(ax, az) + hoverH, az);
     drones.push({
       group, body, eye, ax, az, cx: ax, cz: az, engaged: false,
       rustLos: true, rustThreat: 0, rustWayX: ax, rustWayZ: az,
       path: null, pathI: 0, pathPending: false, pathId: 0, nextPathAt: 0,
-      hoverH: 6.5 + rand() * 4,
+      hoverH,
       phase: rand() * Math.PI * 2,
       orbitR: 4 + rand() * 4.5,
       speed: 0.25 + rand() * 0.3,
-      alive: true, vy: 0, respawnAt: 0,
+      alive: true, landed: false, vy: 0, respawnAt: 0,
     });
   }
 
+  debugStats.groundedObjects = rockPlacements.length + treePlacements.length + drones.length + 1; // + relay
   const rustAiAgents = new Float32Array(Math.max(1, drones.length) * 6);
   let lastRustAiT = -1;
 
@@ -1796,6 +1894,32 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       pVel[i * 3 + 1] = rand() * spread * 0.9 + 0.6;
       pVel[i * 3 + 2] = (rand() - 0.5) * spread;
       pLife[i] = 0.45 + rand() * 0.5;
+    }
+  }
+
+  // ----- wading splash droplets (pooled, one extra draw call) -----
+  const SMAX = 180;
+  const sPos = new Float32Array(SMAX * 3), sVel = new Float32Array(SMAX * 3), sLife = new Float32Array(SMAX);
+  sPos.fill(-9999);
+  const sGeo = new THREE.BufferGeometry();
+  sGeo.setAttribute("position", new THREE.BufferAttribute(sPos, 3));
+  const splashPoints = new THREE.Points(sGeo, new THREE.PointsMaterial({
+    color: 0xcfeeff, size: 0.16, transparent: true, opacity: 0.9, depthWrite: false, sizeAttenuation: true,
+  }));
+  splashPoints.frustumCulled = false;
+  scene.add(splashPoints);
+  let sCursor = 0;
+  function splashBurst(x, y, z, n = 10, power = 1) {
+    debugStats.splashBursts++;
+    for (let k = 0; k < n; k++) {
+      const i = sCursor; sCursor = (sCursor + 1) % SMAX;
+      sPos[i * 3] = x + (rand() - 0.5) * 0.22;
+      sPos[i * 3 + 1] = y;
+      sPos[i * 3 + 2] = z + (rand() - 0.5) * 0.22;
+      sVel[i * 3] = (rand() - 0.5) * 1.7 * power;
+      sVel[i * 3 + 1] = (0.9 + rand() * 1.6) * power;
+      sVel[i * 3 + 2] = (rand() - 0.5) * 1.7 * power;
+      sLife[i] = 0.28 + rand() * 0.3;
     }
   }
 
@@ -2009,6 +2133,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     stamina: 100,
     sprintHold: 0,
     sprinting: false,
+    sprintEffect: 0, // 0..1 smoothed sprint power (speed + FOV + gun pose)
+    boostT: 0, boostRegen: 0, boostPowerFloor: 0, // soda / stimulant / medicine window
+    wadeBlend: 0, // 0..1 smoothed wading depth for animation/FOV
     reloadT: 0,
     reloadDur: 1.55,
     safetyBadFrames: 0,
@@ -2132,6 +2259,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       }
       if (drone && drone.alive) {
         drone.alive = false;
+        drone.landed = false;
         drone.vy = 0;
         drone.respawnAt = performance.now() / 1000 + 9;
         drone.eye.material.color.set(0x3a1512);
@@ -2191,6 +2319,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function pushHud() {
     camera.getWorldDirection(_v1);
     const heading = Math.round(((Math.atan2(_v1.x, -_v1.z) * 180) / Math.PI + 360) % 360);
+    debugStats.heading = heading;
     if (heading !== lastHeading) { lastHeading = heading; if (hooks.onHeading) hooks.onHeading(heading); }
     const dx = WORLD.relay.x - player.pos.x, dz = WORLD.relay.z - player.pos.z;
     const dist = Math.round(Math.hypot(dx, dz));
@@ -2226,6 +2355,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     physBuf[0] = px; physBuf[2] = pz; physBuf[3] = vx; physBuf[5] = vz;
     physBuf[31] = Math.hypot(vx, vz);
+  }
+
+  function setCameraFov(target, dt, rate = 7) {
+    const next = camera.fov + (target - camera.fov) * Math.min(1, dt * rate);
+    if (Math.abs(next - camera.fov) > 0.01) {
+      camera.fov = next;
+      camera.updateProjectionMatrix();
+    }
+    debugStats.fov = Math.round(camera.fov * 10) / 10;
   }
 
   function updatePlayer(dt) {
@@ -2267,28 +2405,55 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const inRiverNow = riNow.d < 9.2 && terrainNow < riNow.water - 0.12;
     const inSeaNow = terrainNow < SEA_LEVEL - 0.12 && player.pos.z > mapPreset.half * 0.68;
     const inWaterNow = inRiverNow || inSeaNow;
-    if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
+    const waterSurfaceNow = inRiverNow ? riNow.water : SEA_LEVEL;
+    if (inWaterNow && !player.wading) {
+      // Crossing the waterline: one big entry splash (visual + sound).
+      splashBurst(player.pos.x, waterSurfaceNow + 0.04, player.pos.z, 16, 1.25);
+      if (hooks.onSplash) hooks.onSplash(1);
+    }
     player.wading = inWaterNow;
     const crouch = inputState.touchCrouch || k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight");
     player.crouching = crouch;
-    const forwardPull = !crouch && !inWaterNow && mz > 0.88 && Math.abs(mx) < 0.45;
-    if (forwardPull) {
-      player.sprintHold += dt;
-      if (player.sprintHold >= 1 && player.stamina > 1) player.sprinting = true;
-    } else {
-      player.sprintHold = 0;
-      player.sprinting = false;
+    // Consumable stamina boosts (soda / stimulants / medicine queue one of
+    // these): instant restore plus a timed regen + sprint-power floor.
+    if (inputState.staminaBoost) {
+      const b = inputState.staminaBoost;
+      inputState.staminaBoost = null;
+      player.stamina = clamp(player.stamina + (b.amount || 0), 0, 125);
+      player.boostT = Math.max(player.boostT, b.duration || 0);
+      player.boostRegen = Math.max(player.boostRegen, b.regen || 0);
+      player.boostPowerFloor = Math.max(player.boostPowerFloor, b.powerFloor || 0);
     }
-    if (player.sprinting) {
-      player.stamina = Math.max(0, player.stamina - dt * 16);
-      if (player.stamina <= 0) player.sprinting = false;
+    if (player.boostT > 0) {
+      player.boostT = Math.max(0, player.boostT - dt);
+      player.stamina = Math.min(125, player.stamina + player.boostRegen * dt);
+      if (player.boostT <= 0) { player.boostRegen = 0; player.boostPowerFloor = 0; }
+    } else if (player.stamina > 100) {
+      player.stamina = Math.max(100, player.stamina - dt * 3); // overcharge bleeds off
+    }
+    // Sprint is available whenever stamina remains, but its POWER is a
+    // smooth function of the tank: full effect down to ~55 stamina, then
+    // speed, FOV kick and gun-pose all fade gradually to a jog at empty.
+    const forwardPull = !crouch && !inWaterNow && mz > 0.88 && Math.abs(mx) < 0.45;
+    player.sprintHold = forwardPull ? player.sprintHold + dt : 0;
+    let staminaPower = clamp(player.stamina / 55, 0, 1);
+    staminaPower = staminaPower * staminaPower * (3 - 2 * staminaPower);
+    if (player.boostT > 0) staminaPower = Math.max(staminaPower, player.boostPowerFloor);
+    const sprintTarget = forwardPull && player.stamina > 0.5 ? staminaPower : 0;
+    const sprintRate = sprintTarget > player.sprintEffect ? 1.9 : 2.6;
+    player.sprintEffect += clamp(sprintTarget - player.sprintEffect, -dt * sprintRate, dt * sprintRate);
+    player.sprinting = player.sprintEffect > 0.08;
+    if (forwardPull && player.sprintEffect > 0.03) {
+      player.stamina = Math.max(0, player.stamina - dt * (6 + 10 * player.sprintEffect));
     } else {
       player.stamina = Math.min(100, player.stamina + dt * (len > 0.1 ? 7 : 13));
     }
-    debugStats.stamina = Math.round(player.stamina);
+    debugStats.stamina = Math.round(clamp(player.stamina, 0, 100));
     debugStats.sprinting = player.sprinting ? 1 : 0;
     debugStats.sprintHold = Math.round(player.sprintHold * 100) / 100;
-    const maxSpeed = (player.sprinting ? 7.6 : 5.2) * (inWaterNow ? 0.45 : 1) * (crouch ? 0.5 : 1);
+    debugStats.sprintEffect = Math.round(player.sprintEffect * 100) / 100;
+    debugStats.staminaBoostT = Math.round(player.boostT * 10) / 10;
+    const maxSpeed = (5.2 + (7.6 - 5.2) * player.sprintEffect) * (inWaterNow ? 0.45 : 1) * (crouch ? 0.5 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
     const wasGrounded = physBuf[6] > 0.5;
@@ -2392,15 +2557,37 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.vy = Math.round(player.vy * 10) / 10;
     debugStats.speed = Math.round(physBuf[31] * 10) / 10;
     const hSpeed = physBuf[31];
+    // Actual submersion (feet vs surface) — on the bridge deck this stays
+    // false even though the bed below is wet, so no phantom splashing.
+    const feetSubmerged = inWaterNow && feetY < waterSurfaceNow - 0.03;
+    const wadeDepth = feetSubmerged ? clamp(waterSurfaceNow - feetY, 0, 1.5) : 0;
+    player.wadeBlend += ((feetSubmerged ? clamp(wadeDepth / 0.9, 0, 1) : 0) - player.wadeBlend) * Math.min(1, dt * 7);
+    debugStats.wadeDepth = Math.round(wadeDepth * 100) / 100;
     const moving = clamp(hSpeed / 5, 0, 1) * (player.grounded ? 1 : 0.2);
-    player.bobPhase += dt * hSpeed * 1.18 * (player.grounded ? 1 : 0.25);
+    player.bobPhase += dt * hSpeed * 1.18 * (player.grounded ? 1 : 0.25) * (1 - player.wadeBlend * 0.18);
     const stepIdx = Math.floor(player.bobPhase / Math.PI);
     if (moving > 0.15 && stepIdx !== player.lastStep && player.grounded) {
       player.lastStep = stepIdx;
-      if (hooks.onStep) hooks.onStep(inWaterNow);
+      if (hooks.onStep) {
+        hooks.onStep(feetSubmerged, {
+          depth: wadeDepth, speed: hSpeed,
+          intensity: clamp(0.35 + moving * 0.65 + player.sprintEffect * 0.35, 0, 1.4),
+        });
+      }
+      if (feetSubmerged) {
+        const sideSign = stepIdx % 2 ? 0.17 : -0.17;
+        splashBurst(
+          player.pos.x + (-sin) * 0.5 + cos * sideSign,
+          waterSurfaceNow + 0.04,
+          player.pos.z + (-cos) * 0.5 - sin * sideSign,
+          Math.round(5 + wadeDepth * 7 + hSpeed * 0.8),
+          0.65 + wadeDepth * 0.35 + hSpeed * 0.05
+        );
+      }
     }
-    const bobY = Math.sin(player.bobPhase) * 0.055 * moving;
-    const bobX = Math.cos(player.bobPhase * 0.5) * 0.03 * moving;
+    const strideAmp = moving * (1 + player.sprintEffect * 0.55 + player.wadeBlend * 0.35);
+    const bobY = Math.sin(player.bobPhase) * 0.055 * strideAmp;
+    const bobX = Math.cos(player.bobPhase * 0.5) * 0.03 * strideAmp;
     player.landDip = Math.max(0, player.landDip - dt * 0.5);
 
     if (transition) {
@@ -2413,7 +2600,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       if (transition.t >= 1) transition = null;
     } else {
       camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
-      camera.rotation.set(player.pitch, player.yaw, -mx * 0.014);
+      camera.rotation.set(player.pitch, player.yaw, -mx * 0.014 + Math.sin(player.bobPhase * 0.5) * 0.01 * strideAmp);
     }
     // Final camera-terrain clearance: even if a streamed LOD swap changes
     // a triangle under the player, the near plane must never enter the
@@ -2429,6 +2616,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const targetLift = clamp(camGround + 0.48 - camera.position.y, 0, 0.75);
       player.cameraLift = (player.cameraLift || 0) + (targetLift - (player.cameraLift || 0)) * Math.min(1, dt * 14);
       camera.position.y += player.cameraLift;
+    }
+
+    // Dynamic FOV: the Settings base angle plus a sprint stretch that
+    // fades WITH stamina, a subtle walk-cycle pulse, a small wading push
+    // and a landing punch-in. All smoothed, never snapping.
+    {
+      const baseFov = clamp(inputState.fov || 71, 55, 100);
+      const targetFov = baseFov
+        + player.sprintEffect * 7
+        + moving * 1.1
+        + Math.sin(player.bobPhase) * 0.5 * moving
+        + player.wadeBlend * 1.6
+        - player.landDip * 7;
+      setCameraFov(targetFov, dt, 7);
     }
 
     // Viewmodel: camera-synced walking bob + spring sway + recoil + reload.
@@ -2461,15 +2662,25 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       gunMagazine.rotation.set(0, 0, 0);
     }
     debugStats.reloadT = Math.round(player.reloadT * 100) / 100;
+    // Locomotion poses layered over the base bob/sway:
+    // - sprint: rifle cants across the body and pumps with the stride,
+    //   scaling with sprintEffect so it relaxes as stamina fades;
+    // - wading: rifle lifts clear of the water with a slower drag sway.
+    const sprintPose = player.sprintEffect * (player.grounded ? 1 : 0.3);
+    const runSwing = Math.sin(player.bobPhase) * sprintPose;
+    const wadePose = player.wadeBlend;
     gun.position.set(
-      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16 - reloadYaw * 0.10,
-      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11 - reloadDip,
-      -0.65 + rk * 0.07 + reloadDip * 0.35
+      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16 - reloadYaw * 0.10
+        + Math.cos(player.bobPhase) * 0.012 * sprintPose - sprintPose * 0.045,
+      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11 - reloadDip
+        - Math.abs(runSwing) * 0.022 + runSwing * 0.01 + wadePose * 0.075,
+      -0.65 + rk * 0.07 + reloadDip * 0.35 + sprintPose * 0.045 + wadePose * 0.02
     );
     gun.rotation.set(
-      rk * 0.09 + player.swayPitch * 0.85 + reloadTilt,
-      player.swayYaw + reloadYaw,
-      player.swayYaw * 0.35 - reloadTilt * 0.45
+      rk * 0.09 + player.swayPitch * 0.85 + reloadTilt + sprintPose * 0.12 - wadePose * 0.1,
+      player.swayYaw + reloadYaw + sprintPose * 0.38 + wadePose * 0.06,
+      player.swayYaw * 0.35 - reloadTilt * 0.45 - sprintPose * 0.26 + runSwing * 0.05
+        + Math.sin(player.bobPhase * 0.7) * 0.02 * wadePose
     );
     flash.material.opacity = Math.max(0, flash.material.opacity - dt * 16);
   }
@@ -2484,6 +2695,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       cz + Math.cos(a) * 85
     );
     camera.lookAt(cx, terrainHeight(cx, cz) + 8, cz);
+    setCameraFov(clamp(inputState.fov || 71, 55, 100), 1 / 60, 5);
     gun.visible = false;
     playerBlobShadow.visible = false;
   }
@@ -2547,9 +2759,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         d.engaged = false;
         if (!d.alive && nowSec >= d.respawnAt) {
           d.alive = true;
+          d.landed = false;
           d.vy = 0;
           d.eye.material.color.set(0xffb347);
           d.group.rotation.set(0, 0, 0);
+          d.group.position.set(d.cx, terrainSurfaceHeight(d.cx, d.cz) + d.hoverH, d.cz);
         }
         continue;
       }
@@ -2623,17 +2837,32 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         d.body.rotation.y += dt * (d.engaged ? 3.0 : 1.6);
       } else if (nowSec >= d.respawnAt) {
         d.alive = true;
+        d.landed = false;
         d.engaged = false;
+        d.vy = 0;
         d.eye.material.color.set(0xffb347);
         d.group.rotation.set(0, 0, 0);
+        d.group.position.set(d.cx, terrainSurfaceHeight(d.cx, d.cz) + d.hoverH, d.cz);
       } else {
         d.engaged = false;
-        const groundY = terrainSurfaceHeight(d.group.position.x, d.group.position.z) + 0.7;
-        if (d.group.position.y > groundY) {
-          d.vy += 22 * dt;
-          d.group.position.y = Math.max(groundY, d.group.position.y - d.vy * dt);
-          d.group.rotation.x += dt * 4; d.group.rotation.z += dt * 3;
-          if (d.group.position.y <= groundY) burst(d.group.position, 10, 2);
+        // Wreck physics: fall once, then REST on the highest ground inside
+        // the body footprint. It can tumble while falling, but it can never
+        // sink into or under the terrain, on a slope or anywhere else.
+        const restY = groundSupportHeight(d.group.position.x, d.group.position.z, 0.85, "max") + 0.68;
+        if (!d.landed) {
+          if (d.group.position.y > restY) {
+            d.vy += 22 * dt;
+            d.group.position.y = Math.max(restY, d.group.position.y - d.vy * dt);
+            d.group.rotation.x += dt * 4; d.group.rotation.z += dt * 3;
+          }
+          if (d.group.position.y <= restY) {
+            d.group.position.y = restY;
+            d.vy = 0;
+            d.landed = true;
+            burst(d.group.position, 10, 2);
+          }
+        } else {
+          d.group.position.y = restY;
         }
       }
     }
@@ -2653,8 +2882,31 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       pPos[i * 3] += pVel[i * 3] * dt;
       pPos[i * 3 + 1] += pVel[i * 3 + 1] * dt;
       pPos[i * 3 + 2] += pVel[i * 3 + 2] * dt;
+      // Debris lands and skids on the rendered ground instead of falling
+      // through the world.
+      if (pVel[i * 3 + 1] < 0) {
+        const gy = terrainSurfaceHeight(pPos[i * 3], pPos[i * 3 + 2]) + 0.03;
+        if (pPos[i * 3 + 1] < gy) {
+          pPos[i * 3 + 1] = gy;
+          pVel[i * 3 + 1] *= -0.22;
+          pVel[i * 3] *= 0.6; pVel[i * 3 + 2] *= 0.6;
+          if (pLife[i] > 0.18) pLife[i] = 0.18;
+        }
+      }
     }
     if (any) pGeo.attributes.position.needsUpdate = true;
+    let anySplash = false;
+    for (let i = 0; i < SMAX; i++) {
+      if (sLife[i] <= 0) continue;
+      anySplash = true;
+      sLife[i] -= dt;
+      if (sLife[i] <= 0) { sPos[i * 3 + 1] = -9999; continue; }
+      sVel[i * 3 + 1] -= 5.5 * dt;
+      sPos[i * 3] += sVel[i * 3] * dt;
+      sPos[i * 3 + 1] += sVel[i * 3 + 1] * dt;
+      sPos[i * 3 + 2] += sVel[i * 3 + 2] * dt;
+    }
+    if (anySplash) sGeo.attributes.position.needsUpdate = true;
     for (let ti = 0; ti < tracers.length; ti++) {
       const t = tracers[ti];
       if (t.life <= 0) continue;
@@ -2698,11 +2950,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       weights: [["sunny", 0.60], ["mist", 0.30], ["monsoon", 0.10]],
     },
     cool: {
-      terrain: new THREE.Color(0xffffff), canopy: new THREE.Color(0xffffff), grass: new THREE.Color(0x35542a),
+      terrain: new THREE.Color(0xffffff), canopy: new THREE.Color(0xffffff), grass: new THREE.Color(0x4a7038),
       weights: [["sunny", 0.50], ["mist", 0.40], ["monsoon", 0.10]],
     },
     monsoon: {
-      terrain: new THREE.Color(0x9fd3a8), canopy: new THREE.Color(0xbde8c5), grass: new THREE.Color(0x1f6b32),
+      terrain: new THREE.Color(0x9fd3a8), canopy: new THREE.Color(0xbde8c5), grass: new THREE.Color(0x2e7d3e),
       weights: [["monsoon", 0.50], ["mist", 0.40], ["sunny", 0.10]],
     },
   };
@@ -2937,13 +3189,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     safetyAcc = 0;
     for (let i = 0; i < drones.length; i++) {
       const d = drones[i];
-      if (!d.alive) continue;
       const gy = terrainSurfaceHeight(d.group.position.x, d.group.position.z);
-      if (!Number.isFinite(d.group.position.y) || d.group.position.y < gy + 1.0) {
-        recordSafetyReport(2, d.group.position.x, d.group.position.y, d.group.position.z, gy);
-        debugStats.safetyRescues++;
-        d.cx = d.ax; d.cz = d.az; d.vy = 0;
-        d.group.position.set(d.ax, terrainSurfaceHeight(d.ax, d.az) + d.hoverH, d.az);
+      if (d.alive) {
+        if (!Number.isFinite(d.group.position.y) || d.group.position.y < gy + 1.0) {
+          recordSafetyReport(2, d.group.position.x, d.group.position.y, d.group.position.z, gy);
+          debugStats.safetyRescues++;
+          d.cx = d.ax; d.cz = d.az; d.vy = 0;
+          d.group.position.set(d.ax, terrainSurfaceHeight(d.ax, d.az) + d.hoverH, d.az);
+        }
+      } else if (d.landed) {
+        // A wreck must stay resting ON the ground, never under it.
+        const restY = groundSupportHeight(d.group.position.x, d.group.position.z, 0.85, "max") + 0.68;
+        if (!Number.isFinite(d.group.position.y) || d.group.position.y < restY - 0.05) {
+          d.group.position.y = restY;
+          d.vy = 0;
+          debugStats.groundingCorrections++;
+        }
       }
     }
   }
