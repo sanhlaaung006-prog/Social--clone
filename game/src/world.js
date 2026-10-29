@@ -27,6 +27,9 @@ export const debugStats = {
   fps: 0, frameMs: 0, calls: 0, tris: 0, points: 0, lines: 0,
   geometries: 0, textures: 0, programs: 0,
   width: 0, height: 0, cycle: 0, px: 0, pz: 0, _last: 0,
+  cullNear: 0, cullMid: 0, cullFar: 0, dronesVisible: 0,
+  shadowMapsFrozen: 1, shadowMapUpdates: 0,
+  simSeconds: 0, travelM: 0,
 };
 
 // ---------- deterministic rng / noise ----------
@@ -162,6 +165,13 @@ export function createWorld(canvas, hooks = {}) {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.06;
+  // Combat-perf policy: shadow maps are frozen out of the frame loop.
+  // This world has no shadow-casting lights, so disabling the shadow-map
+  // system (rather than merely pausing updates) guarantees zero shadow
+  // passes and zero shadow-map allocations during combat.
+  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = false;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0f0a); // behind the sky dome
@@ -175,9 +185,11 @@ export function createWorld(canvas, hooks = {}) {
   scene.add(hemi);
   const sunLight = new THREE.DirectionalLight(0xd8e6c0, 1.5);
   sunLight.position.set(90, 150, 40);
+  sunLight.castShadow = false;
   scene.add(sunLight);
   const moonLight = new THREE.DirectionalLight(0x8fa8d8, 0);
   moonLight.position.set(-60, 120, -30);
+  moonLight.castShadow = false;
   scene.add(moonLight);
 
   // ----- sky: gradient dome + sun/moon discs, star field, galaxies -----
@@ -448,6 +460,11 @@ export function createWorld(canvas, hooks = {}) {
     }
     return placed;
   }
+  // Placement transforms are retained once at startup so the culler can
+  // compact the same preallocated InstancedMesh buffers without allocating
+  // replacement meshes or matrices in the frame loop.
+  const rockPlacements = [];
+  const treePlacements = [];
   const rocks = new THREE.InstancedMesh(
     new THREE.IcosahedronGeometry(1, 0),
     new THREE.MeshStandardMaterial({ color: 0x555a50, roughness: 1, flatShading: true }),
@@ -459,6 +476,11 @@ export function createWorld(canvas, hooks = {}) {
     dummy.rotation.set(rand() * 3, rand() * 3, rand() * 3);
     dummy.scale.set(s, s * (0.55 + rand() * 0.5), s);
     dummy.updateMatrix();
+    rockPlacements.push({
+      x, y: dummy.position.y, z,
+      rx: dummy.rotation.x, ry: dummy.rotation.y, rz: dummy.rotation.z,
+      sx: dummy.scale.x, sy: dummy.scale.y, sz: dummy.scale.z,
+    });
     rocks.setMatrixAt(i, dummy.matrix);
   });
   scene.add(rocks);
@@ -476,6 +498,7 @@ export function createWorld(canvas, hooks = {}) {
   );
   scatter(TREE_N, (x, y, z, i) => {
     const s = 0.8 + rand() * 1.15, rot = rand() * Math.PI * 2;
+    treePlacements.push({ x, y, z, s, rot });
     dummy.rotation.set(0, rot, 0);
     dummy.position.set(x, y + 0.8 * s, z); dummy.scale.setScalar(s); dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
@@ -483,6 +506,72 @@ export function createWorld(canvas, hooks = {}) {
     canopies.setMatrixAt(i, dummy.matrix);
   });
   scene.add(trunks, canopies);
+  for (const mesh of [rocks, trunks, canopies]) {
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false; // contents are per-instance distance-compacted below
+  }
+
+  // ----- combat distance bands: 60m detail / 150m silhouette / culled -----
+  // The macro terrain, river and relay remain as navigation landmarks (they
+  // are only a few draw calls). Scatter detail uses:
+  //   <= 60m: rocks + trunks + canopies
+  //   <=150m: canopies only (cover silhouettes at engagement range)
+  //    >150m: no scatter instances submitted
+  // Compaction reuses the existing three InstancedMeshes, so culling does
+  // not change the draw-call count; it cuts vertex/instance processing.
+  const CULL_NEAR_M = 60;
+  const CULL_MID_M = 150;
+  const CULL_NEAR2 = CULL_NEAR_M * CULL_NEAR_M;
+  const CULL_MID2 = CULL_MID_M * CULL_MID_M;
+  let scatterCullAcc = Infinity;
+  function refreshScatterCulling() {
+    const cx = camera.position.x, cz = camera.position.z;
+    let rockN = 0, trunkN = 0, canopyN = 0, farTrees = 0;
+
+    for (const p of rockPlacements) {
+      const dx = p.x - cx, dz = p.z - cz;
+      if (dx * dx + dz * dz > CULL_NEAR2) continue;
+      dummy.position.set(p.x, p.y, p.z);
+      dummy.rotation.set(p.rx, p.ry, p.rz);
+      dummy.scale.set(p.sx, p.sy, p.sz);
+      dummy.updateMatrix();
+      rocks.setMatrixAt(rockN++, dummy.matrix);
+    }
+
+    for (const p of treePlacements) {
+      const dx = p.x - cx, dz = p.z - cz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > CULL_MID2) { farTrees++; continue; }
+      dummy.rotation.set(0, p.rot, 0);
+      dummy.scale.setScalar(p.s);
+      dummy.position.set(p.x, p.y + 3.8 * p.s, p.z);
+      dummy.updateMatrix();
+      canopies.setMatrixAt(canopyN++, dummy.matrix);
+      if (d2 <= CULL_NEAR2) {
+        dummy.position.set(p.x, p.y + 0.8 * p.s, p.z);
+        dummy.updateMatrix();
+        trunks.setMatrixAt(trunkN++, dummy.matrix);
+      }
+    }
+
+    rocks.count = rockN;
+    trunks.count = trunkN;
+    canopies.count = canopyN;
+    rocks.instanceMatrix.needsUpdate = true;
+    trunks.instanceMatrix.needsUpdate = true;
+    canopies.instanceMatrix.needsUpdate = true;
+
+    // The relay point light has a 90m radius; don't include it in material
+    // lighting once the objective is outside the 150m combat band.
+    const rdx = WORLD.relay.x - cx, rdz = WORLD.relay.z - cz;
+    beaconLight.visible = rdx * rdx + rdz * rdz <= CULL_MID2;
+
+    debugStats.cullNear = rockN + trunkN;
+    debugStats.cullMid = canopyN;
+    debugStats.cullFar = farTrees;
+    debugStats.shadowMapsFrozen = renderer.shadowMap.autoUpdate ? 0 : 1;
+    debugStats.shadowMapUpdates = 0;
+  }
 
   // ----- relay station -----
   const relay = new THREE.Group();
@@ -560,6 +649,8 @@ export function createWorld(canvas, hooks = {}) {
   scene.add(particles);
   let pCursor = 0;
   function burst(point, n = 14, spread = 3.4) {
+    // Impact FX obey the same 150m combat band; hits still register beyond it.
+    if (camera.position.distanceToSquared(point) > CULL_MID2) return;
     for (let k = 0; k < n; k++) {
       const i = pCursor; pCursor = (pCursor + 1) % PMAX;
       pPos[i * 3] = point.x; pPos[i * 3 + 1] = point.y; pPos[i * 3 + 2] = point.z;
@@ -662,7 +753,7 @@ export function createWorld(canvas, hooks = {}) {
     flash.scale.setScalar(0.8 + rand() * 0.7);
     raycaster.setFromCamera({ x: 0, y: 0 }, camera);
     const targets = [terrain];
-    for (const d of drones) if (d.alive) targets.push(d.body);
+    for (const d of drones) if (d.alive && d.group.visible) targets.push(d.body);
     const hits = raycaster.intersectObjects(targets, false);
     muzzle.getWorldPosition(_muzzleWorld);
     if (hits.length) {
@@ -716,7 +807,7 @@ export function createWorld(canvas, hooks = {}) {
 
   // ----- main loop -----
   const clock = new THREE.Clock();
-  let raf = 0, elapsed = 0;
+  let raf = 0, elapsed = 0, frameSerial = 0;
 
   function updatePlayer(dt) {
     // look: drag deltas + aim-stick rate
@@ -741,6 +832,7 @@ export function createWorld(canvas, hooks = {}) {
     const sprint = k.has("ShiftLeft") || k.has("ShiftRight");
     const speed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+    const prevX = player.pos.x, prevZ = player.pos.z;
     // forward = (-sin, -cos), right = (cos, -sin)
     player.pos.x += (-sin * mz + cos * mx) * speed * dt;
     player.pos.z += (-cos * mz - sin * mx) * speed * dt;
@@ -749,6 +841,7 @@ export function createWorld(canvas, hooks = {}) {
       player.pos.x *= WORLD.playableRadius / r;
       player.pos.z *= WORLD.playableRadius / r;
     }
+    debugStats.travelM += Math.hypot(player.pos.x - prevX, player.pos.z - prevZ);
     let ground = terrainHeight(player.pos.x, player.pos.z) + 1.7;
     const bdx = player.pos.x - bridge.cx, bdz = player.pos.z - bridge.cz;
     const alongB = bdx * bridge.ax + bdz * bridge.az;
@@ -803,7 +896,27 @@ export function createWorld(canvas, hooks = {}) {
   }
 
   function updateDrones(dt, t) {
-    for (const d of drones) {
+    const nowSec = performance.now() / 1000;
+    let visibleN = 0;
+    for (let di = 0; di < drones.length; di++) {
+      const d = drones[di];
+      const adx = d.ax - camera.position.x, adz = d.az - camera.position.z;
+      const approxDist = Math.max(0, Math.sqrt(adx * adx + adz * adz) - d.orbitR);
+      if (approxDist > CULL_MID_M) {
+        d.group.visible = false;
+        // Respawn bookkeeping still advances while the mesh is culled.
+        if (!d.alive && nowSec >= d.respawnAt) {
+          d.alive = true;
+          d.vy = 0;
+          d.eye.material.color.set(0xff5040);
+          d.group.rotation.set(0, 0, 0);
+        }
+        continue;
+      }
+      d.group.visible = true;
+      visibleN++;
+      // Full-rate inside 60m; quarter-rate analytic motion at 60-150m.
+      if (d.alive && approxDist > CULL_NEAR_M && ((frameSerial + di) & 3) !== 0) continue;
       if (d.alive) {
         const a = t * d.speed + d.phase;
         const x = d.ax + Math.cos(a) * d.orbitR;
@@ -826,6 +939,7 @@ export function createWorld(canvas, hooks = {}) {
         }
       }
     }
+    debugStats.dronesVisible = visibleN;
   }
 
   function updateFx(dt) {
@@ -927,6 +1041,7 @@ export function createWorld(canvas, hooks = {}) {
 
   function frame() {
     raf = requestAnimationFrame(frame);
+    frameSerial++;
     const dt = Math.min(clock.getDelta(), 0.05);
     elapsed += dt;
     if (playing) {
@@ -946,6 +1061,11 @@ export function createWorld(canvas, hooks = {}) {
     updateFx(dt);
     updateSky(dt);
     pushHud();
+    scatterCullAcc += dt;
+    if (scatterCullAcc >= 0.2) {
+      scatterCullAcc = 0;
+      refreshScatterCulling();
+    }
     renderer.render(scene, camera);
     { // debug counters (renderer.info is valid right after render)
       const now = performance.now();
@@ -964,8 +1084,9 @@ export function createWorld(canvas, hooks = {}) {
       debugStats.width = renderer.domElement.width;
       debugStats.height = renderer.domElement.height;
       debugStats.cycle = cycleT;
-      debugStats.px = Math.round(camera.position.x);
-      debugStats.pz = Math.round(camera.position.z);
+      debugStats.px = camera.position.x;
+      debugStats.pz = camera.position.z;
+      debugStats.simSeconds = elapsed;
     }
   }
   frame();

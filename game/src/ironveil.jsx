@@ -299,11 +299,18 @@
         ["GEOMETRIES", d.geometries],
         ["TEXTURES", d.textures],
         ["PROGRAMS", d.programs],
+        ["SHADOW MAPS", d.shadowMapsFrozen ? "FROZEN/OFF" : "LIVE"],
+        ["CULL <=60M", d.cullNear],
+        ["CULL <=150M", d.cullMid],
+        ["CULLED >150M", d.cullFar],
+        ["DRONES VIS", d.dronesVisible + "/6"],
+        ["SIM TIME", d.simSeconds.toFixed(1) + " S"],
+        ["TRAVEL", d.travelM.toFixed(0) + " M"],
         ["CANVAS", d.width + "x" + d.height],
         ["DPR", (window.devicePixelRatio || 1).toFixed(2)],
         ["JS HEAP", heap],
         ["TIME OF DAY", tod],
-        ["CAM X/Z", d.px + " / " + d.pz],
+        ["CAM X/Z", Math.round(d.px) + " / " + Math.round(d.pz)],
       ];
       return (
         <div className="debug-overlay">
