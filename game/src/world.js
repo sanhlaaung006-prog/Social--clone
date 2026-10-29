@@ -34,8 +34,20 @@ export const inputState = {
   lookDX: 0, // accumulated mouse-drag deltas (consumed each frame)
   lookDY: 0,
   sensitivity: 0.55, // lower default look multiplier (settings slider writes this)
-  quality: "MED", // render-quality preset (settings writes this; DPR caps read it live)
+  adsSensitivity: 0.26, // scoped look multiplier (Settings > Controls writes this)
+  quality: "MED", // render-quality preset label (resolution itself is always native DPR)
   fov: 71, // base vertical FOV in degrees (Settings > Display writes this)
+  ads: false, // touch ADS toggle (thumb button)
+  adsHeld: false, // desktop right-mouse hold
+  firing: false, // trigger currently held (touch FIRE / mouse) — drives the forward fire pose
+  weaponId: "kx9", // active gun (HUD weapon slots write this on swap)
+  activeWeaponSlot: "primary",
+  weaponSwap: null, // queued {slot,itemId,duration} draw animation from the HUD slots
+  weaponAdsFactor: 0.58, // scope zoom factor for the active gun
+  weaponSpread: 1, // spread multiplier for the active gun
+  jetAction: null, // queued "enter" / "exit" from the Warthog DRIVE / EXIT buttons
+  jetThrottleDelta: 0, // -1..1 held throttle input from the flight buttons
+  jetBrake: false, // held wheel-brake input while seated in the Warthog
   staminaBoost: null, // queued {amount,duration,regen,powerFloor} from soda/drugs/medicine
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
@@ -74,6 +86,10 @@ export const debugStats = {
 // External debug/test control. The render loop consumes a pending teleport
 // once; used by automated boundary/spawn verification.
 export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false, safetyReports: [] };
+
+// The opening orbit cinematic is a once-per-app-open flourish. It must not
+// come back when Settings/pause closes and the player resumes.
+let introCinematicPlayed = false;
 
 // Opt-in CPU frame profiler (?profile=1). Samples land in preallocated
 // ring-free typed arrays: enabling it adds three performance.now() calls
@@ -193,6 +209,7 @@ export const WORLD = {
   playableRadius: activePreset.half, // legacy field; bounds are square now
   spawn: { x: 0, z: 0 },
   relay: { x: 0, z: 0 },
+  warthog: { x: 18, z: 0, heading: 0 }, // parked at the south end of the dirt strip, facing north (-Z)
 };
 let relayBase = 0, spawnBase = 0;
 let RIVER = { samples: [], grid: new Map(), cellSize: 50, control: [] };
@@ -408,6 +425,9 @@ export function configureWorldLayout(presetId = activePreset.id, seed = sessionW
   WORLD.chunkCount = activePreset.chunkCount;
   WORLD.playableRadius = activePreset.half;
   WORLD.spawn.x = 0; WORLD.spawn.z = 0;
+  WORLD.warthog = { x: 18, z: 0, heading: 0 };
+  debugStats.warthogX = WORLD.warthog.x;
+  debugStats.warthogZ = WORLD.warthog.z;
   RIVER = buildRiver(sessionWorldSeed, activePreset);
   WORLD.relay = chooseRelay(sessionWorldSeed, activePreset);
   spawnBase = rawHeight(WORLD.spawn.x, WORLD.spawn.z);
@@ -682,24 +702,40 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const coarse = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
   let renderer;
   try {
-    // MSAA is a major mobile fill-rate cost; coarse pointers render with
-    // adaptive DPR instead (medium-quality default targets ~70fps).
+    // MSAA is a major mobile fill-rate cost; coarse pointers rely on the
+    // native-resolution backbuffer below instead of a separate MSAA pass.
     renderer = new THREE.WebGLRenderer({ canvas, antialias: !coarse, powerPreference: "high-performance", stencil: false });
   } catch (err) {
     return noop; // very old device: UI still works over the CSS gradient
   }
-  const dprCapForQuality = () => {
-    const device = window.devicePixelRatio || 1;
-    const q = inputState.quality || "MED";
-    const cap = q === "LOW" ? 1 : q === "HIGH" ? (coarse ? 1.6 : 2) : q === "ULTRA" ? (coarse ? 2 : 2) : (coarse ? 1.25 : 1.5);
-    return Math.min(device, cap);
+  // Landscape "gaming mode" stays UNCOMPRESSED: always render at the
+  // device's native pixel ratio. The previous quality-capped adaptive
+  // governor started phones at DPR 1.1 and shed toward 1.0 under load,
+  // which looked compressed/blurry as soon as the phone was tilted.
+  const nativePixelRatio = () => Math.max(1, window.devicePixelRatio || 1);
+  const viewportSize = () => {
+    // visualViewport follows the real on-screen size through rotation and
+    // mobile browser-chrome changes more reliably than innerWidth alone.
+    const vv = window.visualViewport;
+    return {
+      w: Math.max(1, Math.round((vv && vv.width) || window.innerWidth || 1)),
+      h: Math.max(1, Math.round((vv && vv.height) || window.innerHeight || 1)),
+    };
   };
-  let renderDprCap = dprCapForQuality();
-  let renderDpr = Math.min(renderDprCap, coarse ? 1.1 : renderDprCap);
-  let dprSampleMs = 0, dprSamples = 0, dprCooldown = 0;
+  let renderDpr = nativePixelRatio();
   renderer.setPixelRatio(renderDpr);
   debugStats.dpr = renderDpr;
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  debugStats.cssWidth = 0;
+  debugStats.cssHeight = 0;
+  debugStats.nativeDpr = renderDpr;
+  {
+    const { w, h } = viewportSize();
+    renderer.setSize(w, h, false);
+    renderer.domElement.style.width = w + "px";
+    renderer.domElement.style.height = h + "px";
+    debugStats.cssWidth = w;
+    debugStats.cssHeight = h;
+  }
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.06;
   // Combat-perf policy: shadow maps are frozen out of the frame loop.
@@ -714,7 +750,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   scene.background = new THREE.Color(0x0a0f0a); // behind the sky dome
   scene.fog = new THREE.FogExp2(0xb7c8ae, 0.0026); // exponential atmosphere; density is climate-driven
 
-  const camera = new THREE.PerspectiveCamera(71, window.innerWidth / window.innerHeight, 0.1, 900);
+  const camera = new THREE.PerspectiveCamera(71, debugStats.cssWidth / Math.max(1, debugStats.cssHeight), 0.1, 900);
   camera.rotation.order = "YXZ";
   scene.add(camera);
 
@@ -1379,7 +1415,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const blobShadowGeometry = new THREE.CircleGeometry(1, 12).rotateX(-Math.PI / 2);
   const clearOf = (x, z, r) =>
     Math.hypot(x - WORLD.relay.x, z - WORLD.relay.z) > r &&
-    Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) > r;
+    Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) > r &&
+    Math.hypot(x - WORLD.warthog.x, z - WORLD.warthog.z) > Math.max(r, 18) &&
+    // Keep the whole 460m dirt strip (X 18, Z +18..-442) free of scatter.
+    !(Math.abs(x - WORLD.warthog.x) < 13 && z < 18 && z > -448);
   const scatterLimit = mapPreset.rimStart - 12;
   function scatter(count, placer) {
     let placed = 0, guard = 0;
@@ -1601,6 +1640,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const MAX_LOCAL_OBSTACLES = 640;
   const localObstacles = new Float32Array(MAX_LOCAL_OBSTACLES * 4); // x,z,radius,topY
   let localObstacleCount = 0;
+  let warthog = null; // assigned below once the airframe is built
   function addLocalObstacle(x, z, radius, topY) {
     if (localObstacleCount >= MAX_LOCAL_OBSTACLES) return;
     const o = localObstacleCount++ * 4;
@@ -1610,6 +1650,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function refreshScatterCulling() {
     localObstacleCount = 0;
     const cx = camera.position.x, cz = camera.position.z;
+    if (warthog && !warthog.occupied) {
+      const p = warthog.group.position;
+      const fx = -Math.sin(warthog.yaw), fz = -Math.cos(warthog.yaw);
+      if (Math.hypot(p.x - cx, p.z - cz) < CULL_MID_M) {
+        addLocalObstacle(p.x, p.z, 2.1, p.y + 3.2);
+        addLocalObstacle(p.x + fx * 4.6, p.z + fz * 4.6, 1.55, p.y + 2.7);
+        addLocalObstacle(p.x - fx * 4.6, p.z - fz * 4.6, 1.7, p.y + 3.4);
+      }
+    }
     let rockN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
     let treeFullN = 0, treeMidN = 0, treeFarN = 0;
     for (let ti = 0; ti < treeLodCounts.length; ti++) treeLodCounts[ti].fill(0);
@@ -1837,6 +1886,115 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.22; relay.add(ring);
   scene.add(relay);
 
+  // ----- A-10-style Warthog + dirt strip -----
+  // Real airframe dimensions (16.3m long / 17.5m span) built from the same
+  // low-poly primitives as the rest of the world. It is parked facing north
+  // at WORLD.warthog (X 18, Z 0); the 460m strip ahead of it is kept clear
+  // of scatter above so a full takeoff roll is flyable, not decorative.
+  {
+    const stripX = WORLD.warthog.x;
+    const ribbon = (width, material, dashes = false) => {
+      const pos = [], idx = [];
+      const z0 = 18, z1 = -442, step = 10;
+      const rows = Math.floor((z0 - z1) / step);
+      if (!dashes) {
+        for (let i = 0; i <= rows; i++) {
+          const z = z0 - i * step;
+          for (const sx of [-width / 2, width / 2]) {
+            pos.push(stripX + sx, terrainSurfaceHeight(stripX + sx, z) + 0.07, z);
+          }
+          if (i > 0) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+        }
+      } else {
+        for (let i = 0; i < rows; i += 2) {
+          const za = z0 - i * step - 2, zb = za - 4.5, base = pos.length / 3;
+          for (const [sx, z] of [[-width / 2, za], [width / 2, za], [-width / 2, zb], [width / 2, zb]]) {
+            pos.push(stripX + sx, terrainSurfaceHeight(stripX + sx, z) + 0.1, z);
+          }
+          idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setIndex(idx); geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.renderOrder = 1; scene.add(mesh); return mesh;
+    };
+    ribbon(14, new THREE.MeshStandardMaterial({ color: 0x4b4f4c, roughness: 0.96, metalness: 0.02, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+    ribbon(0.42, new THREE.MeshBasicMaterial({ color: 0xd8ddd6, side: THREE.DoubleSide }), true);
+
+    const jetGroup = new THREE.Group();
+    jetGroup.rotation.order = "YXZ";
+    const jetGray = new THREE.MeshStandardMaterial({ color: 0x8d979e, roughness: 0.52, metalness: 0.38, flatShading: true });
+    const jetDark = new THREE.MeshStandardMaterial({ color: 0x30363a, roughness: 0.62, metalness: 0.42, flatShading: true });
+    const jetCanopy = new THREE.MeshStandardMaterial({ color: 0x10242e, roughness: 0.16, metalness: 0.22, emissive: 0x0c2838, emissiveIntensity: 0.7, flatShading: true });
+    const jetTire = new THREE.MeshStandardMaterial({ color: 0x111314, roughness: 0.92, metalness: 0.02 });
+    const jetOlive = new THREE.MeshStandardMaterial({ color: 0x59624f, roughness: 0.66, metalness: 0.24, flatShading: true });
+    const cylZ = (rBack, rFront, len, x, y, z, mat = jetGray, seg = 18) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(rBack, rFront, len, seg), mat);
+      m.rotation.x = Math.PI / 2; m.position.set(x, y, z); jetGroup.add(m); return m;
+    };
+    const cylX = (r, len, x, y, z, mat = jetTire, seg = 16) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
+      m.rotation.z = Math.PI / 2; m.position.set(x, y, z); jetGroup.add(m); return m;
+    };
+    cylZ(0.86, 0.72, 9.8, 0, 1.78, 0.45, jetGray, 20); // main fuselage
+    cylZ(0.72, 0.16, 3.4, 0, 1.7, -6.15, jetGray, 18); // tapered nose
+    cylZ(0.16, 0.1, 1.45, 0, 1.48, -8.05, jetDark, 10); // GAU-8 muzzle housing
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.72, 16, 10), jetCanopy);
+    canopy.scale.set(0.82, 0.62, 1.65); canopy.position.set(0, 2.42, -3.55); jetGroup.add(canopy);
+    addBox(jetGroup, 1.28, 0.34, 2.2, 0, 2.18, -3.45, jetGray); // cockpit tub
+    addBox(jetGroup, 17.5, 0.17, 2.45, 0, 1.48, -0.55, jetGray); // straight wing
+    addBox(jetGroup, 1.05, 0.5, 1.7, -8.42, 1.55, -0.55, jetDark);
+    addBox(jetGroup, 1.05, 0.5, 1.7, 8.42, 1.55, -0.55, jetDark);
+    const aileronL = addBox(jetGroup, 5.4, 0.09, 0.62, -5.7, 1.5, 0.78, jetDark);
+    const aileronR = addBox(jetGroup, 5.4, 0.09, 0.62, 5.7, 1.5, 0.78, jetDark);
+    addBox(jetGroup, 6.1, 0.15, 1.45, 0, 2.38, 6.15, jetGray); // tailplane
+    const elevator = addBox(jetGroup, 5.2, 0.08, 0.62, 0, 2.4, 6.95, jetDark);
+    addBox(jetGroup, 0.16, 1.9, 1.65, -1.62, 3.2, 6.05, jetGray); // twin fins
+    addBox(jetGroup, 0.16, 1.9, 1.65, 1.62, 3.2, 6.05, jetGray);
+    for (const sx of [-1.42, 1.42]) {
+      cylZ(0.64, 0.58, 3.35, sx, 3.02, 4.55, jetDark, 18); // high twin turbofans
+      cylZ(0.5, 0.5, 0.1, sx, 3.02, 2.87, jetTire, 18); // intake face
+      cylZ(0.44, 0.38, 0.34, sx, 3.02, 6.34, jetTire, 16); // exhaust
+      addBox(jetGroup, 0.52, 0.72, 1.55, sx, 2.37, 4.4, jetGray); // pylon
+    }
+    for (const sx of [-6.4, -4.5, -2.6, 2.6, 4.5, 6.4]) {
+      addBox(jetGroup, 0.28, 0.48, 1.1, sx, 1.18, -0.65, jetDark); // wing pylons
+      cylZ(0.19, 0.14, 1.55, sx, 0.88, -0.72, jetOlive, 10); // stores
+    }
+    const gear = new THREE.Group(); jetGroup.add(gear);
+    const gearBox = (w, h, d, x, y, z, mat = jetDark) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z); gear.add(m); return m;
+    };
+    gearBox(0.16, 1.1, 0.22, 0, 0.78, -4.65);
+    const noseWheel = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.31, 0.2, 16), jetTire);
+    noseWheel.rotation.z = Math.PI / 2; noseWheel.position.set(0, 0.31, -4.65); gear.add(noseWheel);
+    for (const sx of [-2.35, 2.35]) {
+      gearBox(0.54, 0.72, 1.65, sx, 0.94, 0.1, jetGray); // A-10 gear pods
+      gearBox(0.18, 0.75, 0.24, sx, 0.58, 0.1);
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.3, 18), jetTire);
+      wheel.rotation.z = Math.PI / 2; wheel.position.set(sx, 0.47, 0.1); gear.add(wheel);
+    }
+    const jetBlob = new THREE.Mesh(blobShadowGeometry, blobShadowMaterial);
+    jetBlob.scale.set(9.6, 1, 9.6); jetBlob.position.y = 0.05; jetBlob.renderOrder = 1; jetGroup.add(jetBlob);
+
+    const parkY = groundSupportHeight(WORLD.warthog.x, WORLD.warthog.z, 4.2, "max") + 0.05;
+    jetGroup.position.set(WORLD.warthog.x, parkY, WORLD.warthog.z);
+    scene.add(jetGroup);
+    warthog = {
+      group: jetGroup, gear, aileronL, aileronR, elevator,
+      yaw: 0, pitch: 0, roll: 0, throttle: 0, spool: 0,
+      velocity: new THREE.Vector3(), airborne: false, occupied: false,
+      gearDown: true, crashed: false, stall: false, aoaDeg: 0,
+      speed: 0, verticalSpeed: 0, altitudeAgl: 0, nearDistance: 999,
+      // Loaded A-10-class bookkeeping, kept in SI units end to end.
+      massKg: 12000, wingAreaM2: 47, maxThrustN: 80600,
+    };
+    debugStats.warthogVisible = 1;
+  }
+
   // ----- hostile drones -----
   const droneBodyGeo = new THREE.OctahedronGeometry(1.05, 0);
   const droneEyeGeo = new THREE.SphereGeometry(0.3, 8, 6);
@@ -1948,6 +2106,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // ----- weapon viewmodel -----
   const gun = new THREE.Group();
   let gunMagazine = null;
+  let gunSidearm = null;
+  let rifleParts = [];
   {
     // Refined stylized low-poly tactical rifle: tapered receiver and
     // handguard prisms, segmented Picatinny rail, detailed optic,
@@ -2097,6 +2257,37 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     lens.position.set(0, 0.148, 0.037); gun.add(lens);
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 6, 5), new THREE.MeshBasicMaterial({ color: 0xb7e34f }));
     dot.position.set(0, 0.148, 0.04); gun.add(dot);
+
+    // Compact VP-70 sidearm viewmodel: thumb-swapping slot 2 must put a
+    // visibly different gun in the hands, not reskin the carbine. It shares
+    // the rifle's local optic axis (y=0.148) so one ADS alignment serves both.
+    rifleParts = gun.children.slice();
+    gunSidearm = new THREE.Group();
+    {
+      const sDark = [], sPolymer = [], sAccent = [], sRubber = [];
+      prism(sDark, 0.05, 0.065, 0.044, 0.055, 0.36, 0, 0.085, -0.06); // slide
+      prism(sDark, 0.044, 0.05, 0.04, 0.042, 0.30, 0, 0.04, -0.03); // frame
+      cyl(sDark, 0.012, 0.012, 0.34, 0, 0.102, -0.13, 10); // barrel
+      cyl(sRubber, 0.017, 0.015, 0.026, 0, 0.102, -0.31, 10); // muzzle
+      box(sPolymer, 0.05, 0.17, 0.07, 0, -0.075, 0.105, 0.28); // grip
+      box(sRubber, 0.055, 0.025, 0.075, 0, -0.165, 0.132, 0.28); // magazine base
+      box(sDark, 0.012, 0.045, 0.018, 0, -0.055, -0.01, 0.2); // trigger
+      box(sAccent, 0.006, 0.015, 0.08, 0.027, 0.06, -0.05);
+      box(sAccent, 0.006, 0.015, 0.08, -0.027, 0.06, -0.05);
+      prism(sDark, 0.03, 0.04, 0.026, 0.035, 0.07, 0, 0.12, 0); // optic mount
+      cyl(sDark, 0.026, 0.03, 0.14, 0, 0.148, -0.01, 16); // mini optic
+      cyl(sRubber, 0.029, 0.027, 0.02, 0, 0.148, 0.065, 16); // ocular ring
+      gunSidearm.add(new THREE.Mesh(mergeGeometries(sDark, false), gm));
+      gunSidearm.add(new THREE.Mesh(mergeGeometries(sPolymer, false), gm2));
+      gunSidearm.add(new THREE.Mesh(mergeGeometries(sAccent, false), gm3));
+      gunSidearm.add(new THREE.Mesh(mergeGeometries(sRubber, false), gm4));
+      const sLens = new THREE.Mesh(new THREE.CircleGeometry(0.016, 16), lens.material);
+      sLens.position.set(0, 0.148, 0.077); gunSidearm.add(sLens);
+      const sDot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 6, 5), dot.material);
+      sDot.position.set(0, 0.148, 0.08); gunSidearm.add(sDot);
+    }
+    gunSidearm.visible = false;
+    gun.add(gunSidearm);
   }
   gun.position.set(0.205, -0.225, -0.65);
   gun.scale.setScalar(0.82);
@@ -2136,6 +2327,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     sprintEffect: 0, // 0..1 smoothed sprint power (speed + FOV + gun pose)
     boostT: 0, boostRegen: 0, boostPowerFloor: 0, // soda / stimulant / medicine window
     wadeBlend: 0, // 0..1 smoothed wading depth for animation/FOV
+    adsBlend: 0, // 0..1 smoothed aim-down-sights blend (zoom + centered gun + scope overlay)
+    firePose: 0, // 0..1 forward "charging" gun pose while the trigger is live
+    shotsFired: 0,
+    lastShotAt: -10, // sim seconds of the most recent shot
+    lastSpreadDeg: 0,
+    swapT: 0, swapDur: 0.45, // weapon-draw animation after a HUD slot swap
     reloadT: 0,
     reloadDur: 1.55,
     safetyBadFrames: 0,
@@ -2200,7 +2397,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       updateChunkStreaming();
     }
   }
-  const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q1 = new THREE.Quaternion();
+  const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _q1 = new THREE.Quaternion();
 
   function playerPose(outPos, outQuat) {
     outPos.copy(player.pos);
@@ -2208,6 +2405,206 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     outQuat.copy(camera.quaternion);
   }
 
+  // ----- Warthog interaction + flight model -----
+  // SI-unit point-mass aerodynamics: thrust, lift from angle of attack,
+  // induced/parasitic drag, air density with altitude, coordinated banked
+  // turns, stall break, rolling resistance, brakes and gear drag. It is a
+  // game model, but the airplane has to accelerate, rotate, climb, stall,
+  // descend and land for physical reasons — there is no hover/fly-up key.
+  const _jetFwd = new THREE.Vector3(), _jetRight = new THREE.Vector3(), _jetUp = new THREE.Vector3();
+  const _jetDir = new THREE.Vector3(), _jetForce = new THREE.Vector3();
+  function warthogGroundY(x, z) {
+    return Math.max(
+      terrainSurfaceHeight(x, z),
+      terrainSurfaceHeight(x + 3.5, z), terrainSurfaceHeight(x - 3.5, z),
+      terrainSurfaceHeight(x, z + 3.5), terrainSurfaceHeight(x, z - 3.5)
+    ) + 0.05;
+  }
+  function enterWarthog() {
+    if (!warthog || warthog.occupied || warthog.nearDistance > 10.5) return;
+    warthog.occupied = true;
+    inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
+    player.yaw = warthog.yaw; player.pitch = warthog.pitch;
+    debugStats.jetMessage = warthog.crashed ? "AIRFRAME DAMAGED" : "ENGINE READY // THR +";
+  }
+  function exitWarthog() {
+    if (!warthog || !warthog.occupied) return;
+    if (warthog.airborne || warthog.speed > 3) {
+      debugStats.jetMessage = "LAND AND STOP TO EXIT";
+      return;
+    }
+    const j = warthog;
+    j.occupied = false; j.throttle = 0; j.spool = 0; j.velocity.set(0, 0, 0); j.speed = 0;
+    const fx = -Math.sin(j.yaw), fz = -Math.cos(j.yaw);
+    const rx = Math.cos(j.yaw), rz = -Math.sin(j.yaw);
+    const ex = clamp(j.group.position.x + rx * 4.6 + fx * 0.5, -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+    const ez = clamp(j.group.position.z + rz * 4.6 + fz * 0.5, -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+    const gy = groundHeightWithBridge(ex, ez);
+    player.pos.set(ex, gy + player.eyeHeight, ez);
+    player.yaw = j.yaw; player.pitch = -0.03;
+    resetPhysics(ex, gy, ez);
+    debugStats.jetMessage = "ON FOOT";
+  }
+  function updateWarthog(dt) {
+    if (!warthog) return false;
+    const j = warthog, pos = j.group.position;
+    j.nearDistance = Math.hypot(player.pos.x - pos.x, player.pos.z - pos.z);
+    debugStats.jetNear = !j.occupied && j.nearDistance <= 10.5 ? 1 : 0;
+    debugStats.jetDistance = Math.round(j.nearDistance * 10) / 10;
+    debugStats.jetOccupied = j.occupied ? 1 : 0;
+    if (inputState.jetAction === "enter") enterWarthog();
+    else if (inputState.jetAction === "exit") exitWarthog();
+    inputState.jetAction = null;
+    if (!j.occupied) {
+      j.spool = Math.max(0, j.spool - dt * 0.5);
+      debugStats.jetSpeedKmh = 0; debugStats.jetAltitudeM = 0;
+      debugStats.jetThrottlePct = Math.round(j.throttle * 100);
+      debugStats.jetAirborne = 0; debugStats.jetStall = 0;
+      if (!debugStats.jetMessage) debugStats.jetMessage = j.nearDistance <= 10.5 ? "WARTHOG IN REACH" : "WARTHOG PARKED X18 Z0";
+      return false;
+    }
+
+    const k = inputState.keys;
+    let throttleDelta = clamp(inputState.jetThrottleDelta || 0, -1, 1);
+    if (k.has("ShiftLeft") || k.has("ShiftRight")) throttleDelta += 1;
+    if (k.has("ControlLeft") || k.has("ControlRight")) throttleDelta -= 1;
+    j.throttle = clamp(j.throttle + throttleDelta * dt * 0.55, 0, 1);
+    j.spool += (j.throttle - j.spool) * (1 - Math.exp(-dt / 1.05)); // turbofan lag
+    if (j.crashed) { j.throttle = 0; j.spool = Math.max(0, j.spool - dt); }
+    let pitchInput = clamp(inputState.moveY + ((k.has("KeyW") || k.has("ArrowUp")) ? 1 : 0) - ((k.has("KeyS") || k.has("ArrowDown")) ? 1 : 0), -1, 1);
+    let rollInput = clamp(inputState.moveX + ((k.has("KeyD") || k.has("ArrowRight")) ? 1 : 0) - ((k.has("KeyA") || k.has("ArrowLeft")) ? 1 : 0), -1, 1);
+    const braking = !!(inputState.jetBrake || k.has("Space"));
+    const weightN = j.massKg * 9.81;
+    const substeps = clamp(Math.ceil(dt / (1 / 120)), 1, 6), sdt = dt / substeps;
+    let liftN = 0, aoa = 0;
+    for (let si = 0; si < substeps; si++) {
+      let groundY = warthogGroundY(pos.x, pos.z);
+      let altitude = pos.y - groundY;
+      const onGround = !j.airborne || altitude <= 0.03;
+      const speed0 = j.velocity.length();
+      const fwdHx = -Math.sin(j.yaw), fwdHz = -Math.cos(j.yaw);
+      const rightHx = Math.cos(j.yaw), rightHz = -Math.sin(j.yaw);
+      let pitchTarget;
+      if (onGround) {
+        const frontY = terrainSurfaceHeight(pos.x + fwdHx * 8, pos.z + fwdHz * 8);
+        const backY = terrainSurfaceHeight(pos.x - fwdHx * 8, pos.z - fwdHz * 8);
+        const slopePitch = Math.atan2(frontY - backY, 16);
+        pitchTarget = slopePitch + (speed0 > 48 ? pitchInput * 0.21 : 0);
+        pitchTarget = clamp(pitchTarget, -0.08, 0.26);
+        const rightY = terrainSurfaceHeight(pos.x + rightHx * 5, pos.z + rightHz * 5);
+        const leftY = terrainSurfaceHeight(pos.x - rightHx * 5, pos.z - rightHz * 5);
+        const groundRoll = -Math.atan2(rightY - leftY, 10);
+        j.roll += (groundRoll - j.roll) * (1 - Math.exp(-sdt * 3.2));
+        j.yaw -= rollInput * clamp(speed0 / 16, 0, 1) * 0.5 * sdt; // nosewheel steering
+        if (speed0 > 0.05) {
+          const keep = Math.exp(-sdt * 4.5); // tires reject lateral slide
+          j.velocity.x = j.velocity.x * keep + fwdHx * speed0 * (1 - keep);
+          j.velocity.z = j.velocity.z * keep + fwdHz * speed0 * (1 - keep);
+        }
+      } else {
+        pitchTarget = pitchInput * 0.52;
+        if (j.stall) pitchTarget -= 0.18; // nose drops through the stall break
+        const rollTarget = rollInput * 1.13; // 65 degrees
+        j.roll += (rollTarget - j.roll) * (1 - Math.exp(-sdt * 2.4));
+        j.yaw -= (9.81 * Math.tan(j.roll)) / Math.max(speed0, 28) * sdt; // coordinated turn
+      }
+      j.pitch += (pitchTarget - j.pitch) * (1 - Math.exp(-sdt * (onGround ? 3.0 : 1.85)));
+      const cp = Math.cos(j.pitch);
+      _jetFwd.set(-Math.sin(j.yaw) * cp, Math.sin(j.pitch), -Math.cos(j.yaw) * cp).normalize();
+      _jetRight.set(rightHx, 0, rightHz);
+      _jetUp.crossVectors(_jetRight, _jetFwd).normalize();
+      const rolledUp = _v3.copy(_jetUp).multiplyScalar(Math.cos(j.roll)).addScaledVector(_jetRight, Math.sin(j.roll)).normalize();
+      const speed = j.velocity.length();
+      if (speed > 0.05) _jetDir.copy(j.velocity).multiplyScalar(1 / speed); else _jetDir.copy(_jetFwd);
+      const flightPath = Math.asin(clamp(_jetDir.y, -1, 1));
+      aoa = speed > 1 ? j.pitch - flightPath : 0;
+      const aoaDegAbs = Math.abs(aoa * 180 / Math.PI);
+      const stallLimit = aoa >= 0 ? 15 : 12;
+      const stallFactor = 1 - clamp((aoaDegAbs - stallLimit) / 12, 0, 0.65);
+      j.stall = j.airborne && aoaDegAbs > stallLimit && speed > 5;
+      const cl = clamp((0.25 + 5.0 * aoa) * stallFactor, -1.0, 1.5);
+      const cd = 0.024 + 0.052 * cl * cl + (j.gearDown ? 0.018 : 0) + (j.stall ? 0.075 : 0) + Math.max(0, speed - 165) * 0.0011;
+      const rho = 1.225 * Math.exp(-Math.max(0, pos.y) / 8500);
+      const q = 0.5 * rho * speed * speed;
+      liftN = q * j.wingAreaM2 * cl;
+      const dragN = q * j.wingAreaM2 * cd;
+      const thrustN = j.crashed ? 0 : j.maxThrustN * j.spool * (0.72 + 0.28 * (rho / 1.225));
+      _jetForce.set(0, -weightN, 0)
+        .addScaledVector(_jetFwd, thrustN)
+        .addScaledVector(rolledUp, liftN)
+        .addScaledVector(_jetDir, -dragN);
+      if (onGround) {
+        const normalN = Math.max(0, weightN - liftN * rolledUp.y - thrustN * _jetFwd.y);
+        const mu = braking ? 0.3 : 0.032;
+        if (speed > 0.05) {
+          _jetForce.addScaledVector(_jetDir, -mu * normalN);
+        } else if (j.throttle < 0.16) {
+          j.velocity.multiplyScalar(Math.max(0, 1 - sdt * 5)); // parking brake
+        }
+      }
+      j.velocity.addScaledVector(_jetForce, sdt / j.massKg);
+      if (j.velocity.lengthSq() > 230 * 230) j.velocity.setLength(230);
+      pos.addScaledVector(j.velocity, sdt);
+      pos.x = clamp(pos.x, -mapPreset.hardClamp + 25, mapPreset.hardClamp - 25);
+      pos.z = clamp(pos.z, -mapPreset.hardClamp + 25, mapPreset.hardClamp - 25);
+      groundY = warthogGroundY(pos.x, pos.z);
+      if (pos.y <= groundY + 0.02) {
+        const impactVy = j.velocity.y;
+        if (j.airborne) {
+          if (impactVy < -7.5 || Math.abs(j.roll) > 0.49 || j.pitch < -0.18) {
+            j.crashed = true; j.throttle = 0;
+            j.velocity.multiplyScalar(0.25);
+            debugStats.jetMessage = "HARD IMPACT // AIRFRAME DAMAGED";
+          }
+          j.airborne = false;
+        }
+        pos.y = groundY;
+        if (j.velocity.y < 0) j.velocity.y = 0;
+        const liftVertical = liftN * rolledUp.y + thrustN * _jetFwd.y;
+        if (!j.crashed && liftVertical > weightN * 1.01 && j.pitch > 0.035 && j.velocity.length() > 42) {
+          j.airborne = true; pos.y = groundY + 0.04;
+          j.velocity.y = Math.max(j.velocity.y, 1.1);
+        }
+      } else {
+        j.airborne = true;
+      }
+      j.speed = j.velocity.length();
+      j.verticalSpeed = j.velocity.y;
+      j.altitudeAgl = Math.max(0, pos.y - groundY);
+    }
+    if (j.airborne && j.altitudeAgl > 14) j.gearDown = false;
+    if (!j.airborne || j.altitudeAgl < 28 || j.speed < 78) j.gearDown = true;
+    j.gear.visible = j.gearDown;
+    j.group.rotation.set(j.pitch, j.yaw, -j.roll);
+    j.elevator.rotation.x = -pitchInput * 0.32;
+    j.aileronL.rotation.x = rollInput * 0.3;
+    j.aileronR.rotation.x = -rollInput * 0.3;
+    j.aoaDeg = Math.round(aoa * 180 / Math.PI * 10) / 10;
+    debugStats.jetSpeedKmh = Math.round(j.speed * 3.6);
+    debugStats.jetAltitudeM = Math.round(j.altitudeAgl * 10) / 10;
+    debugStats.jetThrottlePct = Math.round(j.throttle * 100);
+    debugStats.jetSpoolPct = Math.round(j.spool * 100);
+    debugStats.jetAirborne = j.airborne ? 1 : 0;
+    debugStats.jetStall = j.stall ? 1 : 0;
+    debugStats.jetCrashed = j.crashed ? 1 : 0;
+    debugStats.jetGearDown = j.gearDown ? 1 : 0;
+    debugStats.jetAoaDeg = j.aoaDeg;
+    debugStats.jetVerticalMps = Math.round(j.verticalSpeed * 10) / 10;
+    debugStats.jetLoadG = Math.round((liftN / weightN) * 100) / 100;
+    debugStats.jetCanExit = !j.airborne && j.speed <= 3 ? 1 : 0;
+    debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
+      : j.stall ? "STALL // LOWER THE NOSE"
+      : j.airborne ? "AIRBORNE"
+      : j.speed > 42 ? "ROTATE // PULL GENTLY UP"
+      : j.speed > 3 ? "TAKEOFF ROLL" : "ENGINE READY // THR +";
+    return true;
+  }
+
+  function snapToPlayerCamera() {
+    playerPose(_v2, _q1);
+    camera.position.copy(_v2);
+    camera.quaternion.copy(_q1);
+  }
   function setPlaying(next) {
     if (next === playing) return;
     playing = next;
@@ -2219,10 +2616,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
         if (canvas && canvas.focus) canvas.focus({ preventScroll: true });
       } catch (e) { /* focus is best-effort */ }
-      transition = { t: 0, fromPos: camera.position.clone(), fromQuat: camera.quaternion.clone() };
+      if (!introCinematicPlayed) {
+        // Only the first deployment of this app-open sweeps in from the
+        // opening orbit. Every Settings/pause resume after that is instant.
+        introCinematicPlayed = true;
+        transition = { t: 0, fromPos: camera.position.clone(), fromQuat: camera.quaternion.clone() };
+      } else {
+        transition = null;
+        snapToPlayerCamera();
+      }
     } else {
       transition = null;
+      if (introCinematicPlayed) snapToPlayerCamera(); // freeze on the player, never the orbit again
     }
+    debugStats.introCinematicPlayed = introCinematicPlayed ? 1 : 0;
   }
 
   // ----- shooting -----
@@ -2238,10 +2645,28 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function shoot() {
     if (!playing) return;
     player.recoil = 1;
-    player.pitch = clamp(player.pitch + 0.0055, -1.35, 1.35);
+    player.shotsFired += 1;
+    player.lastShotAt = performance.now() / 1000;
+    player.pitch = clamp(player.pitch + 0.0055 * (1 - player.adsBlend * 0.45), -1.35, 1.35);
     flash.material.opacity = 0.95;
     flash.scale.setScalar(0.8 + rand() * 0.7);
     raycaster.setFromCamera(_center2, camera);
+    // Hip fire blooms with movement/sprint; ADS collapses the cone to a
+    // near-pinpoint so the scope actually buys precision at range.
+    const moveBloom = clamp(player.vel.length() / 7.6, 0, 1);
+    const hipSpread = (0.006 + moveBloom * 0.013 + player.sprintEffect * 0.006) * (inputState.weaponSpread || 1);
+    const spread = THREE.MathUtils.lerp(hipSpread, 0.0006 * (inputState.weaponSpread || 1), player.adsBlend);
+    player.lastSpreadDeg = Math.round(spread * (180 / Math.PI) * 100) / 100;
+    if (spread > 0.00001) {
+      const ang = rand() * Math.PI * 2;
+      const rad = spread * Math.sqrt(rand());
+      _v2.setFromMatrixColumn(camera.matrixWorld, 0); // camera right
+      _v3.setFromMatrixColumn(camera.matrixWorld, 1); // camera up
+      raycaster.ray.direction
+        .addScaledVector(_v2, Math.cos(ang) * rad)
+        .addScaledVector(_v3, Math.sin(ang) * rad)
+        .normalize();
+    }
     const targets = _shootTargets;
     targets.length = 0;
     for (const mesh of terrainMeshes) if (mesh.visible) targets.push(mesh);
@@ -2307,12 +2732,31 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   window.addEventListener("blur", onBlur);
   window.addEventListener("focus", onFocus);
 
-  const onResize = () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
+  let resizeTimers = [];
+  const applyViewportSize = () => {
+    const { w, h } = viewportSize();
+    renderDpr = nativePixelRatio(); // re-lock native DPR on every resize/rotation
+    renderer.setPixelRatio(renderDpr);
+    renderer.setSize(w, h, false);
+    renderer.domElement.style.width = w + "px";
+    renderer.domElement.style.height = h + "px";
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    debugStats.dpr = renderDpr;
+    debugStats.nativeDpr = renderDpr;
+    debugStats.cssWidth = w;
+    debugStats.cssHeight = h;
+  };
+  const onResize = () => {
+    applyViewportSize();
+    // Mobile browsers report intermediate sizes while rotating; re-apply
+    // once the rotation settles so the backbuffer and aspect land exact.
+    for (const t of resizeTimers) clearTimeout(t);
+    resizeTimers = [80, 250, 600].map((ms) => setTimeout(applyViewportSize, ms));
   };
   window.addEventListener("resize", onResize);
+  window.addEventListener("orientationchange", onResize);
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", onResize);
 
   // ----- HUD hook caches -----
   let lastHeading = -1, lastDist = -1, lastBearing = -1;
@@ -2320,6 +2764,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     camera.getWorldDirection(_v1);
     const heading = Math.round(((Math.atan2(_v1.x, -_v1.z) * 180) / Math.PI + 360) % 360);
     debugStats.heading = heading;
+    debugStats.playerX = Math.round(player.pos.x * 10) / 10;
+    debugStats.playerY = Math.round(player.pos.y * 10) / 10;
+    debugStats.playerZ = Math.round(player.pos.z * 10) / 10;
+    debugStats.groundY = Math.round(terrainSurfaceHeight(player.pos.x, player.pos.z) * 10) / 10;
     if (heading !== lastHeading) { lastHeading = heading; if (hooks.onHeading) hooks.onHeading(heading); }
     const dx = WORLD.relay.x - player.pos.x, dz = WORLD.relay.z - player.pos.z;
     const dist = Math.round(Math.hypot(dx, dz));
@@ -2367,9 +2815,62 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   function updatePlayer(dt) {
-    // look: drag deltas + aim-stick rate
+    if (updateWarthog(dt)) {
+      // Cockpit seat: the airframe owns position, velocity and camera until
+      // the player lands, stops and exits beside it.
+      _v3.set(0, 2.62, -3.55);
+      warthog.group.localToWorld(_v3);
+      camera.position.copy(_v3);
+      camera.quaternion.copy(warthog.group.quaternion);
+      player.pos.copy(_v3);
+      player.vel.copy(warthog.velocity);
+      player.yaw = warthog.yaw;
+      player.pitch = warthog.pitch;
+      physBuf[31] = warthog.speed;
+      gun.visible = false;
+      playerBlobShadow.visible = false;
+      setCameraFov(clamp(inputState.fov || 71, 55, 100) + clamp(warthog.speed / 190, 0, 1) * 8, dt, 5);
+      inputState.lookDX = 0; inputState.lookDY = 0; inputState.jump = false;
+      debugStats.speed = Math.round(warthog.speed * 10) / 10;
+      return;
+    }
+    // Weapon swap queued by tapping a HUD gun slot: lower + draw animation,
+    // and ADS always drops while a new gun is coming up.
+    if (inputState.weaponSwap) {
+      player.swapDur = clamp(inputState.weaponSwap.duration || 0.45, 0.15, 0.8);
+      player.swapT = player.swapDur;
+      inputState.weaponSwap = null;
+      inputState.ads = false;
+    }
+    if (player.swapT > 0) player.swapT = Math.max(0, player.swapT - dt);
+    // ADS / scope blend (touch toggle or right-mouse hold). It drives the
+    // zoom FOV, the slower scoped sensitivity, the centered optic and the
+    // scope overlay opacity read by the HUD.
+    const adsWanted = (inputState.ads || inputState.adsHeld) && player.reloadT <= 0 && player.swapT <= 0;
+    const adsRate = adsWanted ? 10 : 12;
+    player.adsBlend = clamp(player.adsBlend + clamp((adsWanted ? 1 : 0) - player.adsBlend, -dt * adsRate, dt * adsRate), 0, 1);
+    // Firing pose: the instant shots start, the rifle charges FORWARD to
+    // point where the bullets go instead of staying canted in the sprint
+    // carry. Kept up briefly after the last shot so bursts don't flicker.
+    const nowSec = performance.now() / 1000;
+    const firingNow = inputState.firing || player.recoil > 0.35 || nowSec - player.lastShotAt < 0.28;
+    const firePoseRate = firingNow ? 14 : 7;
+    player.firePose = clamp(player.firePose + clamp((firingNow ? 1 : 0) - player.firePose, -dt * firePoseRate, dt * firePoseRate), 0, 1);
+    debugStats.adsBlend = Math.round(player.adsBlend * 100) / 100;
+    debugStats.adsActive = player.adsBlend > 0.6 ? 1 : 0;
+    debugStats.firePose = Math.round(player.firePose * 100) / 100;
+    debugStats.firing = firingNow ? 1 : 0;
+    debugStats.shotsFired = player.shotsFired;
+    debugStats.spreadDeg = player.lastSpreadDeg;
+    debugStats.weaponId = inputState.weaponId;
+    debugStats.weaponSlot = inputState.activeWeaponSlot;
+    debugStats.swapT = Math.round(player.swapT * 100) / 100;
+    // look: drag deltas; scoped looking uses the ADS sensitivity so a
+    // magnified view can settle precisely on a distant drone.
     const prevYaw = player.yaw, prevPitch = player.pitch;
-    const lookScale = clamp(inputState.sensitivity || 0.55, 0.15, 1.5);
+    const hipLookScale = clamp(inputState.sensitivity || 0.55, 0.15, 1.5);
+    const adsLookScale = clamp(inputState.adsSensitivity == null ? 0.26 : inputState.adsSensitivity, 0.05, 1.5);
+    const lookScale = THREE.MathUtils.lerp(hipLookScale, adsLookScale, player.adsBlend);
     player.yaw -= inputState.lookDX * 0.0024 * lookScale + inputState.aimX * 1.55 * lookScale * dt;
     player.pitch -= inputState.lookDY * 0.0024 * lookScale + inputState.aimY * 1.15 * lookScale * dt;
     player.pitch = clamp(player.pitch, -1.35, 1.35);
@@ -2382,8 +2883,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
     const yawRate = dt > 0.0001 ? yawDelta / dt : 0;
     const pitchRate = dt > 0.0001 ? (player.pitch - prevPitch) / dt : 0;
-    const swayYawTarget = clamp(-yawRate * 0.035, -0.15, 0.15);
-    const swayPitchTarget = clamp(-pitchRate * 0.03, -0.12, 0.12);
+    const swayDamping = 1 - player.adsBlend * 0.82; // a braced scope barely sways
+    const swayYawTarget = clamp(-yawRate * 0.035, -0.15, 0.15) * swayDamping;
+    const swayPitchTarget = clamp(-pitchRate * 0.03, -0.12, 0.12) * swayDamping;
     player.swayYawVel += ((swayYawTarget - player.swayYaw) * 110 - player.swayYawVel * 16) * dt;
     player.swayPitchVel += ((swayPitchTarget - player.swayPitch) * 110 - player.swayPitchVel * 16) * dt;
     player.swayYaw = clamp(player.swayYaw + player.swayYawVel * dt, -0.22, 0.22);
@@ -2434,7 +2936,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // Sprint is available whenever stamina remains, but its POWER is a
     // smooth function of the tank: full effect down to ~55 stamina, then
     // speed, FOV kick and gun-pose all fade gradually to a jog at empty.
-    const forwardPull = !crouch && !inWaterNow && mz > 0.88 && Math.abs(mx) < 0.45;
+    const forwardPull = !crouch && !inWaterNow && player.adsBlend < 0.25 && mz > 0.88 && Math.abs(mx) < 0.45; // no sprinting through a scope
     player.sprintHold = forwardPull ? player.sprintHold + dt : 0;
     let staminaPower = clamp(player.stamina / 55, 0, 1);
     staminaPower = staminaPower * staminaPower * (3 - 2 * staminaPower);
@@ -2453,7 +2955,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.sprintHold = Math.round(player.sprintHold * 100) / 100;
     debugStats.sprintEffect = Math.round(player.sprintEffect * 100) / 100;
     debugStats.staminaBoostT = Math.round(player.boostT * 10) / 10;
-    const maxSpeed = (5.2 + (7.6 - 5.2) * player.sprintEffect) * (inWaterNow ? 0.45 : 1) * (crouch ? 0.5 : 1);
+    const maxSpeed = (5.2 + (7.6 - 5.2) * player.sprintEffect) * (inWaterNow ? 0.45 : 1) * (crouch ? 0.5 : 1) * (1 - player.adsBlend * 0.45);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
     const wasGrounded = physBuf[6] > 0.5;
@@ -2585,7 +3087,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         );
       }
     }
-    const strideAmp = moving * (1 + player.sprintEffect * 0.55 + player.wadeBlend * 0.35);
+    const strideAmp = moving * (1 + player.sprintEffect * 0.55 + player.wadeBlend * 0.35) * (1 - player.adsBlend * 0.8);
     const bobY = Math.sin(player.bobPhase) * 0.055 * strideAmp;
     const bobX = Math.cos(player.bobPhase * 0.5) * 0.03 * strideAmp;
     player.landDip = Math.max(0, player.landDip - dt * 0.5);
@@ -2620,16 +3122,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     // Dynamic FOV: the Settings base angle plus a sprint stretch that
     // fades WITH stamina, a subtle walk-cycle pulse, a small wading push
-    // and a landing punch-in. All smoothed, never snapping.
+    // and a landing punch-in. ADS lerps that whole hip target into the
+    // active gun's scoped angle so distant targets grow large enough to
+    // hit precisely. All smoothed, never snapping.
     {
       const baseFov = clamp(inputState.fov || 71, 55, 100);
-      const targetFov = baseFov
+      const hipTargetFov = baseFov
         + player.sprintEffect * 7
         + moving * 1.1
         + Math.sin(player.bobPhase) * 0.5 * moving
         + player.wadeBlend * 1.6
         - player.landDip * 7;
-      setCameraFov(targetFov, dt, 7);
+      const adsFactor = clamp(inputState.weaponAdsFactor || 0.58, 0.3, 0.75);
+      const adsTargetFov = clamp(baseFov * adsFactor, 24, 55);
+      const targetFov = THREE.MathUtils.lerp(hipTargetFov, adsTargetFov, player.adsBlend);
+      setCameraFov(targetFov, dt, player.adsBlend > 0.02 ? 12 : 7);
+      debugStats.hipFov = Math.round(hipTargetFov * 10) / 10;
+      debugStats.adsFov = Math.round(adsTargetFov * 10) / 10;
     }
 
     // Viewmodel: camera-synced walking bob + spring sway + recoil + reload.
@@ -2665,23 +3174,68 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // Locomotion poses layered over the base bob/sway:
     // - sprint: rifle cants across the body and pumps with the stride,
     //   scaling with sprintEffect so it relaxes as stamina fades;
-    // - wading: rifle lifts clear of the water with a slower drag sway.
-    const sprintPose = player.sprintEffect * (player.grounded ? 1 : 0.3);
+    // - wading: rifle lifts clear of the water with a slower drag sway;
+    // - FIRING overrides the cant: the rifle charges forward, level and
+    //   shouldered, so the muzzle visibly points where the shots travel;
+    // - ADS has final authority and centers the optic on the crosshair.
+    const adsPose = player.adsBlend;
+    const forwardPose = Math.max(player.firePose, adsPose);
+    const sprintPose = player.sprintEffect * (player.grounded ? 1 : 0.3) * (1 - forwardPose);
     const runSwing = Math.sin(player.bobPhase) * sprintPose;
-    const wadePose = player.wadeBlend;
-    gun.position.set(
-      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16 - reloadYaw * 0.10
-        + Math.cos(player.bobPhase) * 0.012 * sprintPose - sprintPose * 0.045,
-      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11 - reloadDip
-        - Math.abs(runSwing) * 0.022 + runSwing * 0.01 + wadePose * 0.075,
-      -0.65 + rk * 0.07 + reloadDip * 0.35 + sprintPose * 0.045 + wadePose * 0.02
-    );
-    gun.rotation.set(
-      rk * 0.09 + player.swayPitch * 0.85 + reloadTilt + sprintPose * 0.12 - wadePose * 0.1,
-      player.swayYaw + reloadYaw + sprintPose * 0.38 + wadePose * 0.06,
-      player.swayYaw * 0.35 - reloadTilt * 0.45 - sprintPose * 0.26 + runSwing * 0.05
-        + Math.sin(player.bobPhase * 0.7) * 0.02 * wadePose
-    );
+    const wadePose = player.wadeBlend * (1 - forwardPose * 0.75);
+    const sidearmActive = inputState.weaponId === "vp70";
+    const viewScale = sidearmActive ? 0.95 : inputState.weaponId === "dmr7" ? 0.88 : inputState.weaponId === "r11" ? 0.94 : 0.82;
+    const swapP = player.swapT > 0 ? 1 - player.swapT / Math.max(0.01, player.swapDur) : 1;
+    const swapDip = player.swapT > 0 ? Math.sin(Math.min(1, swapP) * Math.PI) * 0.16 : 0;
+    const swapTilt = player.swapT > 0 ? Math.sin(Math.min(1, swapP) * Math.PI) * 0.35 : 0;
+    let gunX = 0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16 - reloadYaw * 0.10
+      + Math.cos(player.bobPhase) * 0.012 * sprintPose - sprintPose * 0.045;
+    let gunY = -0.225 + (sidearmActive ? 0.07 : 0) + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11 - reloadDip
+      - Math.abs(runSwing) * 0.022 + runSwing * 0.01 + wadePose * 0.075;
+    let gunZ = -0.65 + (sidearmActive ? 0.08 : 0) + rk * 0.07 + reloadDip * 0.35 + sprintPose * 0.045 + wadePose * 0.02;
+    let gunRotX = rk * 0.09 + player.swayPitch * 0.85 + reloadTilt + sprintPose * 0.12 - wadePose * 0.1;
+    let gunRotY = player.swayYaw + reloadYaw + sprintPose * 0.38 + wadePose * 0.06;
+    let gunRotZ = player.swayYaw * 0.35 - reloadTilt * 0.45 - sprintPose * 0.26 + runSwing * 0.05
+      + Math.sin(player.bobPhase * 0.7) * 0.02 * wadePose;
+    // Forward charge while the trigger is live (sprint-shooting included).
+    const chargePose = player.firePose * (1 - adsPose);
+    gunX = THREE.MathUtils.lerp(gunX, 0.16, chargePose);
+    gunY = THREE.MathUtils.lerp(gunY, sidearmActive ? -0.17 : -0.205, chargePose);
+    gunZ = THREE.MathUtils.lerp(gunZ, (sidearmActive ? -0.60 : -0.68) + rk * 0.05, chargePose);
+    gunRotX = THREE.MathUtils.lerp(gunRotX, rk * 0.05, chargePose);
+    gunRotY = THREE.MathUtils.lerp(gunRotY, 0, chargePose);
+    gunRotZ = THREE.MathUtils.lerp(gunRotZ, 0, chargePose);
+    // ADS: both viewmodels keep their optic axis at local (0, 0.148), so
+    // gun y=-(0.148 * viewScale) puts the lens on the camera center line.
+    gunX = THREE.MathUtils.lerp(gunX, 0, adsPose);
+    gunY = THREE.MathUtils.lerp(gunY, -0.148 * viewScale, adsPose);
+    gunZ = THREE.MathUtils.lerp(gunZ, -0.50 + rk * 0.035, adsPose);
+    gunRotX = THREE.MathUtils.lerp(gunRotX, rk * 0.035, adsPose);
+    gunRotY = THREE.MathUtils.lerp(gunRotY, 0, adsPose);
+    gunRotZ = THREE.MathUtils.lerp(gunRotZ, 0, adsPose);
+    // Weapon-swap draw dip rides on top of every other pose.
+    gunY -= swapDip;
+    gunZ += swapDip * 0.25;
+    gunRotX += swapTilt;
+    gunRotZ -= swapTilt * 0.4;
+    gun.position.set(gunX, gunY, gunZ);
+    gun.rotation.set(gunRotX, gunRotY, gunRotZ);
+    gun.scale.setScalar(viewScale);
+    for (const part of rifleParts) part.visible = !sidearmActive;
+    if (gunSidearm) gunSidearm.visible = sidearmActive;
+    muzzle.position.set(0, sidearmActive ? 0.102 : 0.032, sidearmActive ? -0.34 : -0.93);
+    flash.position.copy(muzzle.position);
+    debugStats.viewmodel = sidearmActive ? "sidearm" : "rifle";
+    debugStats.gunScale = viewScale;
+    // Deep in ADS the HUD scope overlay becomes the sight picture, so the
+    // low-poly receiver steps aside instead of blocking the magnified view.
+    gun.visible = player.adsBlend < 0.72;
+    debugStats.gunX = Math.round(gunX * 1000) / 1000;
+    debugStats.gunY = Math.round(gunY * 1000) / 1000;
+    debugStats.gunZ = Math.round(gunZ * 1000) / 1000;
+    debugStats.gunYawDeg = Math.round(gunRotY * (180 / Math.PI) * 10) / 10;
+    debugStats.gunRollDeg = Math.round(gunRotZ * (180 / Math.PI) * 10) / 10;
+    debugStats.gunVisible = gun.visible ? 1 : 0;
     flash.material.opacity = Math.max(0, flash.material.opacity - dt * 16);
   }
 
@@ -3172,7 +3726,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     resetPhysics(safe.x, safe.y, safe.z);
   }
   function safetySweep(dt) {
-    if (playing) {
+    if (playing && !(warthog && warthog.occupied)) {
       const feetY = physBuf[1];
       const groundY = groundHeightWithBridge(player.pos.x, player.pos.z);
       const bad = !Number.isFinite(feetY) || !Number.isFinite(player.pos.x) || !Number.isFinite(player.pos.z)
@@ -3373,9 +3927,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (playing) {
       gun.visible = true;
       updatePlayer(dt);
+    } else if (!introCinematicPlayed) {
+      updateCinematic(elapsed); // opening backdrop, once per app-open
     } else {
-      updateCinematic(elapsed);
+      snapToPlayerCamera(); // paused on the exact player view — no cinematic on resume
+      gun.visible = !(warthog && warthog.occupied);
+      playerBlobShadow.visible = false;
     }
+    debugStats.cinematicActive = !playing && !introCinematicPlayed ? 1 : 0;
+    debugStats.introCinematicPlayed = introCinematicPlayed ? 1 : 0;
     // beacon blink: sharp double-pulse
     const pulse = Math.pow(Math.max(0, Math.sin(elapsed * 2.6)), 6);
     beaconLight.intensity = pulse * 260;
@@ -3424,28 +3984,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       debugStats._last = now;
       debugStats.frameMs = debugStats.frameMs * 0.92 + ft * 0.08;
       debugStats.fps = debugStats.frameMs > 0 ? 1000 / debugStats.frameMs : 0;
-      dprCooldown = Math.max(0, dprCooldown - dt);
-      dprSampleMs += Math.min(ft, 100);
-      dprSamples++;
-      if (dprSamples >= 35 && dprCooldown <= 0) {
-        const avgFrameMs = dprSampleMs / dprSamples;
-        renderDprCap = dprCapForQuality(); // settings quality applies live
-        let nextDpr = renderDpr;
-        // Target ~70fps (14.3ms): shed resolution above 15.5ms average,
-        // only buy it back when frames are comfortably under 11ms.
-        if (renderDpr > renderDprCap) nextDpr = renderDprCap;
-        else if (avgFrameMs > 15.5 && renderDpr > 1) nextDpr = Math.max(1, renderDpr - 0.2);
-        else if (avgFrameMs < 11 && renderDpr < renderDprCap) nextDpr = Math.min(renderDprCap, renderDpr + 0.1);
-        if (nextDpr !== renderDpr) {
-          const goingDown = nextDpr < renderDpr;
-          renderDpr = nextDpr;
-          renderer.setPixelRatio(renderDpr);
-          dprCooldown = goingDown ? 1.5 : 4;
-        }
-        dprSampleMs = 0;
-        dprSamples = 0;
-      }
+      // No adaptive resolution shedding: renderDpr is locked to the native
+      // devicePixelRatio in applyViewportSize() so tilting into landscape
+      // never compresses the image.
       debugStats.dpr = Math.round(renderDpr * 100) / 100;
+      debugStats.nativeDpr = Math.round(nativePixelRatio() * 100) / 100;
       const ri = renderer.info;
       debugStats.calls = ri.render.calls;
       debugStats.tris = ri.render.triangles;
@@ -3475,6 +4018,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("focus", onFocus);
     window.removeEventListener("resize", onResize);
+    window.removeEventListener("orientationchange", onResize);
+    if (window.visualViewport) window.visualViewport.removeEventListener("resize", onResize);
+    for (const t of resizeTimers) clearTimeout(t);
+    resizeTimers = [];
     scene.traverse((obj) => {
       if (obj.geometry) {
         if (obj.geometry.disposeBoundsTree) obj.geometry.disposeBoundsTree();

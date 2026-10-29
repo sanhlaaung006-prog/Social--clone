@@ -80,6 +80,25 @@
       }
     };
 
+    // Per-gun handling used by thumb-first slot swapping + ADS. Reserve
+    // ammunition stays one shared pool (existing ammo boxes feed it), while
+    // each carried slot remembers its own loaded magazine.
+    const WEAPON_PROFILES = {
+      kx9: { magazineSize: 30, adsFactor: 0.58, spread: 1, swapSeconds: 0.42 },
+      r11: { magazineSize: 6, adsFactor: 0.68, spread: 2.4, swapSeconds: 0.5 },
+      dmr7: { magazineSize: 10, adsFactor: 0.42, spread: 0.45, swapSeconds: 0.55 },
+      vp70: { magazineSize: 15, adsFactor: 0.62, spread: 0.75, swapSeconds: 0.32 },
+    };
+    const weaponProfileFor = (id) => WEAPON_PROFILES[id] || { magazineSize: 30, adsFactor: 0.58, spread: 1, swapSeconds: 0.45 };
+    const syncWorldWeapon = (slot, id) => {
+      const profile = weaponProfileFor(id);
+      inputState.activeWeaponSlot = slot;
+      inputState.weaponId = id || "kx9";
+      inputState.weaponAdsFactor = profile.adsFactor;
+      inputState.weaponSpread = profile.spread;
+    };
+    let weaponSwapReadyAt = 0; // wall-clock gate while the draw animation runs
+
     const EQUIP_SLOTS = [
       { key: "primary", label: "PRIMARY", code: "01" },
       { key: "secondary", label: "SIDEARM", code: "02" },
@@ -155,6 +174,8 @@
       ammo: 30,
       reserveAmmo: 120,
       magazineSize: 30,
+      activeWeaponSlot: "primary", // which carried gun is in the hands (thumb-slot swap)
+      weaponAmmo: { primary: 30, secondary: 15 }, // loaded rounds remembered per slot
       inventory: makeInventory(),
       isMenuOpen: true,
       mapMode: getInitialMapMode(),
@@ -170,7 +191,7 @@
 
       // Interface / loadout state.
       screen: "title",
-      equipped: { head: "raven", torso: "plate3", primary: "kx9", secondary: null, utility: "trauma" },
+      equipped: { head: "raven", torso: "plate3", primary: "kx9", secondary: "vp70", utility: "trauma" },
       faction: FACTION_A,
       defected: false,
       notice: null,
@@ -225,17 +246,58 @@
       fire: () => {
         const state = get();
         if (state.isMenuOpen) return;
+        if (performance.now() < weaponSwapReadyAt) return; // gun still coming up
+        if (!state.equipped[state.activeWeaponSlot]) {
+          get().notify("NO WEAPON IN HAND // TAP A GUN SLOT", "danger");
+          return;
+        }
         if (state.ammo > 0) {
-          set((current) => ({ ammo: current.ammo - 1, shots: current.shots + 1 }));
+          set((current) => {
+            const nextAmmo = current.ammo - 1;
+            return {
+              ammo: nextAmmo,
+              weaponAmmo: { ...current.weaponAmmo, [current.activeWeaponSlot]: nextAmmo },
+              shots: current.shots + 1,
+            };
+          });
         } else if (state.reserveAmmo > 0) {
-          get().notify("MAGAZINE EMPTY // PRESS R TO RELOAD", "danger");
+          get().notify("MAGAZINE EMPTY // TAP RLD OR SWAP GUNS", "danger");
         } else {
           get().notify("NO AMMUNITION // SCAVENGE THE FIELD", "danger");
         }
       },
+      // PUBG-style thumb swap: tap the carried gun you want and it comes
+      // into the hands with its own remembered magazine + draw animation.
+      swapWeapon: (slot) => {
+        const state = get();
+        if (state.isMenuOpen || !state.hasStarted) return;
+        if (slot !== "primary" && slot !== "secondary") return;
+        const itemId = state.equipped[slot];
+        if (!itemId || !ITEMS[itemId]) {
+          get().notify("WEAPON SLOT EMPTY // EQUIP A GUN FIRST", "danger");
+          return;
+        }
+        if (slot === state.activeWeaponSlot) return;
+        if (performance.now() < weaponSwapReadyAt) return;
+        const profile = weaponProfileFor(itemId);
+        const loaded = Math.max(0, Math.min(profile.magazineSize, state.weaponAmmo[slot] == null ? profile.magazineSize : state.weaponAmmo[slot]));
+        weaponSwapReadyAt = performance.now() + profile.swapSeconds * 1000;
+        inputState.ads = false;
+        inputState.firing = false;
+        inputState.weaponSwap = { slot, itemId, duration: profile.swapSeconds };
+        syncWorldWeapon(slot, itemId);
+        set({
+          activeWeaponSlot: slot,
+          ammo: loaded,
+          magazineSize: profile.magazineSize,
+          weaponAmmo: { ...state.weaponAmmo, [slot]: loaded },
+        });
+        get().notify(`${ITEMS[itemId].name} // IN HAND`);
+      },
       reload: () => {
         const state = get();
         if (state.isMenuOpen) return;
+        if (performance.now() < weaponSwapReadyAt) return; // finish the draw first
         if (state.ammo >= state.magazineSize) {
           get().notify("MAGAZINE FULL // WEAPON NOMINAL");
           return;
@@ -245,7 +307,11 @@
           return;
         }
         const load = Math.min(state.magazineSize - state.ammo, state.reserveAmmo);
-        set({ ammo: state.ammo + load, reserveAmmo: state.reserveAmmo - load });
+        set({
+          ammo: state.ammo + load,
+          reserveAmmo: state.reserveAmmo - load,
+          weaponAmmo: { ...state.weaponAmmo, [state.activeWeaponSlot]: state.ammo + load },
+        });
         get().notify(`RELOADED // ${load} ROUNDS`);
       },
       // Stamina consumables share one boost channel into the world sim.
@@ -278,13 +344,48 @@
           get().notify("ITEM CANNOT BE EQUIPPED // CHECK SLOT", "danger");
           return;
         }
-        set((state) => ({ equipped: { ...state.equipped, [item.slot]: id } }));
+        if (item.slot === "primary" || item.slot === "secondary") {
+          const profile = weaponProfileFor(id);
+          const isActive = get().activeWeaponSlot === item.slot;
+          if (isActive) syncWorldWeapon(item.slot, id);
+          set((state) => ({
+            equipped: { ...state.equipped, [item.slot]: id },
+            weaponAmmo: { ...state.weaponAmmo, [item.slot]: profile.magazineSize },
+            ...(isActive ? { ammo: profile.magazineSize, magazineSize: profile.magazineSize } : {}),
+          }));
+        } else {
+          set((state) => ({ equipped: { ...state.equipped, [item.slot]: id } }));
+        }
         get().notify(`${item.name} // EQUIPPED TO ${item.slot.toUpperCase()}`);
       },
       unequipSlot: (slot) => {
         if (!slot) return;
-        const current = get().equipped[slot];
-        set((state) => ({ equipped: { ...state.equipped, [slot]: null } }));
+        const state = get();
+        const current = state.equipped[slot];
+        if ((slot === "primary" || slot === "secondary") && state.activeWeaponSlot === slot) {
+          const other = slot === "primary" ? "secondary" : "primary";
+          const otherId = state.equipped[other];
+          if (otherId) {
+            const profile = weaponProfileFor(otherId);
+            const loaded = Math.max(0, Math.min(profile.magazineSize, state.weaponAmmo[other] == null ? profile.magazineSize : state.weaponAmmo[other]));
+            syncWorldWeapon(other, otherId);
+            set((currentState) => ({
+              equipped: { ...currentState.equipped, [slot]: null },
+              activeWeaponSlot: other,
+              ammo: loaded,
+              magazineSize: profile.magazineSize,
+              weaponAmmo: { ...currentState.weaponAmmo, [other]: loaded },
+            }));
+          } else {
+            set((currentState) => ({
+              equipped: { ...currentState.equipped, [slot]: null },
+              ammo: 0,
+              magazineSize: 0,
+            }));
+          }
+        } else {
+          set((currentState) => ({ equipped: { ...currentState.equipped, [slot]: null } }));
+        }
         if (current) get().notify("ITEM RELEASED TO STASH");
       },
       loadAmmo: (id) => {
@@ -401,14 +502,19 @@
         ["SAFETY", "R " + (d.safetyReports || 0) + " RUST " + (d.safetyRustReports || 0) + " RESCUE " + (d.safetyRescues || 0)],
         ["STAMINA/SPRINT", Math.round(d.stamina || 0) + " FX " + (d.sprintEffect || 0).toFixed(2) + (d.staminaBoostT > 0 ? " BOOST " + d.staminaBoostT + "S" : "")],
         ["FOV", (d.fov || 71).toFixed(1) + " DEG"],
+        ["ADS/SCOPE", (d.adsBlend || 0).toFixed(2) + " -> " + (d.adsFov || 0).toFixed(1) + " DEG"],
+        ["WEAPON/POSE", (d.weaponId || "kx9") + " F" + (d.firePose || 0).toFixed(2) + " YAW " + (d.gunYawDeg || 0).toFixed(1)],
+        ["COORD X/Z/Y", Math.round(d.playerX || 0) + " / " + Math.round(d.playerZ || 0) + " / " + Math.round(d.playerY || 0) + " M"],
+        ["WARTHOG", (d.jetOccupied ? "SEATED " : d.jetNear ? "NEAR " : "PARKED ") + (d.jetSpeedKmh || 0) + " KM/H ALT " + (d.jetAltitudeM || 0) + " THR " + (d.jetThrottlePct || 0) + "%"],
+        ["CINEMATIC", d.cinematicActive ? "OPENING" : "OFF" + (d.introCinematicPlayed ? " (PLAYED)" : "")],
         ["WADE/SPLASH", (d.wadeDepth || 0).toFixed(2) + "M / " + (d.splashBursts || 0)],
         ["GROUNDED OBJECTS", (d.groundedObjects || 0) + " FIX " + (d.groundingCorrections || 0)],
         ["CULLED >150M", d.cullFar],
         ["DRONES VIS", d.dronesVisible + "/6"],
         ["SIM TIME", d.simSeconds.toFixed(1) + " S"],
         ["TRAVEL", d.travelM.toFixed(0) + " M"],
-        ["CANVAS", d.width + "x" + d.height],
-        ["DPR", ((d.dpr || window.devicePixelRatio || 1).toFixed(2)) + " ADAPTIVE"],
+        ["CANVAS", d.width + "x" + d.height + " CSS " + (d.cssWidth || 0) + "x" + (d.cssHeight || 0)],
+        ["DPR", ((d.dpr || window.devicePixelRatio || 1).toFixed(2)) + " NATIVE " + ((d.nativeDpr || window.devicePixelRatio || 1).toFixed(2))],
         ["JS HEAP", heap],
         ["TIME OF DAY", tod],
         ["CAM X/Z", Math.round(d.px) + " / " + Math.round(d.pz)],
@@ -460,7 +566,10 @@
         apiRef.current = api;
         const unsubscribe = gameStore.subscribe((state, prev) => {
           if (state.shots > prev.shots) api.shoot();
-          if (state.ammo > prev.ammo && api.reload) api.reload();
+          // A slot swap can raise the displayed magazine without being a reload.
+          const sameGunInHand = state.activeWeaponSlot === prev.activeWeaponSlot
+            && state.equipped[state.activeWeaponSlot] === prev.equipped[prev.activeWeaponSlot];
+          if (state.ammo > prev.ammo && sameGunInHand && api.reload) api.reload();
         });
         return () => { unsubscribe(); api.dispose(); apiRef.current = null; };
       }, [mapMode]);
@@ -630,64 +739,43 @@
       );
     });
 
-    // Dedicated thumb reload, seated immediately LEFT of the weapon slots.
-    // It is its own control — not hidden inside the active-slot click.
-    const HudReloadButton = React.memo(function HudReloadButton() {
-      const reload = useGameStore((state) => state.reload);
-      const ammo = useGameStore((state) => state.ammo);
-      const reserveAmmo = useGameStore((state) => state.reserveAmmo);
-      const magazineSize = useGameStore((state) => state.magazineSize);
-      const lastRef = React.useRef(0);
-      const low = ammo <= 8 && reserveAmmo > 0;
-      const doReload = (event) => {
-        event.preventDefault();
-        const now = performance.now();
-        if (now - lastRef.current < 400) return; // pointerdown + click double-fire guard
-        lastRef.current = now;
-        reload();
-      };
-      return (
-        <button
-          type="button"
-          className={`hud-reload-btn ${low ? "is-low" : ""}`}
-          onPointerDown={doReload}
-          onClick={doReload}
-          onContextMenu={(event) => event.preventDefault()}
-          aria-label={`Reload weapon, ${ammo} of ${magazineSize} in magazine, ${reserveAmmo} in reserve`}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path d="M20 11A8 8 0 1 1 17.2 4.4M20 2v9h-9" />
-          </svg>
-          <span>RLD</span>
-          <small>RELOAD</small>
-        </button>
-      );
-    });
-
+    // Thumb-first gun swapping (PUBG-style): tap the gun you want and it is
+    // drawn into the hands. Tapping the gun already in hand does nothing —
+    // reloading lives on the right-side RLD button / R key only.
     const WeaponSlots = React.memo(function WeaponSlots() {
       const primary = useGameStore((state) => state.equipped.primary);
       const secondary = useGameStore((state) => state.equipped.secondary);
-      const reload = useGameStore((state) => state.reload);
+      const activeWeaponSlot = useGameStore((state) => state.activeWeaponSlot);
+      const weaponAmmo = useGameStore((state) => state.weaponAmmo);
+      const swapWeapon = useGameStore((state) => state.swapWeapon);
       const slots = [
-        { key: "1", item: ITEMS[primary], active: true },
-        { key: "2", item: ITEMS[secondary], active: false },
-      ];
+        { key: "1", slot: "primary", item: ITEMS[primary], itemId: primary },
+        { key: "2", slot: "secondary", item: ITEMS[secondary], itemId: secondary },
+      ].map((slot) => ({ ...slot, active: activeWeaponSlot === slot.slot }));
+      const draw = (slot) => (event) => {
+        event.preventDefault();
+        swapWeapon(slot);
+      };
       return (
-        <section className="weapon-slots" aria-label="Weapon slots">
-          <HudReloadButton />
+        <section className="weapon-slots" aria-label="Weapon slots. Tap a gun to draw it.">
           {slots.map((slot) => slot.item ? (
             <button
               key={slot.key}
               type="button"
               className={`weapon-slot ${slot.active ? "is-active" : ""}`}
-              onClick={slot.active ? reload : undefined}
-              aria-label={slot.active ? `${slot.item.name}, active weapon. Activate to reload.` : `${slot.item.name}, carried weapon`}
+              onPointerDown={draw(slot.slot)}
+              onClick={draw(slot.slot)}
+              onContextMenu={(event) => event.preventDefault()}
+              aria-pressed={slot.active}
+              aria-label={slot.active ? `${slot.item.name}, weapon in hand` : `Draw ${slot.item.name}`}
             >
               <span className="slot-key">{slot.key}</span>
               <HudWeaponGlyph />
               <span className="slot-copy">
                 <b>{slot.item.name}</b>
-                {slot.active ? <small><AmmoMag /> / <AmmoReserve /></small> : <small>CARRIED</small>}
+                {slot.active
+                  ? <small><AmmoMag /> / <AmmoReserve /></small>
+                  : <small>{weaponAmmo[slot.slot] == null ? weaponProfileFor(slot.itemId).magazineSize : weaponAmmo[slot.slot]} RDS · TAP</small>}
               </span>
             </button>
           ) : (
@@ -763,6 +851,35 @@
       );
     });
 
+    // Scope sight picture: opacity follows the world's ADS blend through a
+    // direct-DOM rAF write, so scoping never re-renders React per frame.
+    const ScopeOverlay = React.memo(function ScopeOverlay() {
+      const rootRef = React.useRef(null);
+      useEffect(() => {
+        let raf = 0;
+        const paint = () => {
+          const node = rootRef.current;
+          if (node) {
+            const blend = Math.max(0, Math.min(1, debugStats.adsBlend || 0));
+            node.style.opacity = String(blend);
+            node.style.visibility = blend > 0.02 ? "visible" : "hidden";
+            node.style.transform = `scale(${1.08 - blend * 0.08})`;
+          }
+          raf = window.requestAnimationFrame(paint);
+        };
+        paint();
+        return () => window.cancelAnimationFrame(raf);
+      }, []);
+      return (
+        <div ref={rootRef} className="scope-overlay" aria-hidden="true">
+          <span className="scope-ring" />
+          <span className="scope-line is-h" />
+          <span className="scope-line is-v" />
+          <span className="scope-dot" />
+        </div>
+      );
+    });
+
     const Crosshair = React.memo(function Crosshair() {
       const rootRef = React.useRef(null);
       const rangeRef = React.useRef(null);
@@ -797,6 +914,81 @@
           <span className="ch-corner c" />
           <span className="ch-corner d" />
           <span ref={rangeRef} className="ch-range">ENGAGE / {hudTelemetry.objectiveDistance}M</span>
+        </div>
+      );
+    });
+
+    // Always-readable world coordinates (metres). Say "spawn X at
+    // 120, -340" and that is exactly where it will go.
+    const CoordinateReadout = React.memo(function CoordinateReadout() {
+      const valueRef = React.useRef(null);
+      useEffect(() => {
+        let raf = 0; let last = "";
+        const paint = () => {
+          const d = debugStats;
+          const text = `X ${Math.round(d.playerX || 0)} · Z ${Math.round(d.playerZ || 0)} · Y ${Math.round(d.playerY || 0)} M`;
+          if (valueRef.current && text !== last) { last = text; valueRef.current.textContent = text; }
+          raf = window.requestAnimationFrame(paint);
+        };
+        paint();
+        return () => window.cancelAnimationFrame(raf);
+      }, []);
+      return (
+        <div className="hud-coordinates" aria-label="Current world coordinates">
+          <span>COORD</span><b ref={valueRef}>X 0 · Z 0 · Y 0 M</b>
+        </div>
+      );
+    });
+
+    // Warthog DRIVE / flight / EXIT surface. Visibility is driven by the
+    // world's proximity + seat state through direct DOM writes, once a frame.
+    const JetInterface = React.memo(function JetInterface() {
+      const hasStarted = useGameStore((state) => state.hasStarted);
+      const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const driveRef = React.useRef(null);
+      const flightRef = React.useRef(null);
+      const telemetryRef = React.useRef(null);
+      const exitRef = React.useRef(null);
+      useEffect(() => {
+        let raf = 0;
+        const paint = () => {
+          const d = debugStats;
+          if (driveRef.current) driveRef.current.style.display = d.jetNear ? "flex" : "none";
+          if (flightRef.current) {
+            flightRef.current.style.display = d.jetOccupied ? "flex" : "none";
+            flightRef.current.classList.toggle("is-stall", !!d.jetStall);
+          }
+          if (telemetryRef.current) {
+            telemetryRef.current.textContent = `${d.jetMessage || "WARTHOG"} · ${d.jetSpeedKmh || 0} KM/H · ALT ${d.jetAltitudeM || 0} M · THR ${d.jetThrottlePct || 0}% · AOA ${d.jetAoaDeg || 0}°`;
+          }
+          if (exitRef.current) exitRef.current.textContent = d.jetCanExit ? "EXIT" : "EXIT · STOP FIRST";
+          raf = window.requestAnimationFrame(paint);
+        };
+        paint();
+        return () => window.cancelAnimationFrame(raf);
+      }, []);
+      if (!hasStarted || isMenuOpen) return null;
+      const queue = (action) => (event) => { event.preventDefault(); inputState.jetAction = action; };
+      const hold = (set, clear) => ({
+        onPointerDown: (event) => { event.preventDefault(); set(); },
+        onPointerUp: clear, onPointerLeave: clear, onPointerCancel: clear,
+        onContextMenu: (event) => event.preventDefault(),
+      });
+      return (
+        <div className="jet-interface">
+          <button ref={driveRef} type="button" className="jet-drive-btn" style={{ display: "none" }} onPointerDown={queue("enter")} onClick={queue("enter")} aria-label="Drive the Warthog">
+            <strong>DRIVE</strong><small>WARTHOG · X 18 · Z 0</small>
+          </button>
+          <div ref={flightRef} className="jet-flight" style={{ display: "none" }}>
+            <div ref={telemetryRef} className="jet-telemetry" role="status">ENGINE READY</div>
+            <div className="jet-flight-buttons">
+              <button type="button" {...hold(() => { inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease throttle">THR −</button>
+              <button type="button" {...hold(() => { inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase throttle">THR +</button>
+              <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold wheel brakes">BRK</button>
+              <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the Warthog">EXIT</button>
+            </div>
+            <div className="jet-flight-hint">LEFT STICK / WASD = PITCH + BANK · SHIFT/CTRL = THROTTLE · SPACE = BRAKE</div>
+          </div>
         </div>
       );
     });
@@ -844,6 +1036,7 @@
               <HudPauseButton />
             </div>
           </div>
+          <CoordinateReadout />
           <Crosshair />
           <ObjectiveLabel />
           <div className="hud-bottom">
@@ -854,9 +1047,10 @@
           <div className="hud-hints" aria-hidden="true">
             <span><kbd>LEFT STICK</kbd> MOVE</span>
             <span><kbd>DRAG</kbd> AIM</span>
+            <span><kbd>ADS</kbd> SCOPE</span>
             <span><kbd>FIRE</kbd> SHOOT</span>
             <span><kbd>RLD</kbd> RELOAD</span>
-            <span><kbd>CRCH</kbd> CROUCH</span>
+            <span><kbd>TAP GUN</kbd> SWAP</span>
           </div>
         </div>
       );
@@ -1257,220 +1451,60 @@
     const StartScreen = React.memo(function StartScreen() {
       const startGame = useGameStore((state) => state.startGame);
       const openScreen = useGameStore((state) => state.openScreen);
-      const mapMode = useGameStore((state) => state.mapMode);
-      const setMapMode = useGameStore((state) => state.setMapMode);
-      const [progress, setProgress] = useState(0);
-      const [briefOpen, setBriefOpen] = useState(false);
+      const notify = useGameStore((state) => state.notify);
+      const [multiplayerGlitch, setMultiplayerGlitch] = useState(false);
       const playRef = React.useRef(null);
-      const ready = progress >= 100;
+      const glitchTimerRef = React.useRef(0);
 
-      useEffect(() => {
-        if (ready) return undefined;
-        if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-          setProgress(100);
-          return undefined;
-        }
-        const timer = setInterval(() => {
-          setProgress((value) => Math.min(100, value + Math.max(10, Math.round((100 - value) * 0.3))));
-        }, 40);
-        return () => clearInterval(timer);
-      }, [ready]);
-
-      // Put keyboard operators straight on START at first paint, without
-      // stealing focus if they already tabbed somewhere deliberate.
       useEffect(() => {
         if (playRef.current && (!document.activeElement || document.activeElement === document.body)) {
           playRef.current.focus({ preventScroll: true });
         }
+        return () => window.clearTimeout(glitchTimerRef.current);
       }, []);
 
-      const doneSteps = ready ? LOAD_STEPS.length : Math.floor((progress / 100) * LOAD_STEPS.length);
+      const attemptMultiplayer = () => {
+        setMultiplayerGlitch(true);
+        notify("MULTIPLAYER ISN'T AVAILABLE YET, ONLY BETA", "danger");
+        window.clearTimeout(glitchTimerRef.current);
+        glitchTimerRef.current = window.setTimeout(() => setMultiplayerGlitch(false), 900);
+      };
 
       return (
-        <div className="overlay start-overlay" role="dialog" aria-modal="true" aria-label="IRONVEIL start menu">
-          <div className="console">
-            <header className="console-header">
-              <div className="brand">
-                <BrandMark />
-                <span className="brand-copy">
-                  <span className="brand-name">IRON<em>VEIL</em></span>
-                  <span className="brand-sub">TACTICAL OPERATIONS / 04</span>
-                </span>
-              </div>
-              <div className="header-status" aria-label="Connection status">
-                <span className="live-dot pulse" />
-                <span className="status-label">SECURE UPLINK</span>
-                <span className="status-divider" />
-                <b>24 MS</b>
-                <span className="status-divider" />
-                <span>BUILD 0x2E7A</span>
-              </div>
-              <div className="header-right">
-                <span className="tag acid">V 1.0 // FIELD BUILD</span>
-              </div>
-            </header>
-
-            <main className="console-main">
-              <div className="menu-topline start-rise">
-                <span className="kicker"><span className="live-dot pulse" /> PRE-DEPLOYMENT <span className="slash">//</span> SECTOR KARST-9</span>
-                <span className="topline-meta"><span>SESSION</span> <b>0x2E7A</b> <span className="footer-sep" /> GRID 04-C</span>
-              </div>
-
-              <div className="menu-grid">
-                <div className="menu-primary">
-                  <div className="pause-label start-rise d1">TACTICAL OPERATIONS <span className="slash">//</span> OPERATION BLACK MERIDIAN</div>
-                  <h1 className="start-title start-rise d1">IRON<em>VEIL</em></h1>
-                  <div className="operation-line start-rise d2">
-                    <b>SECURE THE RELAY</b>
-                    <span>HOLD THE RIDGE UNTIL EXFIL</span>
-                  </div>
-                  <p className="start-tagline start-rise d2">
-                    Relay Station 04-C went dark at 04:12. Your fireteam holds the ridge above Grid 04-C — re-establish the uplink, secure the relay, and do not break the line.
-                  </p>
-
-                  <div className="mission-meta start-rise d3">
-                    <div className="meta-cell"><span>DEPLOYMENT</span><strong>04:12:38</strong></div>
-                    <div className="meta-cell"><span>OBJECTIVE</span><strong className="accent">RELAY 04-C</strong></div>
-                    <div className="meta-cell"><span>FACTION</span><MenuFaction /></div>
-                  </div>
-
-                  <section className="map-mode-select start-rise d3" aria-label="Map preset">
-                    <div className="map-mode-head">
-                      <span>MAP PRESET</span>
-                      <b>{MAP_PRESETS[mapMode].label} // {MAP_PRESETS[mapMode].size / 1000}x{MAP_PRESETS[mapMode].size / 1000} KM</b>
-                    </div>
-                    <div className="map-mode-options" role="group" aria-label="Choose map preset">
-                      <button
-                        type="button"
-                        className={`map-mode-btn ${mapMode === "br" ? "is-active" : ""}`}
-                        aria-pressed={mapMode === "br"}
-                        onClick={() => setMapMode("br")}
-                      >
-                        <strong>BATTLE ROYALE</strong>
-                        <small>2x2 KM // 4 CHUNKS // OOB DAMAGE</small>
-                      </button>
-                      <button
-                        type="button"
-                        className={`map-mode-btn ${mapMode === "survival" ? "is-active" : ""}`}
-                        aria-pressed={mapMode === "survival"}
-                        onClick={() => setMapMode("survival")}
-                      >
-                        <strong>SURVIVAL</strong>
-                        <small>4x4 KM // 16 CHUNKS // RIM CLAMP</small>
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className="start-loading start-rise d3" aria-label="Loading progress">
-                    <div className="start-loading-head">
-                      <span className="start-loading-label">{ready ? "ALL SYSTEMS NOMINAL" : "INITIALIZING FIELD SYSTEMS"}</span>
-                      <b className={`start-percent ${ready ? "is-ready" : ""}`}>{progress}<small>%</small></b>
-                    </div>
-                    <div
-                      className="start-progress"
-                      role="progressbar"
-                      aria-valuemin="0"
-                      aria-valuemax="100"
-                      aria-valuenow={progress}
-                      aria-label={`Loading ${progress} percent`}
-                    >
-                      <div className="start-progress-fill" style={{ width: `${progress}%` }} />
-                      <div className="health-segs" />
-                    </div>
-                    <ul className="load-steps">
-                      {LOAD_STEPS.map((step, index) => {
-                        const done = index < doneSteps;
-                        const active = !ready && index === doneSteps;
-                        return (
-                          <li key={step} className={`load-step ${done ? "is-done" : ""} ${active ? "is-active" : ""}`}>
-                            <span className="load-step-name">{step}</span>
-                            <span className="load-step-status">{done ? "ONLINE" : active ? "LINKING…" : "STANDBY"}</span>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                    <div className={`start-ready-line ${ready ? "is-ready" : ""}`} role="status" aria-live="polite">
-                      <span className={`live-dot ${ready ? "pulse" : ""}`} />
-                      {ready ? "READY TO DEPLOY // PRESS ENTER OR HIT START" : "ESTABLISHING FIELD LINK // START WHEN READY"}
-                    </div>
-                  </section>
-
-                  <nav className="menu-actions start-rise d4" aria-label="Start menu">
-                    <button ref={playRef} className={`menu-action is-primary ${ready ? "is-ready" : ""}`} onClick={startGame}>
-                      <span className="action-number">01</span>
-                      <span className="action-icon"><UiIcon name="play" size={15} /></span>
-                      <span className="action-copy"><strong>START</strong><small>DEPLOY // OPERATION BLACK MERIDIAN</small></span>
-                      <span className="action-tail"><kbd>↵</kbd><UiIcon name="arrow" size={12} /></span>
-                    </button>
-
-                    <button className="menu-action" onClick={() => openScreen("inventory")}>
-                      <span className="action-number">02</span>
-                      <span className="action-icon"><UiIcon name="grid" size={14} /></span>
-                      <span className="action-copy"><strong>INVENTORY</strong><small><InventoryCount /></small></span>
-                      <span className="action-tail"><UiIcon name="arrow" size={12} /></span>
-                    </button>
-
-                    <button className="menu-action" onClick={() => openScreen("settings")}>
-                      <span className="action-number">03</span>
-                      <span className="action-icon"><UiIcon name="sliders" size={14} /></span>
-                      <span className="action-copy"><strong>SETTINGS</strong><small>INPUT / AUDIO / DISPLAY PROFILE</small></span>
-                      <span className="action-tail"><UiIcon name="arrow" size={12} /></span>
-                    </button>
-
-                    <button className="menu-action" onClick={() => setBriefOpen((open) => !open)} aria-expanded={briefOpen}>
-                      <span className="action-number">04</span>
-                      <span className="action-icon"><UiIcon name="target" size={14} /></span>
-                      <span className="action-copy"><strong>BRIEFING</strong><small>OBJECTIVE / FIELD CONTROLS</small></span>
-                      <span className="action-tail"><UiIcon name={briefOpen ? "close" : "plus"} size={12} /></span>
-                    </button>
-                  </nav>
-
-                  {briefOpen && (
-                    <section className="start-brief" aria-label="Mission briefing and controls">
-                      <div className="intel-head"><span>MISSION BRIEF</span><b>04-C</b></div>
-                      <p>Hold Relay Station 04-C on the Karst-9 ridge until exfil arrives. Phase 02 of 03 is active and the objective is 68% secured — hostiles are probing the trench line at Grid 03. Keep your magazine topped up, watch your vitals, and do not break the line.</p>
-                      <div className="brief-controls">
-                        <span className="brief-control"><kbd>WASD / L-STICK</kbd> MOVE</span>
-                        <span className="brief-control"><kbd>DRAG RIGHT SIDE</kbd> AIM</span>
-                        <span className="brief-control"><kbd>LMB / FIRE BTN</kbd> FIRE</span>
-                        <span className="brief-control"><kbd>SPACE / JUMP BTN</kbd> JUMP</span>
-                        <span className="brief-control"><kbd>R</kbd> RELOAD</span>
-                        <span className="brief-control"><kbd>H</kbd> TRAUMA KIT</span>
-                        <span className="brief-control"><kbd>ESC</kbd> COMMAND MENU</span>
-                        <span className="brief-control"><kbd>T</kbd> TIME OF DAY +3H</span>
-                        <span className="brief-control"><kbd>M</kbd> MUTE AUDIO</span>
-                      </div>
-                    </section>
-                  )}
-
-                  <div className="menu-hints start-rise d5">
-                    <span><kbd>↵</kbd> START</span>
-                    <span><kbd>TAB</kbd> NAVIGATE</span>
-                    <span className="hint-loop">FIELD LINK ENCRYPTED</span>
-                  </div>
-                </div>
-
-                <aside className="intel-side start-rise d3" aria-label="Mission intelligence">
-                  <TopoMap />
-                  <SquadCard />
-                </aside>
-              </div>
-            </main>
-
-            <footer className="console-footer">
-              <div className="footer-left">
-                <span><kbd>↵</kbd> START</span>
-                <span className="footer-hint-secondary"><kbd>TAB</kbd> NAVIGATE</span>
-              </div>
-              <div className="footer-right">
-                <span>REACT 18</span>
-                <span className="footer-sep" />
-                <span>ZUSTAND / SELECTOR SCOPE</span>
-                <span className="footer-sep" />
-                <span className="footer-tech">UI ISOLATED</span>
-              </div>
-            </footer>
-          </div>
+        <div className="overlay start-overlay clean-start" role="dialog" aria-modal="true" aria-label="IRONVEIL start menu">
+          <section className="clean-start-card" aria-labelledby="ironveil-title">
+            <div className="clean-start-brand">
+              <span>IRONVEIL</span>
+              <small>FIELD BETA</small>
+            </div>
+            <h1 id="ironveil-title">IRONVEIL</h1>
+            <p className="clean-start-sub">Karst-9 · cloud line / river valley</p>
+            <nav className="clean-start-actions" aria-label="Start menu">
+              <button ref={playRef} type="button" className="clean-start-btn is-primary" onClick={startGame}>
+                <strong>Single Player</strong>
+                <small>Deploy solo</small>
+              </button>
+              <button
+                type="button"
+                className={`clean-start-btn is-locked ${multiplayerGlitch ? "is-glitching" : ""}`}
+                onClick={attemptMultiplayer}
+                aria-disabled="true"
+                aria-describedby="multiplayer-closed-note"
+              >
+                <strong className="glitch-text" data-text="Multiplayer">Multiplayer</strong>
+                <small id="multiplayer-closed-note">It isn't available yet, only beta.</small>
+                <span className="clean-start-lock">CLOSED</span>
+              </button>
+              <button type="button" className="clean-start-btn" onClick={() => openScreen("settings")}>
+                <strong>Settings</strong>
+                <small>Controls / audio / display</small>
+              </button>
+            </nav>
+            <div className="clean-start-foot">
+              <span>Spawn X 0 · Z 0</span>
+              <span>Warthog X 18 · Z 0</span>
+            </div>
+          </section>
         </div>
       );
     });
@@ -1897,7 +1931,13 @@
       lookSensitivitySetting = value;
       inputState.sensitivity = 0.25 + value * 0.01;
     };
-    let renderQualitySetting = "MED"; // medium default: capped/adaptive DPR for smooth ~70fps
+    let adsSensitivitySetting = 26; // -> inputState.adsSensitivity 0.26 (scoped look)
+    const applyAdsSensitivity = (value) => {
+      adsSensitivitySetting = value;
+      inputState.adsSensitivity = Math.max(0.05, Math.min(1.5, (value || 26) / 100));
+    };
+    applyAdsSensitivity(adsSensitivitySetting);
+    let renderQualitySetting = "MED"; // preset label only: backbuffer resolution stays at native DPR
     const applyRenderQuality = (value) => {
       renderQualitySetting = value;
       inputState.quality = value;
@@ -2015,16 +2055,18 @@
       const showDebug = useGameStore((state) => state.showDebug);
       const setShowDebug = useGameStore((state) => state.setShowDebug);
       const [tab, setTab] = useState("controls");
-      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, quality: renderQualitySetting, fov: fovSetting }));
+      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, adsSensitivity: adsSensitivitySetting, quality: renderQualitySetting, fov: fovSetting }));
 
       const update = (key, value) => {
         if (key === "sensitivity") applyLookSensitivity(value);
+        if (key === "adsSensitivity") applyAdsSensitivity(value);
         if (key === "quality") applyRenderQuality(value);
         if (key === "fov") applyFov(value);
         setSettings((current) => ({ ...current, [key]: value }));
       };
       const reset = () => {
         applyLookSensitivity(SETTINGS_DEFAULTS.sensitivity);
+        applyAdsSensitivity(SETTINGS_DEFAULTS.adsSensitivity);
         applyRenderQuality(SETTINGS_DEFAULTS.quality);
         applyFov(SETTINGS_DEFAULTS.fov);
         setShowDebug(false);
@@ -2102,6 +2144,8 @@
                     <div className="keybind-list">
                       <div className="keybind-row"><span>MOVE</span><span><kbd>LEFT STICK</kbd></span></div>
                       <div className="keybind-row"><span>AIM</span><span><kbd>RIGHT DRAG</kbd></span></div>
+                      <div className="keybind-row"><span>ADS / SCOPE</span><span><kbd>ADS</kbd></span></div>
+                      <div className="keybind-row"><span>SWAP GUN</span><span><kbd>TAP WEAPON SLOT</kbd></span></div>
                       <div className="keybind-row"><span>FIRE WEAPON</span><span><kbd>FIRE</kbd></span></div>
                       <div className="keybind-row"><span>RELOAD</span><span><kbd>RLD</kbd></span></div>
                       <div className="keybind-row"><span>CROUCH</span><span><kbd>CRCH</kbd></span></div>
@@ -2246,11 +2290,22 @@
 
     const StageHitLayer = React.memo(function StageHitLayer() {
       const dragRef = React.useRef(null);
+      const adsPointerRef = React.useRef(null);
+      const lastPointerFireRef = React.useRef(0);
       const handlePointerDown = (event) => {
-        if (event.pointerType === "touch") return; // touch uses sticks + FIRE button
-        if (event.pointerType === "mouse" && event.button !== 0) return;
+        if (event.pointerType === "touch") return; // touch uses drag aim + ADS/FIRE buttons
         const state = useGameStore.getState();
         if (state.isMenuOpen) return;
+        if (event.pointerType === "mouse" && event.button === 2) {
+          // Desktop ADS: hold right mouse to scope. The held button also
+          // drags the scoped view, so precision aim does not need LMB held.
+          event.preventDefault();
+          adsPointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, buttons: event.buttons || 2 };
+          inputState.adsHeld = true;
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch (e) { /* best effort */ }
+          return;
+        }
+        if (event.pointerType === "mouse" && event.button !== 0) return;
         // A click on the field also (re)claims keyboard focus for WASD.
         try {
           if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -2258,18 +2313,70 @@
         } catch (e) { /* best effort */ }
         dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
         event.currentTarget.setPointerCapture(event.pointerId);
+        inputState.firing = true; // gun charges forward while the trigger is live
+        lastPointerFireRef.current = performance.now();
         state.fire();
+      };
+      // Some browsers do not deliver a second pointerdown for LMB while RMB
+      // is already held (one shared mouse pointer). The mouse-event fallback
+      // below makes scoped shooting work in that chord without double-firing
+      // when pointerdown did arrive.
+      const handleMouseDownFallback = (event) => {
+        if (event.button !== 0 || !inputState.adsHeld || dragRef.current) return;
+        if (performance.now() - lastPointerFireRef.current < 250) return;
+        const state = useGameStore.getState();
+        if (state.isMenuOpen) return;
+        const ads = adsPointerRef.current;
+        dragRef.current = { id: ads ? ads.id : -999, x: event.clientX, y: event.clientY };
+        inputState.firing = true;
+        lastPointerFireRef.current = performance.now();
+        state.fire();
+      };
+      const handleMouseUpFallback = (event) => {
+        if (event.button !== 0 || !dragRef.current) return;
+        dragRef.current = null;
+        inputState.firing = false;
       };
       const handlePointerMove = (event) => {
         const drag = dragRef.current;
-        if (!drag || drag.id !== event.pointerId) return;
-        inputState.lookDX += event.clientX - drag.x;
-        inputState.lookDY += event.clientY - drag.y;
-        drag.x = event.clientX;
-        drag.y = event.clientY;
+        const adsDrag = adsPointerRef.current;
+        // Chromium reports an LMB press/release during an RMB hold as a
+        // pointermove whose buttons bitmask changes (2 -> 3 -> 2), with no
+        // second pointerdown at all. Translate those transitions into the
+        // scoped trigger so ADS + fire works as one chord.
+        if (event.pointerType === "mouse" && adsDrag && adsDrag.id === event.pointerId) {
+          const prevButtons = adsDrag.buttons == null ? event.buttons : adsDrag.buttons;
+          const leftWas = (prevButtons & 1) !== 0;
+          const leftNow = (event.buttons & 1) !== 0;
+          if (leftNow && !leftWas) handleMouseDownFallback(event);
+          if (!leftNow && leftWas) handleMouseUpFallback(event);
+          adsDrag.buttons = event.buttons;
+        }
+        const activeDrag = drag && drag.id === event.pointerId ? drag
+          : adsDrag && adsDrag.id === event.pointerId ? adsDrag : null;
+        if (!activeDrag) return;
+        inputState.lookDX += event.clientX - activeDrag.x;
+        inputState.lookDY += event.clientY - activeDrag.y;
+        activeDrag.x = event.clientX;
+        activeDrag.y = event.clientY;
+        // Keep the other ref for the shared mouse pointer in sync so chord
+        // transitions (RMB aim -> LMB fire) never jump the view.
+        if (activeDrag === drag && adsDrag && adsDrag.id === event.pointerId) { adsDrag.x = event.clientX; adsDrag.y = event.clientY; }
+        if (activeDrag === adsDrag && drag && drag.id === event.pointerId) { drag.x = event.clientX; drag.y = event.clientY; }
       };
       const endDrag = (event) => {
-        if (dragRef.current && dragRef.current.id === event.pointerId) dragRef.current = null;
+        // Mouse buttons share one pointerId: releasing LMB must not drop a
+        // still-held RMB scope (and vice versa), so dispatch on the button
+        // that actually changed. Pointercancel clears both.
+        const isCancel = event.type === "pointercancel";
+        if ((isCancel || event.button === 2) && adsPointerRef.current && adsPointerRef.current.id === event.pointerId) {
+          adsPointerRef.current = null;
+          inputState.adsHeld = false;
+        }
+        if ((isCancel || event.button === 0) && dragRef.current && dragRef.current.id === event.pointerId) {
+          dragRef.current = null;
+          inputState.firing = false;
+        }
       };
       return (
         <div
@@ -2278,6 +2385,9 @@
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onMouseDown={handleMouseDownFallback}
+          onMouseUp={handleMouseUpFallback}
+          onContextMenu={(event) => event.preventDefault()}
           aria-hidden="true"
         />
       );
@@ -2291,13 +2401,21 @@
     const TouchControls = React.memo(function TouchControls() {
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const activeWeaponSlot = useGameStore((state) => state.activeWeaponSlot);
       const moveRef = React.useRef({ id: null, ox: 0, oy: 0, lx: 0, ly: 0 });
       const aimRef = React.useRef({ id: null, lx: 0, ly: 0 });
       const moveBaseRef = React.useRef(null);
       const moveNubRef = React.useRef(null);
       const fireTimerRef = React.useRef(null);
       const [crouchOn, setCrouchOn] = useState(false);
+      const [adsOn, setAdsOn] = useState(false);
       const MAX = 64;
+
+      // Drawing a different gun always drops the scope first.
+      useEffect(() => {
+        setAdsOn(false);
+        inputState.ads = false;
+      }, [activeWeaponSlot]);
 
       useEffect(() => () => {
         if (fireTimerRef.current) clearInterval(fireTimerRef.current);
@@ -2306,6 +2424,9 @@
         inputState.aimX = 0;
         inputState.aimY = 0;
         inputState.touchCrouch = false;
+        inputState.ads = false;
+        inputState.adsHeld = false;
+        inputState.firing = false;
       }, []);
 
       if (!hasStarted || isMenuOpen) return null;
@@ -2397,13 +2518,20 @@
           clearInterval(fireTimerRef.current);
           fireTimerRef.current = null;
         }
+        inputState.firing = false;
       };
       const startFire = (event) => {
         event.preventDefault();
-        const state = useGameStore.getState();
-        state.fire();
-        stopFire();
+        if (fireTimerRef.current) clearInterval(fireTimerRef.current);
+        inputState.firing = true; // rifle charges forward before the first round leaves
+        useGameStore.getState().fire();
         fireTimerRef.current = setInterval(() => useGameStore.getState().fire(), 135);
+      };
+      const toggleAds = (event) => {
+        event.preventDefault();
+        const next = !inputState.ads;
+        inputState.ads = next;
+        setAdsOn(next);
       };
 
       return (
@@ -2414,6 +2542,16 @@
           <div className="aim-drag-zone zone-right" {...aimDragHandlers} />
           <span ref={moveBaseRef} className="stick-base" />
           <span ref={moveNubRef} className="stick-nub" />
+          <button
+            type="button"
+            className={`touch-action-btn ads-touch-btn ${adsOn ? "is-on" : ""}`}
+            aria-label="Toggle aim down sights scope"
+            aria-pressed={adsOn}
+            onPointerDown={toggleAds}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <span>ADS</span><small>{adsOn ? "SCOPED" : "SCOPE"}</small>
+          </button>
           <button
             type="button"
             className="fire-btn"
@@ -2488,9 +2626,13 @@
           if (event.code === "Space") {
             event.preventDefault();
             inputState.jump = true; // world also tracks Space via its key set
-          } else if (event.key.toLowerCase() === "r") {
+          } else if (pressed === "1") {
+            state.swapWeapon("primary");
+          } else if (pressed === "2") {
+            state.swapWeapon("secondary");
+          } else if (pressed === "r") {
             state.reload();
-          } else if (event.key.toLowerCase() === "h") {
+          } else if (pressed === "h") {
             state.heal(18);
           }
         };
@@ -2506,7 +2648,9 @@
         let firstMenuToggle = true;
         const unsubscribe = gameStore.subscribe((state, prev) => {
           if (state.shots > prev.shots) sfx.shot();
-          if (state.ammo > prev.ammo) sfx.reload();
+          if (state.ammo > prev.ammo
+            && state.activeWeaponSlot === prev.activeWeaponSlot
+            && state.equipped[state.activeWeaponSlot] === prev.equipped[prev.activeWeaponSlot]) sfx.reload();
           if (state.health > prev.health) sfx.heal();
           if (state.hasStarted && !prev.hasStarted) sfx.deploy();
           if (
@@ -2531,7 +2675,9 @@
           <DebugOverlay />
           <WorldScene />
           <StageHitLayer />
+          <ScopeOverlay />
           <TouchControls />
+          <JetInterface />
           <GameHUD />
           <BoundaryWarning />
           <OverlayRoot />

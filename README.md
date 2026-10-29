@@ -322,3 +322,23 @@ Rust/WASM paths alike):
 ![IRONVEIL physics round — sprint FOV stretch](screenshots/physics-sprint-fov.png)
 
 ![IRONVEIL physics round — grounded trees and rocks](screenshots/physics-grounded-trees.png)
+
+## Clean start, ADS/gun-swap and Warthog round
+
+- Opening screen is now a three-button white/gray cloud-and-water card: **Single Player**, **Settings**, and a locked **Multiplayer** button with monochrome glitch feedback and “It isn't available yet, only beta.”
+- The opening orbit cinematic plays only on the first deployment after opening the app. Settings/pause now freezes the exact player camera, and resume is instant—no cinematic replay.
+- Resolution is locked to native `devicePixelRatio` through rotation/resizing. ADS/scope, ADS sensitivity, forward firing pose while sprinting, and PUBG-style tap-to-draw weapon slots with per-slot magazines are active.
+- A Warthog is parked at **X 18 · Z 0**, facing north on a 460 m strip. Walk near it for **DRIVE**; use **EXIT** after landing and stopping. Flight uses SI thrust/lift/drag, angle of attack, stall, density, coordinated bank, rolling resistance, brakes and gear drag. Controls: left stick/WASD pitch+bank, THR +/− or Shift/Ctrl throttle, BRK/Space brakes.
+- The HUD always shows live **COORD X · Z · Y** in metres, so new objects can be requested by exact coordinate.
+
+Real gameplay captures:
+
+- ![Clean start](screenshots/clean-start.png)
+- ![Warthog DRIVE prompt](screenshots/warthog-drive.png)
+- ![Warthog airborne](screenshots/warthog-airborne.png)
+- ![ADS scope](screenshots/ads-scope.png)
+- ![Sprint firing forward](screenshots/sprint-fire-forward.png)
+- ![Mobile gun swap HUD](screenshots/mobile-hud-gun-swap.png)
+- ![Mobile ADS scope](screenshots/mobile-ads-scope.png)
+
+Browser verification included: exactly three opening buttons; Multiplayer glitch; settings→resume with `cinematicActive=0`; Warthog DRIVE at X 11/Z 0, stopped EXIT to X 23/Z 0, re-enter, 165 km/h roll by Z −195, airborne at 182 km/h/2.1 m AGL by Z −245, safety rescues 0. Vercel remains **paused/unpublished**.
