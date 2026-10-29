@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { rustCore, rustRawHeight, rustChunkRawHeights } from "./wasm/ironveil-core.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -49,6 +50,7 @@ export const debugStats = {
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
   grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
   grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
+  terrainCore: "JS", rustChunks: 0,
   season: "COOL", weather: "SUNNY", macroDay: 0, seasonDay: 1,
   seasonBlend: 1, weatherBlend: 1, weatherRollS: 600, weatherRolls: 0,
   aiLosM: 300, dronesEngaged: 0, rain: 0, mud: 0, seasonTint: "ffffff",
@@ -70,7 +72,9 @@ function mulberry32(seed) {
   };
 }
 let NOISE_SEED = 0x2e7a04c9;
-// Integer avalanche hash (JS stand-in for the future WASM/C++ noise core).
+// Integer avalanche hash. The Rust (compiled to local, offline
+// WebAssembly) port in game/wasm/ironveil-core mirrors this bit-exactly;
+// this JS version remains as the zero-wait fallback.
 // Unlike the old sin hash it stays precise for negative and large lattice
 // coordinates, which the +/-2000m presets require.
 function hash2(x, z) {
@@ -171,8 +175,12 @@ function rimHeight(x, z) {
   const beyond = t > 1 ? (t - 1) * width * 0.9 : 0;
   return shaped * 165 * ridge + beyond;
 }
-function rawHeight(x, z) {
+function rawHeightJs(x, z) {
   return baseHeight(x, z) + rimHeight(x, z);
+}
+function rawHeight(x, z) {
+  const rust = rustRawHeight(NOISE_SEED, x, z, activePreset.half, activePreset.rimStart);
+  return rust === null ? rawHeightJs(x, z) : rust;
 }
 
 // ---------- river: seeded meander carved across the active map ----------
@@ -299,7 +307,10 @@ export function configureWorldLayout(presetId = activePreset.id, seed = sessionW
 configureWorldLayout(activePreset.id, sessionWorldSeed);
 
 export function terrainHeight(x, z) {
-  let h = rawHeight(x, z);
+  return terrainHeightFromRaw(rawHeight(x, z), x, z);
+}
+function terrainHeightFromRaw(raw, x, z) {
+  let h = raw;
   const dRelay = Math.hypot(x - WORLD.relay.x, z - WORLD.relay.z);
   const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
   h = lerp(relayBase, h, smoothstep(9, 26, dRelay));
@@ -538,7 +549,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const b = chunkBounds(ix, iz);
     const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, score: 1e9 };
+    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, score: 1e9 };
     chunkJobs.set(key, job);
     chunkQueue.push(key);
     return job;
@@ -579,8 +590,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function stepChunkJob(job, deadline) {
     const pos = job.pos, b = job.b;
     if (job.stage === "heights") {
+      if (job.raw === undefined) {
+        job.raw = rustChunkRawHeights(
+          NOISE_SEED, b.minX, b.minZ, CHUNK_SIZE_M, job.seg,
+          mapPreset.half, mapPreset.rimStart
+        );
+        if (job.raw) debugStats.rustChunks++;
+      }
+      const rawRowW = job.seg + 1;
       while (job.i < pos.count) {
-        pos.setY(job.i, terrainHeight(pos.getX(job.i) + b.cx, pos.getZ(job.i) + b.cz));
+        const wx = pos.getX(job.i) + b.cx, wz = pos.getZ(job.i) + b.cz;
+        if (job.raw) {
+          const col = Math.round((wx - b.minX) / (CHUNK_SIZE_M / job.seg));
+          const row = Math.round((wz - b.minZ) / (CHUNK_SIZE_M / job.seg));
+          pos.setY(job.i, terrainHeightFromRaw(job.raw[row * rawRowW + col], wx, wz));
+        } else {
+          pos.setY(job.i, terrainHeight(wx, wz));
+        }
         job.i++;
         if ((job.i & 127) === 0 && performance.now() > deadline) return false;
       }
@@ -2050,6 +2076,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       debugStats.px = camera.position.x;
       debugStats.pz = camera.position.z;
       debugStats.simSeconds = elapsed;
+      debugStats.terrainCore = rustCore.ready ? "RUST" : "JS";
     }
   }
   frame();

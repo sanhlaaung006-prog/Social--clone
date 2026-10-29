@@ -1,0 +1,62 @@
+name: Build Rust WASM terrain core
+
+# Compiles the dependency-free Rust crate in game/wasm/ironveil-core and
+# commits the resulting .wasm asset back to the same branch. The game
+# itself ships/loads that file locally (offline); GitHub is only the
+# build machine because some dev sandboxes have no Rust toolchain.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "game/wasm/ironveil-core/**"
+      - ".github/workflows/build-rust-wasm.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rust-wasm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build terrain core
+        run: |
+          cargo build \
+            --manifest-path game/wasm/ironveil-core/Cargo.toml \
+            --release \
+            --target wasm32-unknown-unknown
+          mkdir -p game/public/wasm
+          cp game/wasm/ironveil-core/target/wasm32-unknown-unknown/release/ironveil_core.wasm \
+             game/public/wasm/ironveil_core.wasm
+          ls -lh game/public/wasm/ironveil_core.wasm
+          python3 - <<'PY'
+          data = open("game/public/wasm/ironveil_core.wasm", "rb").read(8)
+          assert data[:4] == b"\0asm", data
+          print("wasm magic ok")
+          PY
+
+      - name: Commit generated WASM
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add game/public/wasm/ironveil_core.wasm
+          if git diff --cached --quiet; then
+            echo "WASM unchanged"
+          else
+            git commit -m "Build Rust terrain WASM core [skip ci]"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
