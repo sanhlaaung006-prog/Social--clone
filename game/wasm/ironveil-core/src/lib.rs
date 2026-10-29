@@ -90,7 +90,7 @@ fn raw_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn ironveil_abi_version() -> u32 {
-    3
+    4
 }
 
 /// Raw terrain height before JS-side river carving / objective flattening.
@@ -620,4 +620,211 @@ pub extern "C" fn ironveil_build_sky_lut() -> u32 {
         SKY_READY = true;
     }
     SKY_BINS as u32
+}
+
+// =============================== ABI v4 ===============================
+// Deterministic heightfield character physics. The host supplies final
+// ground height through an imported callback (main thread: river + bridge
+// aware terrainHeight; tests: an analytic ground). The complete
+// state/input/output contract is one reusable [f64; 32] buffer mirrored
+// field-for-field by game/src/physics.js. The equations are an original
+// meter-scale synthesis of projection-capped Quake-style acceleration and
+// control-speed friction plus heightfield step-up/slope/contour sliding.
+
+extern "C" {
+    fn ironveil_ground_height(x: f64, z: f64) -> f64;
+}
+
+static mut PHYS: [f64; 32] = [0.0; 32];
+
+#[no_mangle]
+pub extern "C" fn ironveil_physics_ptr() -> *mut f64 {
+    core::ptr::addr_of_mut!(PHYS) as *mut f64
+}
+
+#[inline]
+fn phys_ground(x: f64, z: f64) -> f64 {
+    unsafe { ironveil_ground_height(x, z) }
+}
+
+#[inline]
+fn phys_sample(x: f64, z: f64, out: &mut [f64; 4]) {
+    const EPS: f64 = 0.6;
+    let h = phys_ground(x, z);
+    let gx = (phys_ground(x + EPS, z) - phys_ground(x - EPS, z)) / (EPS * 2.0);
+    let gz = (phys_ground(x, z + EPS) - phys_ground(x, z - EPS)) / (EPS * 2.0);
+    let inv = 1.0 / (gx * gx + 1.0 + gz * gz).sqrt();
+    out[0] = h;
+    out[1] = -gx * inv;
+    out[2] = inv;
+    out[3] = -gz * inv;
+}
+
+#[no_mangle]
+pub extern "C" fn ironveil_physics_step() -> u32 {
+    unsafe {
+        let b = &mut *core::ptr::addr_of_mut!(PHYS);
+        let px = b[0]; let py = b[1]; let pz = b[2];
+        let mut vx = b[3]; let mut vy = b[4]; let mut vz = b[5];
+        let was_grounded = b[6] > 0.5;
+        let mut coyote = b[7];
+        let dt = b[8];
+        let wish_x = b[9]; let wish_z = b[10]; let wish_speed = b[11];
+        let jump = b[12] > 0.5;
+        let ground_accel = b[13]; let air_accel = b[14]; let friction = b[15];
+        let stop_speed = b[16]; let air_wish_cap = b[17]; let gravity = b[18];
+        let jump_speed = b[19]; let step_height = b[20]; let snap_distance = b[21];
+        let walk_normal_y = b[22]; let slope_gravity_scale = b[23];
+
+        let start_y = py;
+        let mut sm = [0.0; 4];
+        phys_sample(px, pz, &mut sm);
+        let start_ground_y = sm[0]; let snx = sm[1]; let sny = sm[2]; let snz = sm[3];
+
+        let mut grounded = was_grounded;
+        let mut sliding = grounded && sny < walk_normal_y && py <= start_ground_y + 0.65;
+
+        if grounded && !sliding {
+            let speed = vx.hypot(vz);
+            if speed > 0.0001 {
+                let control = speed.max(stop_speed);
+                let next = (speed - control * friction * dt).max(0.0);
+                let scale = next / speed;
+                vx *= scale; vz *= scale;
+            }
+        }
+
+        let mut jumped = false;
+        if jump && !sliding && (grounded || coyote > 0.0) {
+            vy = jump_speed;
+            grounded = false;
+            coyote = 0.0;
+            jumped = true;
+        }
+
+        if !sliding {
+            let wish_len = wish_x.hypot(wish_z);
+            if wish_len > 0.000001 && wish_speed > 0.0 {
+                let dir_scale = 1.0 / wish_len;
+                let dir_x = wish_x * dir_scale;
+                let dir_z = wish_z * dir_scale;
+                let effective_speed = wish_speed * wish_len.min(1.0);
+                let current = vx * dir_x + vz * dir_z;
+                let target = if grounded { effective_speed } else { effective_speed.min(air_wish_cap) };
+                let add = target - current;
+                if add > 0.0 {
+                    let accel = if grounded { ground_accel } else { air_accel };
+                    let delta = (accel * effective_speed * dt).min(add);
+                    vx += dir_x * delta;
+                    vz += dir_z * delta;
+                }
+            }
+        }
+
+        if was_grounded && !jumped {
+            let scale = if sliding { 1.0 } else { slope_gravity_scale };
+            vx += -gravity * sny * snx * scale * dt;
+            vz += -gravity * sny * snz * scale * dt;
+        }
+
+        if grounded {
+            if vy < 0.0 { vy = 0.0; }
+        } else {
+            vy = (vy + gravity * dt).max(-38.0);
+        }
+
+        let mut next_x = px + vx * dt;
+        let mut next_z = pz + vz * dt;
+        let mut next_y = py + vy * dt;
+        phys_sample(next_x, next_z, &mut sm);
+        let mut ground_y = sm[0]; let mut nnx = sm[1]; let mut nny = sm[2]; let mut nnz = sm[3];
+
+        let mut now_grounded = false;
+        let mut landed_impact = 0.0;
+        let mut blocked = 0.0;
+        let mut resolved = false;
+
+        if next_y <= ground_y {
+            let rise = ground_y - start_y;
+            let walking_wall = was_grounded && rise > step_height && vy <= 0.5;
+            let air_wall = !was_grounded && rise > step_height && vy > -6.0;
+            if walking_wall || air_wall {
+                blocked = 1.0;
+                let mut ux = -nnx; let mut uz = -nnz;
+                let ul = ux.hypot(uz);
+                if ul > 0.000001 {
+                    ux /= ul; uz /= ul;
+                    let mut dx = next_x - px; let mut dz = next_z - pz;
+                    let into = dx * ux + dz * uz;
+                    if into > 0.0 { dx -= ux * into; dz -= uz * into; }
+                    let cx2 = px + dx; let cz2 = pz + dz;
+                    phys_sample(cx2, cz2, &mut sm);
+                    let g2 = sm[0]; let n2x = sm[1]; let n2y = sm[2]; let n2z = sm[3];
+                    if !(next_y <= g2 && g2 - start_y > step_height) {
+                        next_x = cx2; next_z = cz2;
+                        let vin = vx * ux + vz * uz;
+                        if vin > 0.0 { vx -= ux * vin; vz -= uz * vin; }
+                        ground_y = g2; nnx = n2x; nny = n2y; nnz = n2z;
+                    } else {
+                        next_x = px; next_z = pz;
+                        let vin = vx * ux + vz * uz;
+                        if vin > 0.0 { vx -= ux * vin; vz -= uz * vin; }
+                        phys_sample(next_x, next_z, &mut sm);
+                        ground_y = sm[0]; nnx = sm[1]; nny = sm[2]; nnz = sm[3];
+                        if was_grounded && next_y <= ground_y + snap_distance {
+                            next_y = ground_y;
+                            now_grounded = true;
+                            vy = 0.0;
+                        } else if next_y < ground_y {
+                            next_y = ground_y;
+                        }
+                        resolved = true;
+                    }
+                }
+            }
+
+            if !resolved && next_y <= ground_y {
+                if vy <= 0.0 {
+                    landed_impact = if was_grounded { 0.0 } else { -vy };
+                    next_y = ground_y;
+                    now_grounded = true;
+                    if landed_impact > 8.0 {
+                        let damp = (1.0 - (landed_impact - 8.0) * 0.03).clamp(0.5, 1.0);
+                        vx *= damp; vz *= damp;
+                    }
+                    vy = 0.0;
+                } else if ground_y - start_y <= step_height {
+                    next_y = ground_y;
+                } else {
+                    blocked = 1.0;
+                    next_x = px; next_z = pz;
+                    phys_sample(next_x, next_z, &mut sm);
+                    ground_y = sm[0]; nnx = sm[1]; nny = sm[2]; nnz = sm[3];
+                    if next_y < ground_y { next_y = ground_y; }
+                }
+            }
+        }
+
+        if !now_grounded && was_grounded && !jumped && vy <= 0.0
+            && next_y <= ground_y + snap_distance && next_y >= ground_y - 0.02 {
+            if next_y < ground_y { next_y = ground_y; }
+            else { next_y += (ground_y - next_y) * (dt * 20.0).min(1.0); }
+            now_grounded = true;
+            vy = 0.0;
+        }
+
+        sliding = now_grounded && nny < walk_normal_y;
+        coyote = if now_grounded { 0.12 } else if jumped { 0.0 } else { (coyote - dt).max(0.0) };
+
+        b[0] = next_x; b[1] = next_y; b[2] = next_z;
+        b[3] = vx; b[4] = vy; b[5] = vz;
+        b[6] = if now_grounded { 1.0 } else { 0.0 };
+        b[7] = coyote;
+        b[24] = ground_y; b[25] = nnx; b[26] = nny; b[27] = nnz;
+        b[28] = landed_impact;
+        b[29] = if sliding { 1.0 } else { 0.0 };
+        b[30] = blocked;
+        b[31] = vx.hypot(vz);
+    }
+    1
 }

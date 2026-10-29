@@ -4,7 +4,16 @@
 // time. Loading is async and non-blocking; world.js keeps its identical
 // JS implementation as the fallback until (or unless) this is ready.
 
-export const rustCore = { ready: false, exports: null, version: 0, v3: false };
+export const rustCore = { ready: false, exports: null, version: 0, v3: false, physics: false };
+let groundProvider = null;
+let physicsView = null;
+
+// The ABI v4 physics step samples final ground through this host import.
+// On the main thread world.js supplies its river/bridge-aware height
+// function; workers/tests may supply a raw-height or analytic ground.
+export function setRustGroundProvider(fn) {
+  groundProvider = typeof fn === "function" ? fn : null;
+}
 let loadPromise = null;
 let skyLut = null;
 let skyBins = 0;
@@ -17,11 +26,18 @@ export function loadRustCore() {
       const res = await fetch(base + "wasm/ironveil_core.wasm");
       if (!res.ok) return false;
       const bytes = await res.arrayBuffer();
-      const { instance } = await WebAssembly.instantiate(bytes, {});
+      const { instance } = await WebAssembly.instantiate(bytes, {
+        env: {
+          ironveil_ground_height: (x, z) => {
+            const v = groundProvider ? groundProvider(x, z) : 0;
+            return Number.isFinite(v) ? v : 0;
+          },
+        },
+      });
       const ex = instance.exports;
       if (!ex.memory || typeof ex.ironveil_abi_version !== "function") return false;
       const version = ex.ironveil_abi_version();
-      if (version < 1 || version > 3) return false;
+      if (version < 1 || version > 4) return false;
       rustCore.version = version;
       if (typeof ex.ironveil_raw_height !== "function") return false;
       if (typeof ex.ironveil_chunk_raw_heights !== "function") return false;
@@ -33,6 +49,10 @@ export function loadRustCore() {
         && typeof ex.ironveil_scatter_local === "function"
         && typeof ex.ironveil_ai_batch === "function"
         && typeof ex.ironveil_find_path === "function";
+      rustCore.physics = version >= 4
+        && typeof ex.ironveil_physics_ptr === "function"
+        && typeof ex.ironveil_physics_step === "function";
+      physicsView = null;
       if (rustCore.v3 && typeof ex.ironveil_build_sky_lut === "function"
         && typeof ex.ironveil_sky_lut_ptr === "function") {
         skyBins = ex.ironveil_build_sky_lut();
@@ -92,9 +112,14 @@ export function rustBuildChunkMesh(finalHeights, seed, minX, minZ, sizeM, segmen
   const ex = rustCore.exports;
   const expected = (segments + 1) * (segments + 1);
   if (finalHeights.length < expected) return null;
-  new Float64Array(ex.memory.buffer, ex.ironveil_final_heights_ptr(), expected)
-    .set(finalHeights.subarray ? finalHeights.subarray(0, expected) : finalHeights.slice(0, expected));
-  const count = ex.ironveil_build_chunk_mesh(seed >>> 0, minX, minZ, sizeM, segments, ...palette.slice(0, 12));
+  const finalView = new Float64Array(ex.memory.buffer, ex.ironveil_final_heights_ptr(), expected);
+  if (finalHeights.length === expected) finalView.set(finalHeights);
+  else for (let i = 0; i < expected; i++) finalView[i] = finalHeights[i];
+  const count = ex.ironveil_build_chunk_mesh(
+    seed >>> 0, minX, minZ, sizeM, segments,
+    palette[0], palette[1], palette[2], palette[3], palette[4], palette[5],
+    palette[6], palette[7], palette[8], palette[9], palette[10], palette[11]
+  );
   if (count !== expected) return null;
   const f32 = (ptrFn, n) => new Float32Array(ex.memory.buffer, ex[ptrFn](), n).slice();
   return {
@@ -135,6 +160,25 @@ export function rustFindPath(seed, sx, sz, gx, gz, half, rimStart) {
   const count = ex.ironveil_find_path(seed >>> 0, sx, sz, gx, gz, half, rimStart);
   if (!count) return null;
   return new Float32Array(ex.memory.buffer, ex.ironveil_path_ptr(), count * 2).slice();
+}
+
+// ABI v4 physics: copy a caller-owned Float64Array(32) into the reusable
+// WASM physics buffer, step once, and copy the same buffer back. The
+// cached view is recreated only if WebAssembly memory grows/detaches.
+export function rustPhysicsStep(buffer) {
+  if (!rustCore.ready || !rustCore.physics || !buffer || buffer.length < 32) return false;
+  const ex = rustCore.exports;
+  if (!physicsView || physicsView.buffer !== ex.memory.buffer) {
+    physicsView = new Float64Array(ex.memory.buffer, ex.ironveil_physics_ptr(), 32);
+  }
+  if (buffer.length === 32) physicsView.set(buffer);
+  else for (let i = 0; i < 32; i++) physicsView[i] = buffer[i];
+  if (ex.ironveil_physics_step() !== 1) return false;
+  if (physicsView.buffer !== ex.memory.buffer) {
+    physicsView = new Float64Array(ex.memory.buffer, ex.ironveil_physics_ptr(), 32);
+  }
+  buffer.set(physicsView);
+  return true;
 }
 
 // Samples the Rust-built sky/cloud LUT into out[12]:

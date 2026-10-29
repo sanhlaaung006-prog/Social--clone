@@ -106,6 +106,40 @@
 
     let noticeSequence = 0;
 
+    // High-frequency HUD telemetry deliberately bypasses Zustand/React.
+    // world.js calls these writers only when an integer HUD value changes;
+    // the mounted HUD components register their DOM nodes once, after
+    // which heading/objective/range updates are direct text writes.
+    const COMPASS_DIRECTIONS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    const COMPASS_BEARINGS = [
+      { label: "W", left: 7, major: true },
+      { label: "NW", left: 22, minor: true },
+      { label: "N", left: 40, major: true },
+      { label: "NE", left: 55, active: true },
+      { label: "E", left: 70, major: true },
+      { label: "SE", left: 82, minor: true },
+      { label: "S", left: 94, major: true }
+    ];
+    const hudTelemetry = { heading: 34, objectiveDistance: 264, objectiveBearing: 34 };
+    const hudDom = { compass: null, heading: null, direction: null, objective: null, objectiveState: null, range: null };
+    const setHudText = (node, text) => {
+      if (node && node.textContent !== text) node.textContent = text;
+    };
+    function writeHeadingDom(deg) {
+      hudTelemetry.heading = deg;
+      const direction = COMPASS_DIRECTIONS[Math.round(deg / 45) % 8];
+      setHudText(hudDom.heading, `HDG ${String(deg).padStart(3, "0")}°`);
+      setHudText(hudDom.direction, direction);
+      if (hudDom.compass) hudDom.compass.setAttribute("aria-label", `Compass heading ${deg} degrees ${direction}`);
+    }
+    function writeObjectiveDom(dist, bearing) {
+      hudTelemetry.objectiveDistance = dist;
+      hudTelemetry.objectiveBearing = bearing;
+      setHudText(hudDom.objective, `${dist} M / ${String(bearing).padStart(3, "0")}°`);
+      setHudText(hudDom.objectiveState, dist <= 16 ? "AT OBJECTIVE" : "HOLDING POSITION");
+      setHudText(hudDom.range, `ENGAGE / ${dist}M`);
+    }
+
     const getInitialMapMode = () => {
       try {
         return new URLSearchParams(window.location.search).get("map") === "br" ? "br" : "survival";
@@ -121,9 +155,6 @@
       ammo: 30,
       reserveAmmo: 120,
       magazineSize: 30,
-      heading: 34,
-      objectiveDistance: 264,
-      objectiveBearing: 34,
       inventory: makeInventory(),
       isMenuOpen: true,
       mapMode: getInitialMapMode(),
@@ -327,9 +358,11 @@
         ["CHUNKS", d.chunksVisible + " VIS / " + d.chunksLoaded + "/" + d.chunksTotal],
         ["LOD 96/48/24", d.lod96 + "/" + d.lod48 + "/" + d.lod24],
         ["CHUNK BUILD", d.chunkBuildMs.toFixed(1) + " MS MAX"],
-        ["MOVEMENT", "KINEMATIC"],
+        ["PHYSICS", (d.physicsCore || "JS") + " KINEMATIC"],
+        ["CPU MS", "U " + (d.cpuUpdateMs || 0).toFixed(1) + " R " + (d.cpuRenderMs || 0).toFixed(1) + " T " + (d.cpuFrameMs || 0).toFixed(1)],
         ["TERRAIN CORE", d.terrainCore + (d.terrainCore === "RUST" ? " WASM" : "") + " " + d.rustChunks],
-        ["RUST V3", "MESH " + (d.rustMeshes || 0) + " SCAT " + (d.rustScatterBatches || 0) + " AI " + (d.rustAiBatches || 0) + " SKY " + (d.rustSky ? "LUT" : "JS")],
+        ["RUST SYS", "MESH " + (d.rustMeshes || 0) + " SCAT " + (d.rustScatterBatches || 0) + " AI " + (d.rustAiBatches || 0) + " SKY " + (d.rustSky ? "LUT" : "JS")],
+        ["WORKER", (d.workerCore || "OFF") + " CH " + (d.workerChunks || 0) + " SC " + (d.workerScatterBatches || 0) + " AI " + (d.workerAiBatches || 0) + " Q " + (d.workerPending || 0)],
         ["MOVE", (d.grounded ? "GND" : "AIR") + " " + d.speed.toFixed(1) + " M/S VY " + d.vy.toFixed(1)],
         ["SEASON", d.season + " D" + d.seasonDay + "/10"],
         ["WEATHER", d.weather + " " + Math.round(d.weatherBlend * 100) + "%"],
@@ -372,8 +405,8 @@
 
       useEffect(() => {
         const api = createWorld(canvasRef.current, {
-          onHeading: (deg) => gameStore.setState({ heading: deg }),
-          onObjective: (dist, bearing) => gameStore.setState({ objectiveDistance: dist, objectiveBearing: bearing }),
+          onHeading: writeHeadingDom,
+          onObjective: writeObjectiveDom,
           onDroneDown: () => {
             sfx.droneDown();
             gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1");
@@ -483,22 +516,66 @@
     });
 
     const AmmoMag = React.memo(function AmmoMag() {
-      const ammo = useGameStore((state) => state.ammo);
-      return <span className={`ammo-mag ${ammo <= 8 ? "is-low" : ""}`} aria-label={`${ammo} rounds in magazine`}>{String(ammo).padStart(2, "0")}</span>;
+      const nodeRef = React.useRef(null);
+      const initialAmmo = gameStore.getState().ammo;
+      useEffect(() => {
+        const paint = (ammo) => {
+          const node = nodeRef.current;
+          if (!node) return;
+          node.textContent = String(ammo).padStart(2, "0");
+          node.className = `ammo-mag ${ammo <= 8 ? "is-low" : ""}`;
+          node.setAttribute("aria-label", `${ammo} rounds in magazine`);
+        };
+        paint(gameStore.getState().ammo);
+        return gameStore.subscribe((state, prev) => {
+          if (state.ammo !== prev.ammo) paint(state.ammo);
+        });
+      }, []);
+      return <span ref={nodeRef} className={`ammo-mag ${initialAmmo <= 8 ? "is-low" : ""}`} aria-label={`${initialAmmo} rounds in magazine`}>{String(initialAmmo).padStart(2, "0")}</span>;
     });
 
     const AmmoReserve = React.memo(function AmmoReserve() {
-      const reserveAmmo = useGameStore((state) => state.reserveAmmo);
-      return <span className={`ammo-reserve ${reserveAmmo === 0 ? "is-empty" : ""}`} aria-label={`${reserveAmmo} reserve rounds`}>{reserveAmmo}</span>;
+      const nodeRef = React.useRef(null);
+      const initialReserve = gameStore.getState().reserveAmmo;
+      useEffect(() => {
+        const paint = (reserveAmmo) => {
+          const node = nodeRef.current;
+          if (!node) return;
+          node.textContent = String(reserveAmmo);
+          node.className = `ammo-reserve ${reserveAmmo === 0 ? "is-empty" : ""}`;
+          node.setAttribute("aria-label", `${reserveAmmo} reserve rounds`);
+        };
+        paint(gameStore.getState().reserveAmmo);
+        return gameStore.subscribe((state, prev) => {
+          if (state.reserveAmmo !== prev.reserveAmmo) paint(state.reserveAmmo);
+        });
+      }, []);
+      return <span ref={nodeRef} className={`ammo-reserve ${initialReserve === 0 ? "is-empty" : ""}`} aria-label={`${initialReserve} reserve rounds`}>{initialReserve}</span>;
     });
 
     const AmmoPips = React.memo(function AmmoPips() {
-      const ammo = useGameStore((state) => state.ammo);
-      const low = ammo <= 8;
+      const nodeRef = React.useRef(null);
+      const initialAmmo = gameStore.getState().ammo;
+      useEffect(() => {
+        const paint = (ammo) => {
+          const node = nodeRef.current;
+          if (!node) return;
+          const low = ammo <= 8;
+          const children = node.children;
+          for (let index = 0; index < children.length; index++) {
+            children[index].className = index < ammo ? (low ? "is-live is-low" : "is-live") : "";
+          }
+        };
+        paint(gameStore.getState().ammo);
+        return gameStore.subscribe((state, prev) => {
+          if (state.ammo !== prev.ammo) paint(state.ammo);
+        });
+      }, []);
+      const low = initialAmmo <= 8;
       return (
-        <div className="ammo-pips" aria-hidden="true">
+        <div ref={nodeRef} className="ammo-pips" aria-hidden="true">
           {Array.from({ length: 30 }, (_, index) => (
-            <i key={index} className={index < ammo ? (low ? "is-live is-low" : "is-live") : ""} />
+            <i key={index} className={index < initialAmmo ? (low ? "is-live is-low" : "is-live") : ""} />
           ))}
         </div>
       );
@@ -541,28 +618,31 @@
     });
 
     const Compass = React.memo(function Compass() {
-      const heading = useGameStore((state) => state.heading);
-      const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-      const direction = directions[Math.round(heading / 45) % 8];
-      const bearings = [
-        { label: "W", left: 7, major: true },
-        { label: "NW", left: 22, minor: true },
-        { label: "N", left: 40, major: true },
-        { label: "NE", left: 55, active: true },
-        { label: "E", left: 70, major: true },
-        { label: "SE", left: 82, minor: true },
-        { label: "S", left: 94, major: true }
-      ];
-
+      const rootRef = React.useRef(null);
+      const headingRef = React.useRef(null);
+      const directionRef = React.useRef(null);
+      const initialHeading = hudTelemetry.heading;
+      const initialDirection = COMPASS_DIRECTIONS[Math.round(initialHeading / 45) % 8];
+      useEffect(() => {
+        hudDom.compass = rootRef.current;
+        hudDom.heading = headingRef.current;
+        hudDom.direction = directionRef.current;
+        writeHeadingDom(hudTelemetry.heading);
+        return () => {
+          if (hudDom.compass === rootRef.current) hudDom.compass = null;
+          if (hudDom.heading === headingRef.current) hudDom.heading = null;
+          if (hudDom.direction === directionRef.current) hudDom.direction = null;
+        };
+      }, []);
       return (
-        <div className="compass" role="img" aria-label={`Compass heading ${heading} degrees ${direction}`}>
+        <div ref={rootRef} className="compass" role="img" aria-label={`Compass heading ${initialHeading} degrees ${initialDirection}`}>
           <div className="compass-head">
-            <span>HDG {String(heading).padStart(3, "0")}°</span>
-            <b>{direction}</b>
+            <span ref={headingRef}>HDG {String(initialHeading).padStart(3, "0")}°</span>
+            <b ref={directionRef}>{initialDirection}</b>
             <span>SECTOR KARST-9</span>
           </div>
           <div className="compass-strip" aria-hidden="true">
-            {bearings.map((bearing) => (
+            {COMPASS_BEARINGS.map((bearing) => (
               <span
                 key={bearing.label}
                 className={`compass-letter ${bearing.major ? "is-major" : ""} ${bearing.active ? "is-active" : ""}`}
@@ -577,31 +657,51 @@
     });
 
     const ObjectiveLabel = React.memo(function ObjectiveLabel() {
-      const dist = useGameStore((state) => state.objectiveDistance);
-      const bearing = useGameStore((state) => state.objectiveBearing);
+      const objectiveRef = React.useRef(null);
+      const stateRef = React.useRef(null);
+      const initialDist = hudTelemetry.objectiveDistance;
+      const initialBearing = hudTelemetry.objectiveBearing;
+      useEffect(() => {
+        hudDom.objective = objectiveRef.current;
+        hudDom.objectiveState = stateRef.current;
+        writeObjectiveDom(hudTelemetry.objectiveDistance, hudTelemetry.objectiveBearing);
+        return () => {
+          if (hudDom.objective === objectiveRef.current) hudDom.objective = null;
+          if (hudDom.objectiveState === stateRef.current) hudDom.objectiveState = null;
+        };
+      }, []);
       return (
         <div className="hud-radar-label">
           <b>RELAY STATION</b>
-          <span>{dist} M / {String(bearing).padStart(3, "0")}°</span>
-          <span>{dist <= 16 ? "AT OBJECTIVE" : "HOLDING POSITION"}</span>
+          <span ref={objectiveRef}>{initialDist} M / {String(initialBearing).padStart(3, "0")}°</span>
+          <span ref={stateRef}>{initialDist <= 16 ? "AT OBJECTIVE" : "HOLDING POSITION"}</span>
         </div>
       );
     });
 
     const Crosshair = React.memo(function Crosshair() {
-      const shots = useGameStore((state) => state.shots);
-      const objectiveDistance = useGameStore((state) => state.objectiveDistance);
-      const [firing, setFiring] = useState(false);
-
+      const rootRef = React.useRef(null);
+      const rangeRef = React.useRef(null);
       useEffect(() => {
-        if (!shots) return undefined;
-        setFiring(true);
-        const timer = setTimeout(() => setFiring(false), 120);
-        return () => clearTimeout(timer);
-      }, [shots]);
-
+        hudDom.range = rangeRef.current;
+        writeObjectiveDom(hudTelemetry.objectiveDistance, hudTelemetry.objectiveBearing);
+        let timer = 0;
+        const unsubscribe = gameStore.subscribe((state, prev) => {
+          if (state.shots <= prev.shots || !rootRef.current) return;
+          rootRef.current.classList.add("is-firing");
+          window.clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            if (rootRef.current) rootRef.current.classList.remove("is-firing");
+          }, 120);
+        });
+        return () => {
+          unsubscribe();
+          window.clearTimeout(timer);
+          if (hudDom.range === rangeRef.current) hudDom.range = null;
+        };
+      }, []);
       return (
-        <div className={`crosshair ${firing ? "is-firing" : ""}`} aria-hidden="true">
+        <div ref={rootRef} className="crosshair" aria-hidden="true">
           <span className="ch-ring" />
           <span className="ch-line top" />
           <span className="ch-line bottom" />
@@ -612,7 +712,7 @@
           <span className="ch-corner b" />
           <span className="ch-corner c" />
           <span className="ch-corner d" />
-          <span className="ch-range">ENGAGE / {objectiveDistance}M</span>
+          <span ref={rangeRef} className="ch-range">ENGAGE / {hudTelemetry.objectiveDistance}M</span>
         </div>
       );
     });

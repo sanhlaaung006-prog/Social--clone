@@ -12,7 +12,8 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample } from "./wasm/ironveil-core.js";
+import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep } from "./wasm/ironveil-core.js";
+import { stepPhysicsBuffer } from "./physics.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -51,6 +52,9 @@ export const debugStats = {
   grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
   grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
   terrainCore: "JS", rustChunks: 0, rustMeshes: 0, rustScatter: 0, rustScatterBatches: 0, rustAiBatches: 0, rustPaths: 0, rustSky: 0,
+  physicsCore: "JS", workerCore: "OFF", workerChunks: 0, workerPending: 0,
+  workerScatterBatches: 0, workerAiBatches: 0, workerPaths: 0,
+  cpuUpdateMs: 0, cpuRenderMs: 0, cpuFrameMs: 0, profileFrames: 0,
   season: "COOL", weather: "SUNNY", macroDay: 0, seasonDay: 1,
   seasonBlend: 1, weatherBlend: 1, weatherRollS: 600, weatherRolls: 0,
   aiLosM: 300, dronesEngaged: 0, rain: 0, mud: 0, seasonTint: "ffffff",
@@ -60,6 +64,24 @@ export const debugStats = {
 // External debug/test control. The render loop consumes a pending teleport
 // once; used by automated boundary/spawn verification.
 export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false };
+
+// Opt-in CPU frame profiler (?profile=1). Samples land in preallocated
+// ring-free typed arrays: enabling it adds three performance.now() calls
+// per frame and no allocation in the render loop. The traversal harness
+// reads update/render/total main-thread milliseconds from here.
+const PROFILE_CAPACITY = 72000;
+export const frameProfile = {
+  enabled: typeof window !== "undefined" && typeof window.location !== "undefined"
+    && /[?&]profile=1(?:&|$)/.test(window.location.search || ""),
+  capacity: PROFILE_CAPACITY,
+  count: 0,
+  update: new Float32Array(PROFILE_CAPACITY),
+  render: new Float32Array(PROFILE_CAPACITY),
+  total: new Float32Array(PROFILE_CAPACITY),
+};
+if (frameProfile.enabled && typeof window !== "undefined") {
+  window.__ironveilProfile = { debugStats, frameProfile, inputState, worldControl };
+}
 
 // ---------- deterministic rng / noise ----------
 function mulberry32(seed) {
@@ -246,8 +268,12 @@ function buildRiver(seed, preset) {
   });
   return { samples, grid, cellSize, control: ctrl };
 }
-export function riverInfo(x, z) {
-  if (!RIVER.samples.length) return { d: 9999, bed: 0, water: -9999, x, z };
+const _riverHeightInfo = { d: 9999, bed: 0, water: -9999, x: 0, z: 0 };
+const _riverWorldInfo = { d: 9999, bed: 0, water: -9999, x: 0, z: 0 };
+const _riverPlayerInfo = { d: 9999, bed: 0, water: -9999, x: 0, z: 0 };
+export function riverInfoInto(x, z, out) {
+  out.d = 9999; out.bed = 0; out.water = -9999; out.x = x; out.z = z;
+  if (!RIVER.samples.length) return out;
   const cell = RIVER.cellSize;
   const cx = Math.floor(x / cell), cz = Math.floor(z / cell);
   let best = null, bestD2 = Infinity;
@@ -263,8 +289,12 @@ export function riverInfo(x, z) {
       }
     }
   }
-  if (!best) return { d: 9999, bed: 0, water: -9999, x, z };
-  return { d: Math.sqrt(bestD2), bed: best.bed, water: best.water, x: best.x, z: best.z };
+  if (!best) return out;
+  out.d = Math.sqrt(bestD2); out.bed = best.bed; out.water = best.water; out.x = best.x; out.z = best.z;
+  return out;
+}
+export function riverInfo(x, z) {
+  return riverInfoInto(x, z, { d: 9999, bed: 0, water: -9999, x, z });
 }
 
 function chooseRelay(seed, preset) {
@@ -275,7 +305,7 @@ function chooseRelay(seed, preset) {
     const x = Math.round(Math.cos(angle) * radius);
     const z = Math.round(Math.sin(angle) * radius);
     if (Math.max(Math.abs(x), Math.abs(z)) > preset.rimStart * 0.82) continue;
-    if (riverInfo(x, z).d < 28) continue; // not in the river
+    if (riverInfoInto(x, z, _riverWorldInfo).d < 28) continue; // not in the river
     return { x, z };
   }
   return { x: Math.round(preset.half * 0.45), z: Math.round(-preset.half * 0.45) };
@@ -315,7 +345,7 @@ function terrainHeightFromRaw(raw, x, z) {
   const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
   h = lerp(relayBase, h, smoothstep(9, 26, dRelay));
   h = lerp(spawnBase, h, smoothstep(7, 20, dSpawn));
-  const ri = riverInfo(x, z);
+  const ri = riverInfoInto(x, z, _riverHeightInfo);
   if (ri.d < 17) {
     const t = 1 - smoothstep(4.2, 17, ri.d);
     h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
@@ -335,6 +365,156 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   debugStats.boundaryDamage = 0;
   debugStats.chunksLoaded = 0;
   debugStats.chunksVisible = 0;
+
+  // Optional Rust terrain/AI worker. It is an accelerator only: streamed
+  // chunk jobs use it when ready, while boot/teleport cuts and every
+  // failure keep the synchronous main-thread Rust/JS paths below.
+  const workerPending = new Map();
+  let terrainWorker = null;
+  let workerReady = false;
+  let workerSeq = 1;
+  let workerAiPending = false;
+  const workerScatterCache = [null, null];
+  const workerScatterPending = [false, false];
+  const workerScatterCenter = new Float64Array([0, 0, 0, 0]);
+  function setWorkerPendingStats() { debugStats.workerPending = workerPending.size; }
+  function markWorkerRequestFailed(rec) {
+    if (!rec) return;
+    if (rec.kind === "chunk") {
+      const job = chunkJobs.get(rec.key);
+      if (job && job.workerId === rec.id) job.workerFailed = true;
+    } else if (rec.kind === "scatter") {
+      workerScatterPending[rec.scatterKind] = false;
+    } else if (rec.kind === "ai") {
+      workerAiPending = false;
+    } else if (rec.kind === "path") {
+      const d = drones[rec.drone];
+      if (d && d.pathId === rec.id) d.pathPending = false;
+    }
+  }
+  function disableWorker() {
+    if (terrainWorker) { try { terrainWorker.terminate(); } catch (e) {} }
+    terrainWorker = null;
+    workerReady = false;
+    workerAiPending = false;
+    workerScatterPending[0] = false;
+    workerScatterPending[1] = false;
+    debugStats.workerCore = "FALLBACK";
+    for (const rec of workerPending.values()) markWorkerRequestFailed(rec);
+    workerPending.clear();
+    setWorkerPendingStats();
+  }
+  function handleWorkerMessage(e) {
+    const data = e.data || {};
+    if (data.type === "ready") {
+      workerReady = !!data.ok;
+      debugStats.workerCore = workerReady ? "RUST" : "FALLBACK";
+      if (!workerReady) disableWorker();
+      return;
+    }
+    const rec = workerPending.get(data.id);
+    if (!rec) return;
+    workerPending.delete(data.id);
+    setWorkerPendingStats();
+    if (!data.ok) { markWorkerRequestFailed(rec); return; }
+    if (data.type === "chunk") {
+      const job = chunkJobs.get(rec.key);
+      if (job && job.workerId === data.id) job.workerResult = data;
+    } else if (data.type === "scatter") {
+      workerScatterPending[rec.scatterKind] = false;
+      workerScatterCache[rec.scatterKind] = data.records;
+      workerScatterCenter[rec.scatterKind * 2] = data.cx;
+      workerScatterCenter[rec.scatterKind * 2 + 1] = data.cz;
+    } else if (data.type === "ai") {
+      workerAiPending = false;
+      debugStats.workerAiBatches++;
+      const out = data.out;
+      const n = Math.min(rec.count || 0, drones.length);
+      for (let i = 0; i < n; i++) {
+        const d = drones[i], o = i * 8;
+        d.rustLos = out[o + 1] > 0.5;
+        d.rustThreat = out[o + 2];
+        d.rustWayX = out[o + 3];
+        d.rustWayZ = out[o + 4];
+        if (d.rustLos) { d.path = null; d.pathPending = false; }
+      }
+    } else if (data.type === "path") {
+      const d = drones[rec.drone];
+      if (d && d.pathId === rec.id) {
+        d.pathPending = false;
+        if (data.path && data.path.length >= 4) {
+          d.path = data.path; d.pathI = 2; debugStats.workerPaths++;
+        }
+      }
+    }
+  }
+  function postWorker(kind, msg, rec, transfer) {
+    if (!terrainWorker || !workerReady) return 0;
+    const id = workerSeq++;
+    rec.kind = kind;
+    rec.id = id;
+    msg.id = id;
+    workerPending.set(id, rec);
+    setWorkerPendingStats();
+    try {
+      if (transfer && transfer.length) terrainWorker.postMessage(msg, transfer);
+      else terrainWorker.postMessage(msg);
+      return id;
+    } catch (e) {
+      workerPending.delete(id);
+      setWorkerPendingStats();
+      disableWorker();
+      return 0;
+    }
+  }
+  function getWorkerScatter(kind, cx, cz, radius) {
+    if (!workerReady) return null;
+    const records = workerScatterCache[kind];
+    const dx = cx - workerScatterCenter[kind * 2];
+    const dz = cz - workerScatterCenter[kind * 2 + 1];
+    const stale = !records || dx * dx + dz * dz > 36;
+    if (stale && !workerScatterPending[kind]) {
+      const rec = { scatterKind: kind };
+      // Request an 8m apron: the deterministic world-grid records then
+      // still cover the full current 60m disc after <=6m of camera travel,
+      // so using the cached reply cannot drop placements at the far edge.
+      const id = postWorker("scatter", { type: "scatter", kind, cx, cz, radius: radius + 8 }, rec);
+      if (id) workerScatterPending[kind] = true;
+    }
+    if (stale) return null;
+    debugStats.workerScatterBatches++;
+    return records;
+  }
+  try {
+    if (typeof Worker !== "undefined") {
+      terrainWorker = new Worker(new URL("./wasm/terrain-worker.js", import.meta.url), { type: "module" });
+    }
+  } catch (e) { terrainWorker = null; }
+  if (terrainWorker) {
+    debugStats.workerCore = "LOADING";
+    terrainWorker.onmessage = handleWorkerMessage;
+    terrainWorker.onerror = () => disableWorker();
+    const workerSamples = new Float64Array(RIVER.samples.length * 4);
+    for (let i = 0; i < RIVER.samples.length; i++) {
+      const sm = RIVER.samples[i], o = i * 4;
+      workerSamples[o] = sm.x; workerSamples[o + 1] = sm.z;
+      workerSamples[o + 2] = sm.bed; workerSamples[o + 3] = sm.water;
+    }
+    try {
+      terrainWorker.postMessage({
+        type: "init",
+        layout: {
+          noiseSeed: NOISE_SEED, half: mapPreset.half, rimStart: mapPreset.rimStart,
+          spawnX: WORLD.spawn.x, spawnZ: WORLD.spawn.z,
+          relayX: WORLD.relay.x, relayZ: WORLD.relay.z,
+          spawnBase, relayBase, cellSize: RIVER.cellSize, samples: workerSamples,
+        },
+      }, [workerSamples.buffer]);
+    } catch (e) { disableWorker(); }
+  } else {
+    debugStats.workerCore = "OFF";
+  }
+
   const noop = { setPlaying() {}, shoot() {}, teleport() {}, dispose() {} };
   let renderer;
   try {
@@ -533,9 +713,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const terrainChunks = new Map();
   const terrainMeshes = [];
   let chunkStreamAcc = Infinity;
-  function chunkBounds(ix, iz) {
+  const _chunkBounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0, cx: 0, cz: 0 };
+  function chunkBounds(ix, iz, out) {
     const minX = -mapPreset.half + ix * CHUNK_SIZE_M;
     const minZ = -mapPreset.half + iz * CHUNK_SIZE_M;
+    if (out) {
+      out.minX = minX; out.maxX = minX + CHUNK_SIZE_M;
+      out.minZ = minZ; out.maxZ = minZ + CHUNK_SIZE_M;
+      out.cx = minX + CHUNK_SIZE_M / 2; out.cz = minZ + CHUNK_SIZE_M / 2;
+      return out;
+    }
     return { minX, maxX: minX + CHUNK_SIZE_M, minZ, maxZ: minZ + CHUNK_SIZE_M, cx: minX + CHUNK_SIZE_M / 2, cz: minZ + CHUNK_SIZE_M / 2 };
   }
   const LOD_SEGMENTS = [96, 96, 48, 24]; // by Chebyshev ring from camera chunk
@@ -543,12 +730,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const chunkQueue = []; // job keys, best score first
   const bvhQueue = []; // finished meshes awaiting an idle-frame BVH build
   const _vFwd = new THREE.Vector3();
+  const _chunkIndex = { ix: 0, iz: 0 };
   function chunkIndexAt(x, z) {
     const n = mapPreset.chunksPerAxis;
-    return {
-      ix: clamp(Math.floor((x + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1),
-      iz: clamp(Math.floor((z + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1),
-    };
+    _chunkIndex.ix = clamp(Math.floor((x + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1);
+    _chunkIndex.iz = clamp(Math.floor((z + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1);
+    return _chunkIndex;
+  }
+  function compareChunkKeys(a, b2) {
+    const ja = chunkJobs.get(a), jb = chunkJobs.get(b2);
+    return (ja ? ja.score : 1e9) - (jb ? jb.score : 1e9);
   }
   function desiredSegments(ix, iz, cix, ciz) {
     const d = Math.max(Math.abs(ix - cix), Math.abs(iz - ciz));
@@ -561,7 +752,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const b = chunkBounds(ix, iz);
     const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, final: null, rustTried: false, score: 1e9 };
+    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, final: null, rustTried: false, workerTried: false, workerId: 0, workerResult: null, workerFailed: false, workerSentAt: 0, score: 1e9 };
     chunkJobs.set(key, job);
     chunkQueue.push(key);
     return job;
@@ -569,6 +760,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const _cLow = new THREE.Color(0x232b1e), _cMid = new THREE.Color(0x3d4a32);
   const _cRock = new THREE.Color(0x5d6157), _cPeak = new THREE.Color(0x878e80);
   const _ctmp = new THREE.Color();
+  const _terrainPalette = new Array(12);
+  function fillTerrainPalette() {
+    _terrainPalette[0] = _cLow.r; _terrainPalette[1] = _cLow.g; _terrainPalette[2] = _cLow.b;
+    _terrainPalette[3] = _cMid.r; _terrainPalette[4] = _cMid.g; _terrainPalette[5] = _cMid.b;
+    _terrainPalette[6] = _cRock.r; _terrainPalette[7] = _cRock.g; _terrainPalette[8] = _cRock.b;
+    _terrainPalette[9] = _cPeak.r; _terrainPalette[10] = _cPeak.g; _terrainPalette[11] = _cPeak.b;
+    return _terrainPalette;
+  }
   function finishChunkJob(job) {
     const geo = job.geo;
     geo.computeBoundingSphere();
@@ -596,11 +795,55 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     chunkJobs.delete(job.key);
     return mesh;
   }
+  function finishRustMesh(job, rustMesh, fromWorker) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(rustMesh.positions, 3));
+    geo.setAttribute("normal", new THREE.BufferAttribute(rustMesh.normals, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(rustMesh.colors, 3));
+    geo.setAttribute("aSplat", new THREE.BufferAttribute(rustMesh.splat, 4));
+    geo.setIndex(new THREE.BufferAttribute(rustMesh.indices, 1));
+    job.geo.dispose();
+    job.geo = geo;
+    job.pos = geo.attributes.position;
+    job.light = rustMesh.light;
+    debugStats.rustMeshes++;
+    if (fromWorker) { debugStats.workerChunks++; debugStats.rustChunks++; }
+    finishChunkJob(job);
+    return true;
+  }
   // Advances one job until `deadline` (performance.now() ms). Returns true
   // when the mesh is finished. Heights and vertex colors are the two hot
   // loops; each checks the clock every 256 vertices.
   function stepChunkJob(job, deadline) {
     const pos = job.pos, b = job.b;
+    if (job.stage === "worker") {
+      if (job.workerResult) {
+        const result = job.workerResult;
+        job.workerResult = null;
+        return finishRustMesh(job, result, true);
+      }
+      if (job.workerFailed || performance.now() - job.workerSentAt > 10000) {
+        job.workerFailed = false;
+        job.stage = "heights";
+      } else {
+        return false;
+      }
+    }
+    if (job.stage === "heights" && deadline !== Infinity && !job.workerTried && workerReady) {
+      job.workerTried = true;
+      fillTerrainPalette();
+      const rec = { key: job.key };
+      const id = postWorker("chunk", {
+        type: "chunk", key: job.key, minX: b.minX, minZ: b.minZ,
+        sizeM: CHUNK_SIZE_M, segments: job.seg, palette: _terrainPalette,
+      }, rec);
+      if (id) {
+        job.workerId = id;
+        job.workerSentAt = performance.now();
+        job.stage = "worker";
+        return false;
+      }
+    }
     if (job.stage === "heights") {
       if (job.raw === undefined) {
         const rust = rustChunkTerrain(
@@ -634,26 +877,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // the original JS color loop below remains the exact fallback.
     if (!job.rustTried) {
       job.rustTried = true;
+      fillTerrainPalette();
       const rustMesh = job.final ? rustBuildChunkMesh(
-        job.final, NOISE_SEED, b.minX, b.minZ, CHUNK_SIZE_M, job.seg,
-        [_cLow.r, _cLow.g, _cLow.b, _cMid.r, _cMid.g, _cMid.b,
-         _cRock.r, _cRock.g, _cRock.b, _cPeak.r, _cPeak.g, _cPeak.b]
+        job.final, NOISE_SEED, b.minX, b.minZ, CHUNK_SIZE_M, job.seg, _terrainPalette
       ) : null;
-      if (rustMesh) {
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute("position", new THREE.BufferAttribute(rustMesh.positions, 3));
-        geo.setAttribute("normal", new THREE.BufferAttribute(rustMesh.normals, 3));
-        geo.setAttribute("color", new THREE.BufferAttribute(rustMesh.colors, 3));
-        geo.setAttribute("aSplat", new THREE.BufferAttribute(rustMesh.splat, 4));
-        geo.setIndex(new THREE.BufferAttribute(rustMesh.indices, 1));
-        job.geo.dispose();
-        job.geo = geo;
-        job.pos = geo.attributes.position;
-        job.light = rustMesh.light;
-        debugStats.rustMeshes++;
-        finishChunkJob(job);
-        return true;
-      }
+      if (rustMesh) return finishRustMesh(job, rustMesh, false);
     }
     // Slope for coloring comes from the height gradient over grid
     // neighbours — the material is flat-shaded (fragment-derivative
@@ -731,7 +959,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     let visible = 0, l96 = 0, l48 = 0, l24 = 0;
     for (let ix = 0; ix < mapPreset.chunksPerAxis; ix++) {
       for (let iz = 0; iz < mapPreset.chunksPerAxis; iz++) {
-        const b = chunkBounds(ix, iz);
+        const b = chunkBounds(ix, iz, _chunkBounds);
         const d = distanceToChunk(fx, fz, b);
         const key = ix + "," + iz;
         const mesh = terrainChunks.get(key);
@@ -755,10 +983,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         }
       }
     }
-    chunkQueue.sort((a, b2) => {
-      const ja = chunkJobs.get(a), jb = chunkJobs.get(b2);
-      return (ja ? ja.score : 1e9) - (jb ? jb.score : 1e9);
-    });
+    chunkQueue.sort(compareChunkKeys);
     debugStats.chunksLoaded = terrainChunks.size;
     debugStats.chunksVisible = visible;
     debugStats.chunksTotal = mapPreset.chunkCount;
@@ -878,6 +1103,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     scene.add(group);
     return { cx: c.x, cz: c.z, deckY, ax: axis.x, az: axis.y, px: -axis.y, pz: axis.x };
   })();
+  function groundHeightWithBridge(x, z) {
+    let y = terrainHeight(x, z);
+    const dx = x - bridge.cx, dz = z - bridge.cz;
+    const along = dx * bridge.ax + dz * bridge.az;
+    const across = dx * bridge.px + dz * bridge.pz;
+    if (Math.abs(along) < 5.8 && Math.abs(across) < 1.7) y = Math.max(y, bridge.deckY);
+    return y;
+  }
+  setRustGroundProvider(groundHeightWithBridge);
 
 
   // ----- scatter: rocks + pines (instanced) -----
@@ -897,7 +1131,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const x = (rand() * 2 - 1) * scatterLimit;
       const z = (rand() * 2 - 1) * scatterLimit;
       if (!clearOf(x, z, 15)) continue;
-      if (riverInfo(x, z).d < 5.5) continue; // not in the water
+      if (riverInfoInto(x, z, _riverWorldInfo).d < 5.5) continue; // not in the water
       placer(x, terrainHeight(x, z), z, placed);
       placed++;
     }
@@ -1017,13 +1251,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       rocks.setMatrixAt(rockN++, dummy.matrix);
     }
 
-    const rustPebbles = rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M);
+    const rustPebbles = getWorkerScatter(0, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M);
     if (rustPebbles) {
       debugStats.rustScatterBatches++;
       for (let ri = 0; ri < rustPebbles.length && rockN < ROCK_N; ri += 10) {
         const x = rustPebbles[ri + 1], z = rustPebbles[ri + 2];
         const dx = x - cx, dz = z - cz;
-        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfo(x, z).d < 4.8) continue;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 4.8) continue;
         dummy.position.set(x, terrainHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
         dummy.rotation.set(rustPebbles[ri + 6], rustPebbles[ri + 7], rustPebbles[ri + 8]);
         dummy.scale.set(rustPebbles[ri + 3], rustPebbles[ri + 4], rustPebbles[ri + 5]);
@@ -1045,7 +1279,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const x = (gx + 0.18 + hash2(gx * 7 - 31, gz * 11 + 71) * 0.64) * cell;
           const z = (gz + 0.18 + hash2(gx * 13 + 97, gz * 5 - 53) * 0.64) * cell;
           const dx = x - cx, dz = z - cz;
-          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfo(x, z).d < 4.8) continue;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 4.8) continue;
           const s = 0.13 + hash2(gx * 29 + 3, gz * 31 + 9) * 0.34;
           dummy.position.set(x, terrainHeight(x, z) + s * 0.22, z);
           dummy.rotation.set(hash2(gx, gz) * 3, hash2(gx + 9, gz - 4) * 3, hash2(gx - 6, gz + 8) * 3);
@@ -1058,13 +1292,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     }
 
-    const rustGrass = rustLocalScatter(NOISE_SEED, 1, cx, cz, CULL_NEAR_M);
+    const rustGrass = getWorkerScatter(1, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 1, cx, cz, CULL_NEAR_M);
     if (rustGrass) {
       debugStats.rustScatterBatches++;
       for (let ri = 0; ri < rustGrass.length && grassN < 900; ri += 10) {
         const x = rustGrass[ri + 1], z = rustGrass[ri + 2];
         const dx = x - cx, dz = z - cz;
-        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfo(x, z).d < 4.7) continue;
+        if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 4.7) continue;
         dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
         dummy.rotation.set(0, rustGrass[ri + 7], 0);
         dummy.scale.setScalar(rustGrass[ri + 3]);
@@ -1084,7 +1318,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const x = (gx + 0.2 + hash2(gx * 17 + 19, gz * 19 - 23) * 0.6) * cell;
           const z = (gz + 0.2 + hash2(gx * 23 - 41, gz * 29 + 13) * 0.6) * cell;
           const dx = x - cx, dz = z - cz;
-          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfo(x, z).d < 4.7) continue;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 4.7) continue;
           dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
           dummy.rotation.set(0, hash2(gx * 43, gz * 47) * Math.PI * 2, 0);
           dummy.scale.setScalar(0.75 + hash2(gx * 53 + 7, gz * 59 - 5) * 0.85);
@@ -1200,7 +1434,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     drones.push({
       group, body, eye, ax, az, cx: ax, cz: az, engaged: false,
       rustLos: true, rustThreat: 0, rustWayX: ax, rustWayZ: az,
-      path: null, pathI: 0, nextPathAt: 0,
+      path: null, pathI: 0, pathPending: false, pathId: 0, nextPathAt: 0,
       hoverH: 6.5 + rand() * 4,
       phase: rand() * Math.PI * 2,
       orbitR: 4 + rand() * 4.5,
@@ -1428,6 +1662,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     grounded: true,
     jumpHeld: false,
     coyote: 0,
+    eyeHeight: 1.7,
+    crouching: false,
+    sliding: false,
     landDip: 0, // camera settle after a hard landing
     swayYaw: 0, swayPitch: 0, swayYawVel: 0, swayPitchVel: 0,
     yaw: Math.atan2(-spawnDir.x, -spawnDir.y),
@@ -1437,6 +1674,18 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     lastStep: 0,
     wading: false,
   };
+  const physBuf = new Float64Array(32);
+  function resetPhysics(x, feetY, z) {
+    physBuf.fill(0);
+    physBuf[0] = x; physBuf[1] = feetY; physBuf[2] = z;
+    physBuf[6] = 1; physBuf[7] = 0.12; physBuf[24] = feetY;
+    player.vel.set(0, 0, 0);
+    player.vy = 0;
+    player.grounded = true;
+    player.coyote = 0.12;
+    player.sliding = false;
+  }
+  resetPhysics(player.pos.x, player.pos.y - 1.7, player.pos.z);
   const playerBlobMaterial = blobShadowMaterial.clone();
   const playerBlobShadow = new THREE.Mesh(blobShadowGeometry, playerBlobMaterial);
   playerBlobShadow.scale.setScalar(0.62);
@@ -1461,6 +1710,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.vel.set(0, 0, 0);
     player.vy = 0;
     player.grounded = true;
+    player.eyeHeight = 1.7;
+    resetPhysics(player.pos.x, player.pos.y - 1.7, player.pos.z);
     player.yaw = -(headingDeg * Math.PI) / 180; // heading = -yaw in this engine
     player.pitch = -0.03;
     transition = null;
@@ -1503,14 +1754,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const raycaster = new THREE.Raycaster();
   raycaster.far = 700;
   const _muzzleWorld = new THREE.Vector3(), _far = new THREE.Vector3();
+  const _center2 = new THREE.Vector2(0, 0);
+  const _shootTargets = [];
   function shoot() {
     if (!playing) return;
     player.recoil = 1;
     player.pitch = clamp(player.pitch + 0.0055, -1.35, 1.35);
     flash.material.opacity = 0.95;
     flash.scale.setScalar(0.8 + rand() * 0.7);
-    raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-    const targets = [];
+    raycaster.setFromCamera(_center2, camera);
+    const targets = _shootTargets;
+    targets.length = 0;
     for (const mesh of terrainMeshes) if (mesh.visible) targets.push(mesh);
     for (const d of drones) if (d.alive && d.group.visible) targets.push(d.body);
     const hits = raycaster.intersectObjects(targets, false);
@@ -1520,7 +1774,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       tracer(_muzzleWorld, hit.point);
       const hitTerrain = !!hit.object.userData.isTerrainChunk;
       burst(hit.point, hitTerrain ? 12 : 22, hitTerrain ? 2.6 : 4.2);
-      const drone = drones.find((d) => d.body === hit.object);
+      let drone = null;
+      for (let di = 0; di < drones.length; di++) {
+        if (drones[di].body === hit.object) { drone = drones[di]; break; }
+      }
       if (drone && drone.alive) {
         drone.alive = false;
         drone.vy = 0;
@@ -1535,7 +1792,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   // ----- keyboard movement -----
-  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space"];
+  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyC", "ControlLeft", "ControlRight"];
   const onKeyDown = (e) => {
     if (MOVE_CODES.includes(e.code)) {
       inputState.keys.add(e.code);
@@ -1607,63 +1864,57 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (k.has("KeyA") || k.has("ArrowLeft")) mx -= 1;
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
-    const riNow = riverInfo(player.pos.x, player.pos.z);
-    const inWaterNow = riNow.d < 4.4 && terrainHeight(player.pos.x, player.pos.z) < riNow.water - 0.12;
+    const riNow = riverInfoInto(player.pos.x, player.pos.z, _riverPlayerInfo);
+    const terrainNow = terrainHeight(player.pos.x, player.pos.z);
+    const inWaterNow = riNow.d < 4.4 && terrainNow < riNow.water - 0.12;
     if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
     player.wading = inWaterNow;
-    const sprint = k.has("ShiftLeft") || k.has("ShiftRight");
-    const maxSpeed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
+    const crouch = k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight");
+    player.crouching = crouch;
+    const sprint = !crouch && (k.has("ShiftLeft") || k.has("ShiftRight"));
+    const maxSpeed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1) * (crouch ? 0.45 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
-    // --- kinematic inertia: explicit accel/decel response, weak air
-    // control, gravity + coyote jump. Exponential rates give roughly
-    // 86% of a start in 0.20s and 88% of a stop in 0.15s, so starts
-    // and stops carry visible weight without a rigid-body engine.
+    const wasGrounded = physBuf[6] > 0.5;
     const wishX = -sin * mz + cos * mx, wishZ = -cos * mz - sin * mx;
-    const wishMag = Math.hypot(mx, mz);
-    let slopeSpeedMul = 1;
-    if (player.grounded && wishMag > 0.01) {
-      const ahead = 2.2;
-      const grade = (terrainHeight(player.pos.x + wishX * ahead, player.pos.z + wishZ * ahead) - terrainHeight(player.pos.x, player.pos.z)) / ahead;
-      slopeSpeedMul = clamp(1 - grade * 0.55, 0.35, 1.12);
-    }
-    const targetX = wishX * maxSpeed * slopeSpeedMul;
-    const targetZ = wishZ * maxSpeed * slopeSpeedMul;
-    const decelerating = wishMag < 0.03 || (player.vel.x * targetX + player.vel.z * targetZ) < 0;
     const mud = climateNow.mud;
-    const accelRate = !player.grounded ? 2.3
-      : decelerating ? 14 * (1 - 0.45 * mud)  // monsoon mud: longer slide
-      : 10 * (1 - 0.3 * mud);                 // monsoon mud: -30% acceleration
-    debugStats.accelRate = accelRate;
-    const vBlend = 1 - Math.exp(-accelRate * dt);
-    player.vel.x += (targetX - player.vel.x) * vBlend;
-    player.vel.z += (targetZ - player.vel.z) * vBlend;
     const jumpDown = k.has("Space") || inputState.jump;
     inputState.jump = false;
-    if (jumpDown && !player.jumpHeld && (player.grounded || player.coyote > 0)) {
-      player.vy = 7.7; // ~1.4m apex at GRAVITY=-21
-      player.grounded = false;
-      player.coyote = 0;
-    }
+    const jumpPressed = jumpDown && !player.jumpHeld;
     player.jumpHeld = jumpDown;
-    player.coyote = player.grounded ? 0.12 : Math.max(0, player.coyote - dt);
-    player.vy = Math.max(player.vy + GRAVITY * dt, -38);
-    const wasGrounded = player.grounded;
-    const fallSpeed = Math.max(0, -player.vy);
-    // Integrate from the feet; player.pos is the eye (feet + 1.7m).
-    let feetX = player.pos.x, feetY = player.pos.y - 1.7, feetZ = player.pos.z;
-    const mdx = player.vel.x * dt, mdy = player.vy * dt, mdz = player.vel.z * dt;
-    feetX += mdx; feetY += mdy; feetZ += mdz;
-    player.grounded = false;
+
+    // PUBG-style kinematic step shared field-for-field with Rust ABI v4:
+    // control-speed friction, projection-capped acceleration, weak air
+    // control, slope gravity/sliding, 0.55m step-up and hard-landing
+    // momentum damping. Top speeds above remain 8.6 / 14.5 m/s.
+    physBuf[8] = dt;
+    physBuf[9] = wishX;
+    physBuf[10] = wishZ;
+    physBuf[11] = maxSpeed;
+    physBuf[12] = jumpPressed ? 1 : 0;
+    physBuf[13] = 12 * (1 - 0.3 * mud) * (inWaterNow ? 0.65 : 1);
+    physBuf[14] = 2.2;
+    physBuf[15] = 11 * (1 - 0.45 * mud) * (inWaterNow ? 0.7 : 1);
+    physBuf[16] = 1.0;
+    physBuf[17] = 0.9;
+    physBuf[18] = GRAVITY;
+    physBuf[19] = 7.7;
+    physBuf[20] = 0.55;
+    physBuf[21] = 0.55;
+    physBuf[22] = 0.62;
+    physBuf[23] = 0.85;
+    const usedRustPhysics = rustPhysicsStep(physBuf);
+    if (!usedRustPhysics) stepPhysicsBuffer(physBuf, groundHeightWithBridge);
+    debugStats.physicsCore = usedRustPhysics ? "RUST" : "JS";
+    debugStats.accelRate = physBuf[6] > 0.5 ? physBuf[13] : physBuf[14];
+
+    let feetX = physBuf[0], feetY = physBuf[1], feetZ = physBuf[2];
+    const clampLimit = mapPreset.hardClamp;
+    feetX = clamp(feetX, -clampLimit, clampLimit);
+    feetZ = clamp(feetZ, -clampLimit, clampLimit);
+    physBuf[0] = feetX; physBuf[2] = feetZ;
     player.pos.x = feetX;
     player.pos.z = feetZ;
-    // Mode-specific square boundary.
-    // Survival: hard clamp at +/-1950m (inside the rim ring).
-    // BR: terrain ends at +/-1000m; pressing on that line is out of bounds
-    // and drains 5 HP/s until the player returns inside.
-    const clampLimit = mapPreset.hardClamp;
-    player.pos.x = clamp(player.pos.x, -clampLimit, clampLimit);
-    player.pos.z = clamp(player.pos.z, -clampLimit, clampLimit);
     if (mapPreset.boundaryMode === "damage") {
       const edge = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
       const isOob = edge >= mapPreset.half - 0.01;
@@ -1681,26 +1932,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       setOutOfBounds(false);
     }
     debugStats.travelM += Math.hypot(player.pos.x - prevX, player.pos.z - prevZ);
-    // Analytic ground truth (matches the rendered surface exactly).
-    let groundY = terrainHeight(player.pos.x, player.pos.z);
-    const bdx = player.pos.x - bridge.cx, bdz = player.pos.z - bridge.cz;
-    const alongB = bdx * bridge.ax + bdz * bridge.az;
-    const acrossB = bdx * bridge.px + bdz * bridge.pz;
-    if (Math.abs(alongB) < 5.8 && Math.abs(acrossB) < 1.7) groundY = Math.max(groundY, bridge.deckY);
-    const snapDistance = wasGrounded && player.vy <= 0 ? 0.55 : 0;
-    if (feetY <= groundY + snapDistance) {
-      if (feetY < groundY) feetY = groundY;
-      else feetY += (groundY - feetY) * Math.min(1, dt * 20); // smooth downhill snap
-      player.grounded = true;
+
+    player.vel.set(physBuf[3], physBuf[4], physBuf[5]);
+    player.vy = physBuf[4];
+    player.grounded = physBuf[6] > 0.5;
+    player.coyote = physBuf[7];
+    player.sliding = physBuf[29] > 0.5;
+    const landedImpact = physBuf[28];
+    if (!wasGrounded && player.grounded && landedImpact > 6) {
+      player.landDip = Math.min(0.16, landedImpact * 0.012);
+      if (hooks.onLand) hooks.onLand();
     }
-    if (player.grounded) {
-      if (!wasGrounded && fallSpeed > 6) {
-        player.landDip = Math.min(0.16, fallSpeed * 0.012);
-        if (hooks.onLand) hooks.onLand();
-      }
-      if (player.vy < 0) player.vy = 0;
-    }
-    player.pos.y = feetY + 1.7;
+    const targetEyeHeight = crouch ? 1.25 : 1.7;
+    player.eyeHeight += (targetEyeHeight - player.eyeHeight) * Math.min(1, dt * 12);
+    player.pos.y = feetY + player.eyeHeight;
+    const groundY = groundHeightWithBridge(player.pos.x, player.pos.z);
     playerBlobShadow.visible = true;
     playerBlobShadow.position.set(player.pos.x, groundY + 0.04, player.pos.z);
     const airH = clamp(feetY - groundY, 0, 3);
@@ -1708,8 +1954,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     playerBlobMaterial.opacity = clamp(climateNow.blobOpacity + 0.02 - airH * 0.055, 0.05, 0.42);
     debugStats.grounded = player.grounded ? 1 : 0;
     debugStats.vy = Math.round(player.vy * 10) / 10;
-    debugStats.speed = Math.round(Math.hypot(player.vel.x, player.vel.z) * 10) / 10;
-    const hSpeed = Math.hypot(player.vel.x, player.vel.z);
+    debugStats.speed = Math.round(physBuf[31] * 10) / 10;
+    const hSpeed = physBuf[31];
     const moving = clamp(hSpeed / 8, 0, 1) * (player.grounded ? 1 : 0.2);
     player.bobPhase += dt * hSpeed * 1.18 * (player.grounded ? 1 : 0.25);
     const stepIdx = Math.floor(player.bobPhase / Math.PI);
@@ -1767,27 +2013,45 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (playing && t - lastRustAiT >= 0.25) {
       lastRustAiT = t;
       let aiN = 0;
-      for (const d of drones) {
+      for (let di2 = 0; di2 < drones.length; di2++) {
+        const d = drones[di2];
         const a = t * d.speed + d.phase;
         const x = d.cx + Math.cos(a) * d.orbitR;
         const z = d.cz + Math.sin(a) * d.orbitR;
-        rustAiAgents.set([x, terrainHeight(x, z) + d.hoverH, z, d.ax, d.az, d.hoverH], aiN * 6);
+        const ao = aiN * 6;
+        rustAiAgents[ao] = x;
+        rustAiAgents[ao + 1] = terrainHeight(x, z) + d.hoverH;
+        rustAiAgents[ao + 2] = z;
+        rustAiAgents[ao + 3] = d.ax;
+        rustAiAgents[ao + 4] = d.az;
+        rustAiAgents[ao + 5] = d.hoverH;
         aiN++;
       }
-      const aiOut = rustAiBatch(
-        NOISE_SEED, rustAiAgents.subarray(0, aiN * 6),
-        camera.position.x, camera.position.y, camera.position.z,
-        losM, mapPreset.half, mapPreset.rimStart
-      );
-      if (aiOut) {
-        debugStats.rustAiBatches++;
-        for (let i = 0; i < aiN; i++) {
-          const d = drones[i], o = i * 8;
-          d.rustLos = aiOut[o + 1] > 0.5;
-          d.rustThreat = aiOut[o + 2];
-          d.rustWayX = aiOut[o + 3];
-          d.rustWayZ = aiOut[o + 4];
-          if (d.rustLos) d.path = null;
+      let usedWorkerAi = false;
+      if (workerReady && !workerAiPending) {
+        const rec = { count: aiN };
+        const id = postWorker("ai", {
+          type: "ai", agents: rustAiAgents.subarray(0, aiN * 6), count: aiN,
+          px: camera.position.x, py: camera.position.y, pz: camera.position.z, losM,
+        }, rec);
+        if (id) { workerAiPending = true; usedWorkerAi = true; }
+      }
+      if (!usedWorkerAi) {
+        const aiOut = rustAiBatch(
+          NOISE_SEED, rustAiAgents.subarray(0, aiN * 6),
+          camera.position.x, camera.position.y, camera.position.z,
+          losM, mapPreset.half, mapPreset.rimStart
+        );
+        if (aiOut) {
+          debugStats.rustAiBatches++;
+          for (let i = 0; i < aiN; i++) {
+            const d = drones[i], o = i * 8;
+            d.rustLos = aiOut[o + 1] > 0.5;
+            d.rustThreat = aiOut[o + 2];
+            d.rustWayX = aiOut[o + 3];
+            d.rustWayZ = aiOut[o + 4];
+            if (d.rustLos) { d.path = null; d.pathPending = false; }
+          }
         }
       }
     }
@@ -1839,10 +2103,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         // following a coarse Rust A* path when one is available.
         if (playing && actualDist <= losM && d.rustLos === false) {
           huntX = d.rustWayX; huntZ = d.rustWayZ;
-          if (!d.path && t >= d.nextPathAt) {
+          if (!d.path && !d.pathPending && t >= d.nextPathAt) {
             d.nextPathAt = t + 3;
-            const p = rustFindPath(NOISE_SEED, d.cx, d.cz, huntX, huntZ, mapPreset.half, mapPreset.rimStart);
-            if (p && p.length >= 4) { d.path = p; d.pathI = 2; debugStats.rustPaths++; }
+            let sentPath = false;
+            if (workerReady) {
+              const rec = { drone: di };
+              const id = postWorker("path", {
+                type: "path", drone: di, sx: d.cx, sz: d.cz, gx: huntX, gz: huntZ,
+              }, rec);
+              if (id) { d.pathPending = true; d.pathId = id; sentPath = true; }
+            }
+            if (!sentPath) {
+              const p = rustFindPath(NOISE_SEED, d.cx, d.cz, huntX, huntZ, mapPreset.half, mapPreset.rimStart);
+              if (p && p.length >= 4) { d.path = p; d.pathI = 2; debugStats.rustPaths++; }
+            }
           }
           targetX = huntX; targetZ = huntZ;
         }
@@ -1899,7 +2173,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       pPos[i * 3 + 2] += pVel[i * 3 + 2] * dt;
     }
     if (any) pGeo.attributes.position.needsUpdate = true;
-    for (const t of tracers) {
+    for (let ti = 0; ti < tracers.length; ti++) {
+      const t = tracers[ti];
       if (t.life <= 0) continue;
       t.life -= dt;
       t.mesh.material.opacity = Math.max(0, t.life / 0.06) * 0.85;
@@ -1927,6 +2202,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const _c1 = new THREE.Color(), _c2 = new THREE.Color();
   const _skyLutOut = new Float32Array(12);
   let ambAcc = 1;
+  const _ambience = { water: 0, day: 0, night: 0 };
 
   // ----- macro seasons + micro weather -----
   // Macro clock: macroDays advances with the sun cycle (900s/day); a
@@ -2029,6 +2305,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // before the first rendered frame; earlier function bodies only read it
   // once the frame loop starts.
   const climateNow = snapshotWeather(WEATHER_TARGETS.sunny);
+  let debugSeasonName = "", debugWeatherName = "", debugSeasonTintHex = -1;
   function setWeather(name) {
     name = normalizeWeather(name);
     if (!name || name === weatherName && weatherBlend >= 1) return;
@@ -2125,7 +2402,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     weatherBlend = Math.min(1, weatherBlend + dt / 30);
     const wb = weatherBlend;
-    for (const f of WEATHER_FIELDS) climateNow[f] = lerp(weatherFrom[f], weatherTo[f], wb);
+    for (let fi = 0; fi < WEATHER_FIELDS.length; fi++) {
+      const f = WEATHER_FIELDS[fi];
+      climateNow[f] = lerp(weatherFrom[f], weatherTo[f], wb);
+    }
     climateNow.tint.lerpColors(weatherFrom.tint, weatherTo.tint, wb);
     blobShadowMaterial.opacity = climateNow.blobOpacity;
 
@@ -2138,8 +2418,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       rollWeather();
     }
 
-    debugStats.season = seasonName.toUpperCase();
-    debugStats.weather = weatherName.toUpperCase();
+    if (seasonName !== debugSeasonName) {
+      debugSeasonName = seasonName;
+      debugStats.season = seasonName.toUpperCase();
+    }
+    if (weatherName !== debugWeatherName) {
+      debugWeatherName = weatherName;
+      debugStats.weather = weatherName.toUpperCase();
+    }
     debugStats.macroDay = Math.round(macroDays * 100) / 100;
     debugStats.seasonDay = Math.floor(macroDays % 10) + 1;
     debugStats.seasonBlend = Math.round(seasonBlend * 100) / 100;
@@ -2147,7 +2433,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.weatherRollS = Math.max(0, Math.round(600 - weatherRollAcc));
     debugStats.rain = Math.round(climateNow.rain * 100) / 100;
     debugStats.mud = Math.round(climateNow.mud * 100) / 100;
-    debugStats.seasonTint = terrainMaterial.color.getHexString();
+    const seasonTintHex = terrainMaterial.color.getHex();
+    if (seasonTintHex !== debugSeasonTintHex) {
+      debugSeasonTintHex = seasonTintHex;
+      debugStats.seasonTint = terrainMaterial.color.getHexString();
+    }
     return climateNow;
   }
 
@@ -2208,7 +2498,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     renderer.toneMappingExposure = lerp(1.0, 1.08, daylight) * climate.exposureMul;
 
     starMat.opacity = nightness * (0.78 + 0.22 * Math.sin(elapsed * 2.7)) * (1 - climate.cloud * 0.82);
-    for (const g of galaxies) {
+    for (let gi = 0; gi < galaxies.length; gi++) {
+      const g = galaxies[gi];
       g.material.opacity = nightness * 0.9 * (1 - climate.cloud * 0.82);
       g.material.rotation += dt * 0.004;
     }
@@ -2226,16 +2517,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (ambAcc > 0.18 && hooks.onAmbience) {
       ambAcc = 0;
       const focus = playing ? player.pos : camera.position;
-      const rw = riverInfo(focus.x, focus.z);
-      hooks.onAmbience({
-        water: clamp(1 - (rw.d - 3) / 70, 0, 1),
-        day: daylight,
-        night: nightness,
-      });
+      const rw = riverInfoInto(focus.x, focus.z, _riverWorldInfo);
+      _ambience.water = clamp(1 - (rw.d - 3) / 70, 0, 1);
+      _ambience.day = daylight;
+      _ambience.night = nightness;
+      hooks.onAmbience(_ambience);
     }
   }
 
   function frame() {
+    const profileStart = frameProfile.enabled ? performance.now() : 0;
     raf = requestAnimationFrame(frame);
     frameSerial++;
     const dt = Math.min(clock.getDelta(), 0.05);
@@ -2288,9 +2579,24 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // not hitch movement.
     pumpChunkJobs(3.5);
     pumpBvh();
+    const renderStart = frameProfile.enabled ? performance.now() : 0;
     renderer.render(scene, camera);
     { // debug counters (renderer.info is valid right after render)
       const now = performance.now();
+      if (frameProfile.enabled) {
+        const cpuUpdate = renderStart - profileStart;
+        const cpuRender = now - renderStart;
+        debugStats.cpuUpdateMs = cpuUpdate;
+        debugStats.cpuRenderMs = cpuRender;
+        debugStats.cpuFrameMs = now - profileStart;
+        if (frameProfile.count < frameProfile.capacity) {
+          const pi = frameProfile.count++;
+          frameProfile.update[pi] = cpuUpdate;
+          frameProfile.render[pi] = cpuRender;
+          frameProfile.total[pi] = now - profileStart;
+        }
+        debugStats.profileFrames = frameProfile.count;
+      }
       const ft = debugStats._last ? now - debugStats._last : 16.7;
       debugStats._last = now;
       debugStats.frameMs = debugStats.frameMs * 0.92 + ft * 0.08;
@@ -2316,6 +2622,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   function dispose() {
     if (outOfBounds && hooks.onOutOfBoundsChange) hooks.onOutOfBoundsChange(false);
+    if (terrainWorker) { terrainWorker.terminate(); terrainWorker = null; }
+    setRustGroundProvider(null);
     cancelAnimationFrame(raf);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
