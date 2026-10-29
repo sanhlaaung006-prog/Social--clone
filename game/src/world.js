@@ -38,6 +38,7 @@ export const inputState = {
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
   jump: false, // pulsed by the touch JUMP button; the world consumes it
+  touchCrouch: false, // latched by the touch CRCH toggle button
 };
 
 // Live perf counters, filled by the render loop, read by the React debug overlay.
@@ -117,16 +118,25 @@ function hash2(x, z) {
 function valueNoise(x, z) {
   const xi = Math.floor(x), zi = Math.floor(z);
   const xf = x - xi, zf = z - zi;
-  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+  // Quintic interpolation: C2-continuous value noise. The old cubic
+  // curve left visible lattice-aligned creases on broad slopes.
+  const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+  const v = zf * zf * zf * (zf * (zf * 6 - 15) + 10);
   const a = hash2(xi, zi), b = hash2(xi + 1, zi);
   const c = hash2(xi, zi + 1), d = hash2(xi + 1, zi + 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 function fbm(x, z, octaves) {
-  let amp = 0.5, freq = 1, sum = 0, norm = 0;
+  let amp = 0.5, sum = 0, norm = 0;
+  let px = x, pz = z;
   for (let i = 0; i < octaves; i++) {
-    sum += amp * valueNoise(x * freq, z * freq);
-    norm += amp; amp *= 0.5; freq *= 2.03;
+    sum += amp * valueNoise(px, pz);
+    norm += amp; amp *= 0.5;
+    // Rotate each octave so successive noise lattices do not reinforce
+    // square, axis-aligned terrain facets.
+    const nx = (px * 0.8 - pz * 0.6) * 2.03 + 11.31;
+    const nz = (px * 0.6 + pz * 0.8) * 2.03 - 7.87;
+    px = nx; pz = nz;
   }
   return sum / norm;
 }
@@ -151,7 +161,7 @@ export const MAP_PRESETS = Object.freeze({
   }),
 });
 export const CHUNK_SIZE_M = 1000;
-export const CHUNK_SEGMENTS = 64; // 15.6m per terrain vertex (mobile <60k-tri budget)
+export const CHUNK_SEGMENTS = 96; // 10.4m near vertices; smooth landforms keep visible tris controlled
 
 export function getMapPreset(id) {
   return MAP_PRESETS[id] || MAP_PRESETS.survival;
@@ -183,14 +193,51 @@ export const WORLD = {
 let relayBase = 0, spawnBase = 0;
 let RIVER = { samples: [], grid: new Map(), cellSize: 50, control: [] };
 
-function baseHeight(x, z) {
-  let h = fbm(x * 0.011 + 13.7, z * 0.011 - 4.2, 5) * 30;
-  h += Math.pow(fbm(x * 0.0038 - 7.1, z * 0.0038 + 9.3, 3), 2) * 46;
-  return h;
+export const SEA_LEVEL = 0.25;
+// Myanmar-balanced landform model, mirrored in Rust. The playable square
+// is an abstract sector rather than a literal country outline:
+//   south      Ayeyarwady-style delta / wet coastal plain (2-8m)
+//   centre     broad Dry-Zone lowland and gentle rolling ground (10-22m)
+//   north/west Chin-Rakhine style hill country; east a lower Shan plateau
+// Mountains are restricted to those outer belts and the border rim. The
+// low frequencies and small lowland detail amplitude are deliberate: a
+// future vehicle should meet long, readable grades instead of a field of
+// 15m noise steps, and the rendered triangles stay close to physics.
+function baseHeight(x, z, half = activePreset.half) {
+  const invHalf = 1 / Math.max(1, half);
+  const warpX = (fbm(x * 0.00125 + 31.7, z * 0.00125 - 18.2, 2) - 0.5) * 0.24;
+  const warpZ = (fbm(x * 0.00115 - 24.6, z * 0.00115 + 9.4, 2) - 0.5) * 0.24;
+  const u = clamp(x * invHalf + warpX, -1, 1);
+  const v = clamp(z * invHalf + warpZ, -1, 1); // +v is south
+  const macro = fbm(x * 0.00155 - 3.1, z * 0.00155 + 8.7, 3);
+  const roll = fbm(x * 0.0042 + 17.4, z * 0.0042 - 5.6, 3);
+  const detail = fbm(x * 0.011 - 9.8, z * 0.011 + 4.4, 2);
+  const ridgeNoise = fbm(x * 0.0028 + 43.1, z * 0.0028 - 27.5, 3);
+  const ridgeBand = clamp(1 - Math.abs(ridgeNoise * 2 - 1), 0, 1);
+  const ridge = ridgeBand * ridgeBand;
+
+  const south = smoothstep(0.02, 0.48, v);
+  const north = smoothstep(-0.05, -0.58, v);
+  const west = smoothstep(-0.12, -0.66, u);
+  const east = smoothstep(0.28, 0.78, u);
+  const hills = clamp(Math.max(north, west * 0.92, east * 0.62) * (1 - south * 0.88), 0, 1);
+
+  const deltaH = 2.2 + macro * 3.6 + roll * 1.15 + detail * 0.28;
+  const dryH = 9.0 + macro * 7.0 + roll * 3.4 + detail * 0.55;
+  const hillH = 19.0 + macro * 15.0 + ridge * 25.0 + roll * 6.5 + detail * 1.5;
+  let h = lerp(dryH, deltaH, south);
+  h = lerp(h, hillH, hills);
+
+  // Irregular southern shoreline: dry/delta ground eases through a beach
+  // to a shallow seabed instead of meeting another mountain rim.
+  const coastLine = 0.82 + (macro - 0.5) * 0.08;
+  const coast = smoothstep(coastLine - 0.10, coastLine + 0.08, z * invHalf);
+  return lerp(h, -2.4 + roll * 0.7, coast);
 }
 // Procedural rim mountains: past rimStart (BR 850m / Survival 1800m, square
 // Chebyshev edge distance) height grows exponentially into an impassable
-// ring. With the 200m fog wall it is only discovered near the edge.
+// ring. The southern coastal edge is suppressed so the delta can meet the
+// sea; the hard map clamp/boundary rule still stops the player there.
 function rimHeight(x, z) {
   const edge = Math.max(Math.abs(x), Math.abs(z));
   const start = activePreset.rimStart;
@@ -200,7 +247,10 @@ function rimHeight(x, z) {
   const shaped = (Math.exp(3.1 * Math.min(t, 1)) - 1) / (Math.exp(3.1) - 1);
   const ridge = 0.72 + 0.55 * fbm(x * 0.009 + 41.3, z * 0.009 - 23.8, 3);
   const beyond = t > 1 ? (t - 1) * width * 0.9 : 0;
-  return shaped * 165 * ridge + beyond;
+  const southEdge = z > 0 && Math.abs(z) >= Math.abs(x)
+    ? smoothstep(start, activePreset.half, z) * smoothstep(-0.78, -0.18, x / activePreset.half)
+    : 0;
+  return (shaped * 165 * ridge + beyond) * (1 - southEdge * 0.94);
 }
 function rawHeightJs(x, z) {
   return baseHeight(x, z) + rimHeight(x, z);
@@ -226,19 +276,22 @@ function riverCellKey(ix, iz) { return (ix + 128) * 512 + (iz + 128); }
 function buildRiver(seed, preset) {
   const rand = mulberry32((seed ^ 0x713c51ab) >>> 0);
   const span = preset.rimStart * 0.94;
-  const startZ = -(0.42 + rand() * 0.2) * span;
-  const endZ = (0.42 + rand() * 0.2) * span;
+  // Ayeyarwady-like course: northern hills -> central Dry Zone -> southern
+  // delta/coast (+Z is south). The centre control is pushed east/west so
+  // the spawn remains on dry lowland.
+  const startX = -(0.18 + rand() * 0.22) * span;
+  const endX = (0.10 + rand() * 0.24) * span;
   const phase = rand() * Math.PI * 2;
   const ctrl = [];
   const N = 11, mid = (N - 1) / 2;
   for (let i = 0; i < N; i++) {
     const u = i / (N - 1);
-    const x = lerp(-span, span, u);
+    const z = lerp(-span, span, u);
     const fade = Math.sin(u * Math.PI);
-    let z = lerp(startZ, endZ, u)
-      + Math.sin(u * Math.PI * 2.2 + phase) * span * 0.11 * fade
-      + (rand() - 0.5) * span * 0.045 * fade;
-    if (i === mid) z = (rand() < 0.5 ? -1 : 1) * (65 + rand() * 55); // keep spawn dry
+    let x = lerp(startX, endX, u)
+      + Math.sin(u * Math.PI * 2.2 + phase) * span * 0.10 * fade
+      + (rand() - 0.5) * span * 0.04 * fade;
+    if (i === mid) x = (rand() < 0.5 ? -1 : 1) * (65 + rand() * 55); // keep spawn dry
     ctrl.push([x, z]);
   }
   const pts = [];
@@ -250,22 +303,33 @@ function buildRiver(seed, preset) {
     for (let i = s === 0 ? 0 : 1; i <= steps; i++) pts.push(catmull2(p0, p1, p2, p3, i / steps));
   }
   let prof = pts.map(([x, z]) => rawHeight(x, z));
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < 3; pass++) {
     const src = prof, next = prof.slice();
     for (let i = 0; i < src.length; i++) {
       let sum = 0, n = 0;
-      for (let k = -12; k <= 12; k++) {
+      for (let k = -18; k <= 18; k++) {
         sum += src[Math.max(0, Math.min(src.length - 1, i + k))]; n++;
       }
       next[i] = sum / n;
     }
     prof = next;
   }
-  for (let i = 1; i < prof.length; i++) prof[i] = Math.min(prof[i], prof[i - 1] - 0.045);
+  // Enforce only a gentle downstream fall. The former fixed 4.5cm/sample
+  // rule forced a ~20m artificial drop and cut canyon-like banks through
+  // otherwise flat lowland. Blend the smoothed terrain profile toward a
+  // north-to-delta grade, then cap any remaining reverse slope.
+  const startProf = prof[0], endProf = Math.max(1.2, prof[prof.length - 1]);
+  for (let i = 0; i < prof.length; i++) {
+    const u = prof.length <= 1 ? 0 : i / (prof.length - 1);
+    prof[i] = lerp(prof[i], lerp(startProf, endProf, u), 0.38);
+  }
+  for (let i = 1; i < prof.length; i++) prof[i] = Math.min(prof[i], prof[i - 1] - 0.006);
   const cellSize = 50;
   const grid = new Map();
   const samples = pts.map(([x, z], i) => {
-    const sample = { x, z, bed: prof[i] - 2.7, water: prof[i] - 1.05 };
+    // 0.9m wading depth (waist-deep): the old 1.6m gap put the 1.7m eye
+    // essentially on the water surface while crossing.
+    const sample = { x, z, i, bed: prof[i] - 1.85, water: prof[i] - 0.95 };
     const key = riverCellKey(Math.floor(x / cellSize), Math.floor(z / cellSize));
     const bucket = grid.get(key);
     if (bucket) bucket.push(sample); else grid.set(key, [sample]);
@@ -281,21 +345,34 @@ export function riverInfoInto(x, z, out) {
   if (!RIVER.samples.length) return out;
   const cell = RIVER.cellSize;
   const cx = Math.floor(x / cell), cz = Math.floor(z / cell);
-  let best = null, bestD2 = Infinity;
+  let bestD2 = Infinity;
+  let bestX = x, bestZ = z, bestBed = 0, bestWater = -9999;
+  // Distance to the river *polyline*, with bed/water interpolated along
+  // the winning segment. Nearest-sample lookup made the carve jump every
+  // ~8m and produced visibly stepped banks.
   for (let ix = cx - 2; ix <= cx + 2; ix++) {
     for (let iz = cz - 2; iz <= cz + 2; iz++) {
       const bucket = RIVER.grid.get(riverCellKey(ix, iz));
       if (!bucket) continue;
       for (let i = 0; i < bucket.length; i++) {
-        const s = bucket[i];
-        const dx = x - s.x, dz = z - s.z;
+        const a = bucket[i];
+        const b = RIVER.samples[Math.min(RIVER.samples.length - 1, (a.i || 0) + 1)] || a;
+        const abx = b.x - a.x, abz = b.z - a.z;
+        const len2 = abx * abx + abz * abz;
+        const t = len2 > 0.000001 ? clamp(((x - a.x) * abx + (z - a.z) * abz) / len2, 0, 1) : 0;
+        const px = a.x + abx * t, pz = a.z + abz * t;
+        const dx = x - px, dz = z - pz;
         const d2 = dx * dx + dz * dz;
-        if (d2 < bestD2) { bestD2 = d2; best = s; }
+        if (d2 < bestD2) {
+          bestD2 = d2; bestX = px; bestZ = pz;
+          bestBed = lerp(a.bed, b.bed, t);
+          bestWater = lerp(a.water, b.water, t);
+        }
       }
     }
   }
-  if (!best) return out;
-  out.d = Math.sqrt(bestD2); out.bed = best.bed; out.water = best.water; out.x = best.x; out.z = best.z;
+  if (!Number.isFinite(bestD2)) return out;
+  out.d = Math.sqrt(bestD2); out.bed = bestBed; out.water = bestWater; out.x = bestX; out.z = bestZ;
   return out;
 }
 export function riverInfo(x, z) {
@@ -351,13 +428,63 @@ function terrainHeightFromRaw(raw, x, z) {
   h = lerp(relayBase, h, smoothstep(9, 26, dRelay));
   h = lerp(spawnBase, h, smoothstep(7, 20, dSpawn));
   const ri = riverInfoInto(x, z, _riverHeightInfo);
-  if (ri.d < 34) {
-    const t = 1 - smoothstep(9, 34, ri.d);
-    h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
+  if (ri.d < 58) {
+    // A 58m valley cross-section: channel bed -> low natural bank ->
+    // broad floodplain -> untouched terrain. This replaces the narrow
+    // 34m trench whose banks could rise faster than the mesh/physics
+    // step and read as square walls in first person.
+    const bank = ri.water + 0.55 + smoothstep(12, 58, ri.d) * 2.6;
+    const target = lerp(ri.bed, bank, smoothstep(6.5, 19, ri.d));
+    const blend = (1 - smoothstep(38, 58, ri.d)) * 0.94;
+    h = lerp(h, target, blend);
   }
   return h;
 }
 export const heightAt = terrainHeight;
+
+// Rendered-surface height used by actors. Physics previously sampled the
+// continuous analytic height while the GPU drew large triangles between
+// chunk vertices; on curved ground those surfaces could differ by metres,
+// putting the camera *inside* a rendered hill (visible as see-through
+// walls/floating trees). This function interpolates the same diagonal
+// split as the Rust chunk indices on the near-LOD grid and clamps the
+// result to within 22cm below the analytic authority.
+const _surfaceCell = { key: "", a: 0, b: 0, c: 0, d: 0 };
+export function terrainSurfaceHeight(x, z) {
+  const step = CHUNK_SIZE_M / CHUNK_SEGMENTS;
+  const origin = -activePreset.half;
+  const gx = (x - origin) / step, gz = (z - origin) / step;
+  const ix = Math.floor(gx), iz = Math.floor(gz);
+  const x0 = origin + ix * step, z0 = origin + iz * step;
+  const key = activePreset.id + "|" + sessionWorldSeed + "|" + ix + "|" + iz;
+  if (_surfaceCell.key !== key) {
+    _surfaceCell.key = key;
+    _surfaceCell.a = terrainHeight(x0, z0);
+    _surfaceCell.b = terrainHeight(x0 + step, z0);
+    _surfaceCell.c = terrainHeight(x0, z0 + step);
+    _surfaceCell.d = terrainHeight(x0 + step, z0 + step);
+  }
+  const tx = clamp(gx - ix, 0, 1), tz = clamp(gz - iz, 0, 1);
+  const a = _surfaceCell.a, b = _surfaceCell.b, c = _surfaceCell.c, d = _surfaceCell.d;
+  const tri = tx + tz <= 1
+    ? a + (b - a) * tx + (c - a) * tz
+    : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
+  return Math.max(tri, terrainHeight(x, z) - 0.22);
+}
+
+// Capsule-aware ground for the deterministic character step: the highest
+// rendered/analytic shoulder inside a body radius becomes a step/wall
+// before the camera centre can enter the slope. Rust physics receives
+// this through its existing host import, so JS/Rust stay in lock-step.
+export function collisionHeight(x, z) {
+  const centre = terrainSurfaceHeight(x, z);
+  const r = 0.38;
+  const shoulder = Math.max(
+    terrainHeight(x + r, z), terrainHeight(x - r, z),
+    terrainHeight(x, z + r), terrainHeight(x, z - r)
+  );
+  return Math.max(centre, shoulder - 0.16);
+}
 
 // ---------- world factory ----------
 export function createWorld(canvas, hooks = {}, options = {}) {
@@ -710,11 +837,45 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // Only chunks whose bounds come within 340m are visible, giving clear
   // ~300m combat sightlines under exponential fog.
   const terrainMaterial = new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
+    vertexColors: true, roughness: 1, metalness: 0, flatShading: false,
   });
-  // Mobile fill-rate pass: terrain shading is plain MeshStandardMaterial
-  // vertex color. Rust still bakes color/AO into the vertex colors, but
-  // no splat attribute or custom roughness shader is uploaded/run.
+  // Vibrant atlas-style detail without an atlas texture, extra draw call,
+  // render target or per-vertex splat upload: two world-space value-noise
+  // scales modulate the Rust-baked vertex colour/AO and roughness in the
+  // existing terrain program. Smooth vertex normals (not flat shading)
+  // remove the square facet read; detail fades out before the fog wall.
+  terrainMaterial.onBeforeCompile = (shader) => {
+    shader.vertexShader = "varying vec3 vTerrainWorld;\nvarying vec3 vTerrainNormalW;\nvarying float vTerrainDist;\n" + shader.vertexShader
+      .replace("#include <project_vertex>", `#include <project_vertex>
+        vTerrainWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vTerrainNormalW = normalize(mat3(modelMatrix) * objectNormal);
+        vTerrainDist = -mvPosition.z;`);
+    shader.fragmentShader = `varying vec3 vTerrainWorld;
+      varying vec3 vTerrainNormalW;
+      varying float vTerrainDist;
+      float ironTerrainHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+      float ironTerrainNoise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(ironTerrainHash(i), ironTerrainHash(i + vec2(1.0, 0.0)), u.x),
+                   mix(ironTerrainHash(i + vec2(0.0, 1.0)), ironTerrainHash(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+    ` + shader.fragmentShader
+      .replace("#include <color_fragment>", `#include <color_fragment>
+        float ironDetailFade = 1.0 - smoothstep(45.0, 180.0, vTerrainDist);
+        float ironN1 = ironTerrainNoise(vTerrainWorld.xz * 0.045);
+        float ironN2 = ironTerrainNoise(vTerrainWorld.xz * 0.21 + 17.31);
+        float ironDetail = mix(0.5, ironN1 * 0.62 + ironN2 * 0.38, ironDetailFade);
+        diffuseColor.rgb *= 0.93 + 0.14 * ironDetail;
+        float ironPatch = ironTerrainNoise(vTerrainWorld.xz * 0.012 - 9.17);
+        diffuseColor.rgb *= mix(vec3(0.97, 1.03, 0.94), vec3(1.07, 1.00, 0.88), smoothstep(0.35, 0.75, ironPatch) * 0.45 * ironDetailFade);
+        float ironLuma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+        diffuseColor.rgb = mix(vec3(ironLuma), diffuseColor.rgb, 1.14);`)
+      .replace("#include <roughnessmap_fragment>", `#include <roughnessmap_fragment>
+        float ironSlope = 1.0 - clamp(vTerrainNormalW.y, 0.0, 1.0);
+        roughnessFactor = clamp(0.98 - smoothstep(0.45, 0.8, ironN2) * 0.10 * ironDetailFade - ironSlope * 0.12, 0.68, 1.0);`);
+  };
+  terrainMaterial.customProgramCacheKey = () => "ironveil-terrain-vibrant-v2";
   const terrainGroup = new THREE.Group();
   terrainGroup.name = "terrain-chunks";
   scene.add(terrainGroup);
@@ -733,7 +894,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     return { minX, maxX: minX + CHUNK_SIZE_M, minZ, maxZ: minZ + CHUNK_SIZE_M, cx: minX + CHUNK_SIZE_M / 2, cz: minZ + CHUNK_SIZE_M / 2 };
   }
-  const LOD_SEGMENTS = [64, 48, 28, 14]; // by Chebyshev ring; tuned for <60k visible tris on mobile
+  const LOD_SEGMENTS = [96, 64, 32, 16]; // near/mid detail restored; smoother landforms offset the vertex cost
   const chunkJobs = new Map(); // key -> build job
   const chunkQueue = []; // job keys, best score first
   const bvhQueue = []; // finished meshes awaiting an idle-frame BVH build
@@ -767,8 +928,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     chunkQueue.push(key);
     return job;
   }
-  const _cLow = new THREE.Color(0x232b1e), _cMid = new THREE.Color(0x3d4a32);
-  const _cRock = new THREE.Color(0x5d6157), _cPeak = new THREE.Color(0x878e80);
+  const _cLow = new THREE.Color(0x2f6b2f), _cMid = new THREE.Color(0x68813e);
+  const _cRock = new THREE.Color(0x7a7567), _cPeak = new THREE.Color(0x9aa08e);
+  const _cSand = new THREE.Color(0xb79b68), _cRice = new THREE.Color(0x4c9a3e);
+  const _cDry = new THREE.Color(0xa8894e), _cForest = new THREE.Color(0x245c2d);
   const _ctmp = new THREE.Color();
   const _terrainPalette = new Array(12);
   function fillTerrainPalette() {
@@ -925,15 +1088,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const h = pos.getY(i);
       _ctmp.copy(_cLow).lerp(_cMid, smoothstep(2, 26, h));
       _ctmp.lerp(_cPeak, smoothstep(38, 78, h) * 0.8);
+      const moisture = fbm(wx * 0.0035 + 8.4, wz * 0.0035 - 2.7, 2);
+      const dryNoise = fbm(wx * 0.006 - 5.1, wz * 0.006 + 11.9, 2);
+      _ctmp.lerp(_cRice, smoothstep(10, 5, h) * smoothstep(0.38, 0.72, moisture) * 0.55);
+      _ctmp.lerp(_cDry, smoothstep(0.55, 0.84, dryNoise) * smoothstep(7, 13, h) * (1 - smoothstep(24, 38, h)) * 0.42);
+      _ctmp.lerp(_cForest, smoothstep(20, 34, h) * smoothstep(0.42, 0.74, moisture) * 0.48);
+      _ctmp.lerp(_cSand, smoothstep(2.6, 0.5, h) * (1 - smoothstep(0.12, 0.32, slope)) * 0.72);
       _ctmp.lerp(_cRock, smoothstep(0.18, 0.5, slope));
       // Rust-baked AO (when present) grounds valleys/ridges with no
       // shadow-map pass; JS-built chunks keep the plain hash shade.
-      const shade = (0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1)) * (job.light ? job.light[i] : 1);
+      const shade = (0.9 + 0.1 * hash2(wx * 3.1, wz * 3.1)) * (job.light ? job.light[i] : 1);
       colors[i * 3] = _ctmp.r * shade; colors[i * 3 + 1] = _ctmp.g * shade; colors[i * 3 + 2] = _ctmp.b * shade;
       job.i++;
       if ((job.i & 127) === 0 && performance.now() > deadline) return false;
     }
     job.geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    job.geo.computeVertexNormals(); // JS fallback uses the same smooth shading as Rust meshes
     finishChunkJob(job);
     return true;
   }
@@ -1088,11 +1258,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         #include <fog_pars_fragment>
         void main() {
           float flow = sin(vUv.y * 34.0 - uTime * 2.0) * 0.5 + 0.5;
-          float glint = pow(flow, 10.0) * uDay;
+          // Cross-ripple breaks the perfect transverse bands that read as
+          // road markings from a hillside.
+          flow *= 0.72 + 0.28 * sin(vUv.x * 11.0 + vUv.y * 23.0 + uTime * 0.7);
+          float glint = pow(clamp(flow, 0.0, 1.0), 7.0) * uDay;
           float edge = smoothstep(0.0, 0.14, vUv.x) * smoothstep(1.0, 0.86, vUv.x);
-          vec3 deep = mix(vec3(0.012, 0.05, 0.09), vec3(0.04, 0.16, 0.24), uDay);
+          vec3 deep = mix(vec3(0.012, 0.05, 0.09), vec3(0.05, 0.21, 0.26), uDay);
           vec3 col = mix(deep, uHorizon * 0.55, 0.38 * uDay);
-          col += uSunColor * glint * 0.55;
+          col += uSunColor * glint * 0.4;
           gl_FragColor = vec4(col, 0.58 + edge * 0.30);
           #include <fog_fragment>
         }`,
@@ -1101,6 +1274,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     water.renderOrder = 2;
     water.frustumCulled = false;
     scene.add(water);
+    // Southern sea: one reused-material plane. Inland it is hidden below
+    // the delta; at the irregular southern shoreline it becomes the coast.
+    const sea = new THREE.Mesh(
+      new THREE.PlaneGeometry(mapPreset.size + 500, mapPreset.half * 0.5),
+      wmat
+    );
+    sea.rotation.x = -Math.PI / 2;
+    sea.position.set(0, SEA_LEVEL, mapPreset.half * 0.82);
+    sea.renderOrder = 2;
+    sea.frustumCulled = false;
+    scene.add(sea);
   }
   const bridge = (() => {
     // Plank bridge where the river passes closest to the spawn->relay line.
@@ -1135,7 +1319,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     return { cx: c.x, cz: c.z, deckY, ax: axis.x, az: axis.y, px: -axis.y, pz: axis.x };
   })();
   function groundHeightWithBridge(x, z) {
-    let y = terrainHeight(x, z);
+    let y = collisionHeight(x, z);
     const dx = x - bridge.cx, dz = z - bridge.cz;
     const along = dx * bridge.ax + dz * bridge.az;
     const across = dx * bridge.px + dz * bridge.pz;
@@ -1163,7 +1347,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const z = (rand() * 2 - 1) * scatterLimit;
       if (!clearOf(x, z, 15)) continue;
       if (riverInfoInto(x, z, _riverWorldInfo).d < 12.5) continue; // not in the widened river
-      placer(x, terrainHeight(x, z), z, placed);
+      const y = terrainSurfaceHeight(x, z);
+      if (y < SEA_LEVEL + 0.35) continue; // no trees/rocks standing in the sea
+      placer(x, y, z, placed);
       placed++;
     }
     return placed;
@@ -1227,6 +1413,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const g = new THREE.IcosahedronGeometry(r, 0); g.scale(sx, sy, sz); g.translate(x, y, z);
     return coloredPart(g, hex);
   }
+  // A limb is authored by its two joint centres, never by a guessed
+  // centre+rotation. Its caps are extended into both joints, and every
+  // fork below also gets a small joint blob, so trunk/branch/root pieces
+  // overlap in volume instead of merely touching (or missing) at a point.
+  function partLimb(x1, y1, z1, x2, y2, z2, r1, r2, seg, hex) {
+    const start = new THREE.Vector3(x1, y1, z1), end = new THREE.Vector3(x2, y2, z2);
+    const dir = end.clone().sub(start);
+    const len = Math.max(0.05, dir.length()) + (r1 + r2) * 0.55;
+    const g = new THREE.CylinderGeometry(r2, r1, len, seg);
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    const mid = start.add(end).multiplyScalar(0.5);
+    g.applyMatrix4(new THREE.Matrix4().compose(mid, quat, new THREE.Vector3(1, 1, 1)));
+    return coloredPart(g, hex);
+  }
+  function partJoint(r, x, y, z, hex) { return partBlob(r, 1, 0.92, 1, x, y, z, hex); }
+  function partRoot(rTop, rBottom, hex) { return partCyl(rTop, rBottom, 1.15, 6, 0, -0.06, 0, hex); }
   function partCone(r, h, seg, x, y, z, hex) {
     const g = new THREE.ConeGeometry(r, h, seg); g.translate(x, y, z);
     return coloredPart(g, hex);
@@ -1244,21 +1446,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const BARK = 0x3a2a1a, BARK_DARK = 0x2a1d12, PALM_BARK = 0x6a5136;
   // Species order: teak, padauk, rain tree, banyan, toddy/coconut palm.
   const treeGeometries = [
-    [mergeGeometries([partCyl(0.15,0.26,3.6,6,0,1.8,0,BARK),partCyl(0.07,0.10,1.4,5,0.48,3.45,0,BARK,-0.55),partCyl(0.07,0.10,1.3,5,-0.44,3.5,0.1,BARK,0.55),partBlob(1.5,1.02,1.28,1.02,0,4.65,0,0x2d5a26),partBlob(1.0,1,1.05,1,0.42,5.65,-0.15,0x3b6d30)],false),
-     mergeGeometries([partCyl(0.16,0.27,3.5,5,0,1.75,0,BARK),partBlob(1.6,1,1.2,1,0,4.8,0,0x2d5a26)],false),
-     mergeGeometries([partCyl(0.14,0.22,3.4,4,0,1.7,0,BARK_DARK),partCone(1.55,3.4,6,0,4.9,0,0x24491f)],false)],
-    [mergeGeometries([partCyl(0.17,0.30,3.0,6,0,1.5,0,0x4a3020),partCyl(0.08,0.11,1.5,5,0.62,3.05,0,0x4a3020,-0.65),partCyl(0.08,0.11,1.4,5,-0.58,3.1,-0.08,0x4a3020,0.65),partBlob(1.55,1.22,0.78,1.10,0,4.25,0,0x35632c),partBlob(1.05,1.1,0.72,1,-1.15,3.85,0.35,0x2d5727),partBlob(1.0,1.05,0.7,0.95,1.08,3.95,-0.38,0x416f34)],false),
-     mergeGeometries([partCyl(0.18,0.31,2.9,5,0,1.45,0,0x4a3020),partBlob(1.65,1.22,0.72,1.08,0,4.15,0,0x35632c)],false),
-     mergeGeometries([partCyl(0.16,0.26,2.8,4,0,1.4,0,0x3a2518),partBlob(1.6,1.2,0.68,1.05,0,4.05,0,0x2b5025)],false)],
-    [mergeGeometries([partCyl(0.20,0.34,2.8,6,0,1.4,0,BARK),partCyl(0.08,0.12,2.2,5,1.05,3.3,0,BARK,-0.85),partCyl(0.08,0.12,2.1,5,-1.0,3.35,0.12,BARK,0.85),partCyl(0.07,0.10,1.8,5,0.1,3.45,0.9,BARK,0,0.8),partBlob(1.82,1.34,0.48,1.34,0,4.8,0,0x406f35),partBlob(1.32,1.25,0.42,1.18,0.25,5.12,-0.2,0x4a7a3b)],false),
-     mergeGeometries([partCyl(0.20,0.34,2.8,5,0,1.4,0,BARK),partBlob(1.9,1.32,0.48,1.32,0,4.75,0,0x406f35)],false),
-     mergeGeometries([partCyl(0.18,0.28,2.7,4,0,1.35,0,BARK_DARK),partCone(2.45,1.15,7,0,4.45,0,0x31582b)],false)],
-    [mergeGeometries([partCyl(0.40,0.56,2.7,7,0,1.35,0,0x33251b),partCyl(0.045,0.065,2.3,4,1.35,1.15,0.2,0x33251b,-0.12),partCyl(0.045,0.065,2.3,4,-1.25,1.15,-0.35,0x33251b,0.10),partCyl(0.045,0.065,2.2,4,0.25,1.1,1.3,0x33251b,0,0.11),partCyl(0.045,0.065,2.2,4,-0.3,1.1,-1.3,0x33251b,0,-0.10),partBlob(1.75,1.25,0.68,1.16,0,4.25,0,0x1f4522),partBlob(1.25,1.15,0.62,1,-1.45,3.85,0.4,0x274f27),partBlob(1.2,1.1,0.6,1,1.45,3.9,-0.35,0x2a552b),partBlob(1.05,1,0.58,1,0.2,4.75,0.75,0x24491f)],false),
-     mergeGeometries([partCyl(0.42,0.58,2.6,6,0,1.3,0,0x33251b),partBlob(1.85,1.24,0.68,1.14,0,4.15,0,0x1f4522)],false),
-     mergeGeometries([partCyl(0.38,0.50,2.5,5,0,1.25,0,0x291c14),partBlob(1.8,1.22,0.64,1.1,0,4.0,0,0x1d3d1e)],false)],
-    [mergeGeometries([partCyl(0.15,0.21,2.0,6,0,1.0,0,PALM_BARK,0.07),partCyl(0.13,0.17,2.0,6,0.28,2.85,0,PALM_BARK,0.17),partCyl(0.11,0.14,1.8,6,0.68,4.45,0,PALM_BARK,0.28),partBlob(0.20,1,1,1,0.82,5.18,0.12,0x6c7a32),partBlob(0.18,1,1,1,1.02,5.12,-0.12,0x777f35),...fronds(7,2.6,0.95,5.35,0,0x477a36)],false),
-     mergeGeometries([partCyl(0.13,0.20,5.1,5,0.35,2.55,0,PALM_BARK,0.16),...fronds(5,2.35,0.82,5.15,0,0x477a36)],false),
-     mergeGeometries([partCyl(0.12,0.18,5.0,4,0.32,2.5,0,0x54402a,0.16),...fronds(4,2.15,0.78,5.05,0,0x3a6830)],false)],
+    [mergeGeometries([partRoot(0.20,0.35,BARK),partLimb(0,-0.45,0,0.08,3.62,0,0.27,0.15,6,BARK),partJoint(0.20,0.05,2.92,0,BARK),partJoint(0.17,0.08,3.62,0,BARK),partLimb(0.05,2.92,0,1.02,4.18,0.18,0.11,0.055,5,BARK),partLimb(0.06,3.05,0,-0.94,4.28,-0.14,0.11,0.055,5,BARK),partLimb(0.08,3.62,0,0.28,4.62,0.16,0.09,0.05,5,BARK),partBlob(1.52,1.02,1.24,1.02,0,4.68,0,0x356f2c),partBlob(0.98,1,0.95,1,0.92,4.48,0.16,0x477a36),partBlob(0.94,1,0.95,1,-0.86,4.56,-0.12,0x3b6d30),partBlob(0.92,1,1.02,1,0.30,5.58,-0.08,0x477a36)],false),
+     mergeGeometries([partRoot(0.21,0.36,BARK),partLimb(0,-0.45,0,0.05,3.88,0,0.28,0.16,5,BARK),partJoint(0.19,0.05,3.88,0,BARK),partBlob(1.62,1,1.18,1,0,4.72,0,0x356f2c)],false),
+     mergeGeometries([partRoot(0.18,0.30,BARK_DARK),partLimb(0,-0.45,0,0,3.72,0,0.24,0.14,4,BARK_DARK),partJoint(0.17,0,3.72,0,BARK_DARK),partCone(1.55,3.45,6,0,4.78,0,0x2d5a26)],false)],
+    [mergeGeometries([partRoot(0.23,0.40,0x4a3020),partLimb(0,-0.45,0,0.04,3.18,0,0.31,0.18,6,0x4a3020),partJoint(0.22,0.03,2.72,-0.02,0x4a3020),partJoint(0.19,0.04,3.18,0,0x4a3020),partLimb(0.03,2.72,-0.02,1.10,3.88,-0.30,0.12,0.06,5,0x4a3020),partLimb(0.02,2.86,0,-1.08,3.82,0.30,0.12,0.06,5,0x4a3020),partLimb(0.04,3.18,0,0.16,4.05,0.55,0.09,0.05,5,0x4a3020),partBlob(1.58,1.20,0.78,1.08,0,4.22,0,0x3d7031),partBlob(1.02,1.08,0.70,0.98,-1.08,3.92,0.30,0x35632c),partBlob(0.98,1.04,0.69,0.94,1.08,3.98,-0.32,0x4a7a38),partBlob(0.82,1,0.65,1,0.18,4.28,0.58,0x477a36)],false),
+     mergeGeometries([partRoot(0.24,0.41,0x4a3020),partLimb(0,-0.45,0,0.03,3.42,0,0.32,0.18,5,0x4a3020),partJoint(0.20,0.03,3.42,0,0x4a3020),partBlob(1.68,1.20,0.72,1.06,0,4.12,0,0x3d7031)],false),
+     mergeGeometries([partRoot(0.21,0.35,0x3a2518),partLimb(0,-0.45,0,0,3.28,0,0.27,0.16,4,0x3a2518),partJoint(0.18,0,3.28,0,0x3a2518),partBlob(1.62,1.18,0.68,1.04,0,4.02,0,0x35632c)],false)],
+    [mergeGeometries([partRoot(0.25,0.44,BARK),partLimb(0,-0.45,0,0.03,3.05,0.02,0.35,0.20,6,BARK),partJoint(0.24,0.02,2.68,0.01,BARK),partJoint(0.20,0.03,3.05,0.02,BARK),partLimb(0.02,2.68,0.01,1.78,4.22,0.10,0.13,0.065,5,BARK),partLimb(0.02,2.78,0.01,-1.72,4.28,-0.08,0.13,0.065,5,BARK),partLimb(0.03,3.05,0.02,0.18,4.38,1.42,0.11,0.06,5,BARK),partLimb(0.03,3.05,0.02,-0.12,4.42,-1.35,0.11,0.06,5,BARK),partBlob(1.86,1.32,0.50,1.30,0,4.78,0,0x477a36),partBlob(1.18,1.18,0.44,1.05,1.72,4.52,0.12,0x406f35),partBlob(1.14,1.16,0.44,1.02,-1.66,4.58,-0.08,0x4a7a3b),partBlob(1.30,1.22,0.44,1.16,0.22,5.08,-0.16,0x52823e)],false),
+     mergeGeometries([partRoot(0.25,0.44,BARK),partLimb(0,-0.45,0,0.02,3.30,0,0.35,0.20,5,BARK),partJoint(0.22,0.02,3.30,0,BARK),partLimb(0.02,3.30,0,1.35,4.35,0,0.11,0.06,5,BARK),partLimb(0.02,3.30,0,-1.30,4.38,0,0.11,0.06,5,BARK),partBlob(1.94,1.30,0.48,1.28,0,4.74,0,0x477a36)],false),
+     mergeGeometries([partRoot(0.22,0.38,BARK_DARK),partLimb(0,-0.45,0,0,3.55,0,0.29,0.18,4,BARK_DARK),partJoint(0.20,0,3.55,0,BARK_DARK),partCone(2.48,1.35,7,0,4.38,0,0x3b6d30)],false)],
+    [mergeGeometries([partRoot(0.48,0.74,0x33251b),partLimb(0,-0.50,0,0.04,3.02,0,0.57,0.40,7,0x33251b),partJoint(0.42,0.04,3.02,0,0x33251b),partLimb(0.04,3.02,0,1.42,3.88,-0.32,0.18,0.09,5,0x33251b),partLimb(0.04,3.02,0,-1.40,3.84,0.36,0.18,0.09,5,0x33251b),partLimb(0.04,3.02,0,0.18,4.18,0.72,0.15,0.08,5,0x33251b),partJoint(0.11,1.42,3.62,-0.32,0x33251b),partJoint(0.11,-1.40,3.58,0.36,0x33251b),partLimb(1.42,3.62,-0.32,1.34,-0.55,-0.24,0.065,0.085,4,0x33251b),partLimb(-1.40,3.58,0.36,-1.30,-0.55,0.28,0.065,0.085,4,0x33251b),partLimb(0.18,3.92,0.72,0.24,-0.55,1.28,0.06,0.08,4,0x33251b),partLimb(-0.10,3.88,-0.70,-0.24,-0.55,-1.26,0.06,0.08,4,0x33251b),partBlob(1.78,1.24,0.68,1.14,0,4.24,0,0x274f27),partBlob(1.22,1.14,0.62,1,-1.42,3.92,0.36,0x2f5d2e),partBlob(1.18,1.10,0.60,1,1.42,3.96,-0.34,0x356331),partBlob(1.02,1,0.58,1,0.20,4.70,0.70,0x2a552b),partBlob(0.92,1,0.56,1,-0.12,4.42,-0.72,0x24491f)],false),
+     mergeGeometries([partRoot(0.50,0.76,0x33251b),partLimb(0,-0.50,0,0.03,3.28,0,0.59,0.42,6,0x33251b),partJoint(0.43,0.03,3.28,0,0x33251b),partLimb(1.25,3.55,0.18,1.18,-0.55,0.12,0.06,0.08,4,0x33251b),partLimb(-1.22,3.55,-0.16,-1.14,-0.55,-0.10,0.06,0.08,4,0x33251b),partBlob(1.88,1.22,0.68,1.12,0,4.14,0,0x274f27)],false),
+     mergeGeometries([partRoot(0.45,0.68,0x291c14),partLimb(0,-0.50,0,0,3.22,0,0.51,0.38,5,0x291c14),partJoint(0.39,0,3.22,0,0x291c14),partBlob(1.82,1.20,0.64,1.08,0,4.02,0,0x24491f)],false)],
+    [mergeGeometries([partRoot(0.17,0.30,PALM_BARK),partLimb(0,-0.55,0,0.10,1.72,0,0.22,0.20,6,PALM_BARK),partJoint(0.215,0.10,1.72,0,PALM_BARK),partLimb(0.10,1.72,0,0.38,3.30,0.04,0.20,0.17,6,PALM_BARK),partJoint(0.185,0.38,3.30,0.04,PALM_BARK),partLimb(0.38,3.30,0.04,0.78,4.88,0.08,0.17,0.14,6,PALM_BARK),partJoint(0.16,0.78,4.88,0.08,PALM_BARK),partLimb(0.78,4.88,0.08,0.95,5.34,0.10,0.14,0.12,6,PALM_BARK),partJoint(0.29,0.95,5.34,0.10,0x5d6f31),partBlob(0.20,1,1,1,0.80,5.18,0.22,0x77863a),partBlob(0.18,1,1,1,1.06,5.14,-0.04,0x85943d),...fronds(7,2.6,0.95,5.38,0.10,0x52883b)],false),
+     mergeGeometries([partRoot(0.16,0.29,PALM_BARK),partLimb(0,-0.55,0,0.24,2.62,0.02,0.21,0.17,5,PALM_BARK),partJoint(0.185,0.24,2.62,0.02,PALM_BARK),partLimb(0.24,2.62,0.02,0.82,5.18,0.08,0.17,0.13,5,PALM_BARK),partJoint(0.27,0.82,5.18,0.08,0x5d6f31),...fronds(5,2.35,0.82,5.22,0.08,0x52883b)],false),
+     mergeGeometries([partRoot(0.15,0.27,0x54402a),partLimb(0,-0.55,0,0.78,5.08,0.06,0.19,0.12,4,0x54402a),partJoint(0.25,0.78,5.08,0.06,0x50602d),...fronds(4,2.15,0.78,5.12,0.06,0x477a36)],false)],
   ];
   const TREE_LOD_CAP = 384;
   const treeLodCounts = treeGeometries.map(() => new Int32Array(3));
@@ -1292,13 +1494,28 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     g.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
     return g;
   })();
+  // flatShading:false is load-bearing: blade normals point UP so tufts
+  // light like the ground. Derivative flat normals turned every blade
+  // into a near-black fin (visible in the corrective-round screenshots).
   const grassMaterial = new THREE.MeshStandardMaterial({
-    color: 0x35542a, roughness: 1, flatShading: true, side: THREE.DoubleSide,
+    color: 0x406631, roughness: 1, flatShading: false, side: THREE.DoubleSide,
   });
   const grassTufts = new THREE.InstancedMesh(grassGeometry, grassMaterial, 900);
-  scatter(TREE_N, (x, y, z, i) => {
+  scatter(TREE_N, (x, y, z) => {
     const s = 0.8 + rand() * 1.15, rot = rand() * Math.PI * 2;
-    treePlacements.push({ x, y, z, s, rot, type: i % 5 });
+    // Myanmar biome mix instead of an even species carousel: palms and
+    // banyans dominate the wet south/coast, teak/padauk the hill forest,
+    // and rain trees + toddy palms the central Dry Zone.
+    const south = smoothstep(mapPreset.half * 0.18, mapPreset.half * 0.72, z);
+    const hill = smoothstep(15, 34, y);
+    const dry = 1 - fbm(x * 0.0035 + 8.4, z * 0.0035 - 2.7, 2);
+    const r = rand();
+    let type;
+    if (south > 0.55) type = r < 0.58 ? 4 : r < 0.78 ? 3 : r < 0.92 ? 2 : 0;
+    else if (hill > 0.45) type = r < 0.58 ? 0 : r < 0.82 ? 1 : r < 0.94 ? 3 : 2;
+    else if (dry > 0.58) type = r < 0.36 ? 2 : r < 0.58 ? 1 : r < 0.78 ? 4 : r < 0.91 ? 3 : 0;
+    else type = r < 0.28 ? 0 : r < 0.52 ? 1 : r < 0.72 ? 2 : r < 0.88 ? 3 : 4;
+    treePlacements.push({ x, y, z, s, rot, type });
   });
   scene.add(treeBlobShadows, grassTufts);
   for (const mesh of [rocks, treeBlobShadows, grassTufts, ...treeLodMeshes.flat()]) {
@@ -1316,7 +1533,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const CULL_NEAR2 = CULL_NEAR_M * CULL_NEAR_M;
   const CULL_MID2 = CULL_MID_M * CULL_MID_M;
   let scatterCullAcc = Infinity;
+  // Cheap local solid-object collision: the scatter refresh (5Hz) copies
+  // nearby tree trunks / boulders into a preallocated ring. The player
+  // resolver below then costs only a few hundred XZ checks per frame and
+  // prevents walking (and putting the camera) through trunks and rocks.
+  const MAX_LOCAL_OBSTACLES = 640;
+  const localObstacles = new Float32Array(MAX_LOCAL_OBSTACLES * 4); // x,z,radius,topY
+  let localObstacleCount = 0;
+  function addLocalObstacle(x, z, radius, topY) {
+    if (localObstacleCount >= MAX_LOCAL_OBSTACLES) return;
+    const o = localObstacleCount++ * 4;
+    localObstacles[o] = x; localObstacles[o + 1] = z;
+    localObstacles[o + 2] = radius; localObstacles[o + 3] = topY;
+  }
   function refreshScatterCulling() {
+    localObstacleCount = 0;
     const cx = camera.position.x, cz = camera.position.z;
     let rockN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
     let treeFullN = 0, treeMidN = 0, treeFarN = 0;
@@ -1330,6 +1561,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       dummy.scale.set(p.sx, p.sy, p.sz);
       dummy.updateMatrix();
       rocks.setMatrixAt(rockN++, dummy.matrix);
+      addLocalObstacle(p.x, p.z, Math.max(0.28, Math.max(p.sx, p.sz) * 0.62), p.y + p.sy * 0.9);
     }
 
     const rustPebbles = getWorkerScatter(0, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M);
@@ -1339,7 +1571,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const x = rustPebbles[ri + 1], z = rustPebbles[ri + 2];
         const dx = x - cx, dz = z - cz;
         if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
-        dummy.position.set(x, terrainHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
+        dummy.position.set(x, terrainSurfaceHeight(x, z) + rustPebbles[ri + 3] * 0.22, z);
         dummy.rotation.set(rustPebbles[ri + 6], rustPebbles[ri + 7], rustPebbles[ri + 8]);
         dummy.scale.set(rustPebbles[ri + 3], rustPebbles[ri + 4], rustPebbles[ri + 5]);
         dummy.updateMatrix();
@@ -1362,7 +1594,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const dx = x - cx, dz = z - cz;
           if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfoInto(x, z, _riverWorldInfo).d < 9.6) continue;
           const s = 0.13 + hash2(gx * 29 + 3, gz * 31 + 9) * 0.34;
-          dummy.position.set(x, terrainHeight(x, z) + s * 0.22, z);
+          dummy.position.set(x, terrainSurfaceHeight(x, z) + s * 0.22, z);
           dummy.rotation.set(hash2(gx, gz) * 3, hash2(gx + 9, gz - 4) * 3, hash2(gx - 6, gz + 8) * 3);
           dummy.scale.set(s, s * 0.62, s * (0.75 + hash2(gx + 2, gz + 2) * 0.45));
           dummy.updateMatrix();
@@ -1380,7 +1612,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const x = rustGrass[ri + 1], z = rustGrass[ri + 2];
         const dx = x - cx, dz = z - cz;
         if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
-        dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
+        dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.02, z);
         dummy.rotation.set(0, rustGrass[ri + 7], 0);
         dummy.scale.setScalar(rustGrass[ri + 3]);
         dummy.updateMatrix();
@@ -1400,7 +1632,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           const z = (gz + 0.2 + hash2(gx * 23 - 41, gz * 29 + 13) * 0.6) * cell;
           const dx = x - cx, dz = z - cz;
           if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfoInto(x, z, _riverWorldInfo).d < 9.5) continue;
-          dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
+          dummy.position.set(x, terrainSurfaceHeight(x, z) - 0.02, z);
           dummy.rotation.set(0, hash2(gx * 43, gz * 47) * Math.PI * 2, 0);
           dummy.scale.setScalar(0.75 + hash2(gx * 53 + 7, gz * 59 - 5) * 0.85);
           dummy.updateMatrix();
@@ -1420,11 +1652,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       if (slot < TREE_LOD_CAP) {
         dummy.rotation.set(0, p.rot, 0);
         dummy.scale.setScalar(p.s);
-        dummy.position.set(p.x, p.y - 0.08, p.z);
+        dummy.position.set(p.x, p.y - 0.28, p.z); // root flare stays buried on downhill edges
         dummy.updateMatrix();
         treeLodMeshes[type][band].setMatrixAt(slot, dummy.matrix);
         treeLodCounts[type][band] = slot + 1;
         if (band === 0) treeFullN++; else if (band === 1) treeMidN++; else treeFarN++;
+        if (d2 <= CULL_NEAR2) {
+          const trunkR = (type === 3 ? 0.62 : type === 4 ? 0.25 : 0.36) * p.s;
+          addLocalObstacle(p.x, p.z, trunkR, p.y + (type === 4 ? 5.2 : 3.4) * p.s);
+        }
       }
       if (band < 2 && blobN < 768) {
         dummy.rotation.set(0, p.rot, 0);
@@ -1452,6 +1688,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // lighting once the objective is outside the 150m combat band.
     const rdx = WORLD.relay.x - cx, rdz = WORLD.relay.z - cz;
     beaconLight.visible = rdx * rdx + rdz * rdz <= CULL_MID2;
+    if (rdx * rdx + rdz * rdz <= CULL_NEAR2) addLocalObstacle(WORLD.relay.x, WORLD.relay.z, 0.55, relayY + 27);
 
     debugStats.cullNear = rockN + treeFullN;
     debugStats.cullMid = treeMidN + treeFarN;
@@ -1468,7 +1705,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   // ----- relay station -----
   const relay = new THREE.Group();
-  const relayY = terrainHeight(WORLD.relay.x, WORLD.relay.z);
+  const relayY = terrainSurfaceHeight(WORLD.relay.x, WORLD.relay.z);
   relay.position.set(WORLD.relay.x, relayY, WORLD.relay.z);
   const metal = new THREE.MeshStandardMaterial({ color: 0x2b322a, roughness: 0.55, metalness: 0.55 });
   const darkMetal = new THREE.MeshStandardMaterial({ color: 0x171c16, roughness: 0.7, metalness: 0.35 });
@@ -1754,7 +1991,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // ----- player / camera state -----
   const spawnDir = new THREE.Vector2(WORLD.relay.x - WORLD.spawn.x, WORLD.relay.z - WORLD.spawn.z).normalize();
   const player = {
-    pos: new THREE.Vector3(WORLD.spawn.x, terrainHeight(WORLD.spawn.x, WORLD.spawn.z) + 1.7, WORLD.spawn.z),
+    pos: new THREE.Vector3(WORLD.spawn.x, terrainSurfaceHeight(WORLD.spawn.x, WORLD.spawn.z) + 1.7, WORLD.spawn.z),
     vel: new THREE.Vector3(), // horizontal velocity (m/s); vy is vertical
     vy: 0,
     grounded: true,
@@ -1810,7 +2047,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function teleport(x, z, headingDeg = 0) {
     const limit = mapPreset.hardClamp;
     player.pos.set(clamp(x, -limit, limit), 0, clamp(z, -limit, limit));
-    player.pos.y = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    player.pos.y = terrainSurfaceHeight(player.pos.x, player.pos.z) + 1.7;
     player.vel.set(0, 0, 0);
     player.vy = 0;
     player.grounded = true;
@@ -1968,6 +2205,29 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const clock = new THREE.Clock();
   let raf = 0, elapsed = 0, frameSerial = 0;
 
+  function resolveLocalObstacles() {
+    if (!localObstacleCount) return;
+    let px = physBuf[0], pz = physBuf[2];
+    const feetY = physBuf[1];
+    let vx = physBuf[3], vz = physBuf[5];
+    for (let i = 0; i < localObstacleCount; i++) {
+      const o = i * 4;
+      if (feetY > localObstacles[o + 3] - 0.12) continue;
+      const minD = localObstacles[o + 2] + 0.38;
+      let dx = px - localObstacles[o], dz = pz - localObstacles[o + 1];
+      let d2 = dx * dx + dz * dz;
+      if (d2 >= minD * minD) continue;
+      if (d2 < 0.000001) { dx = 1; dz = 0; d2 = 1; }
+      const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
+      px = localObstacles[o] + nx * minD;
+      pz = localObstacles[o + 1] + nz * minD;
+      const vn = vx * nx + vz * nz;
+      if (vn < 0) { vx -= vn * nx; vz -= vn * nz; }
+    }
+    physBuf[0] = px; physBuf[2] = pz; physBuf[3] = vx; physBuf[5] = vz;
+    physBuf[31] = Math.hypot(vx, vz);
+  }
+
   function updatePlayer(dt) {
     // look: drag deltas + aim-stick rate
     const prevYaw = player.yaw, prevPitch = player.pitch;
@@ -2003,11 +2263,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
     const riNow = riverInfoInto(player.pos.x, player.pos.z, _riverPlayerInfo);
-    const terrainNow = terrainHeight(player.pos.x, player.pos.z);
-    const inWaterNow = riNow.d < 9.2 && terrainNow < riNow.water - 0.12;
+    const terrainNow = terrainSurfaceHeight(player.pos.x, player.pos.z);
+    const inRiverNow = riNow.d < 9.2 && terrainNow < riNow.water - 0.12;
+    const inSeaNow = terrainNow < SEA_LEVEL - 0.12 && player.pos.z > mapPreset.half * 0.68;
+    const inWaterNow = inRiverNow || inSeaNow;
     if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
     player.wading = inWaterNow;
-    const crouch = k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight");
+    const crouch = inputState.touchCrouch || k.has("KeyC") || k.has("ControlLeft") || k.has("ControlRight");
     player.crouching = crouch;
     const forwardPull = !crouch && !inWaterNow && mz > 0.88 && Math.abs(mx) < 0.45;
     if (forwardPull) {
@@ -2042,7 +2304,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // control, slope gravity/sliding, 0.55m step-up and hard-landing
     // momentum damping. Analog walk/jog tops out at 5.2 m/s; sprint is
     // 7.6 m/s and only latches after 1s of near-straight forward input.
-    physBuf[8] = dt;
+    // 120Hz substeps cap one integration move at ~6cm while sprinting.
+    // That is the same swept-step discipline a future fast vehicle needs:
+    // a slope/step is sampled and resolved instead of tunneled through.
+    const physSubsteps = clamp(Math.ceil(dt / (1 / 120)), 1, 4);
+    physBuf[8] = dt / physSubsteps;
     physBuf[9] = wishX;
     physBuf[10] = wishZ;
     physBuf[11] = maxSpeed;
@@ -2058,10 +2324,25 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     physBuf[21] = 0.55;
     physBuf[22] = 0.74; // ~42deg walkable limit: hills block/slide instead of climb-warping
     physBuf[23] = 0.85;
-    const usedRustPhysics = rustPhysicsStep(physBuf);
-    if (!usedRustPhysics) stepPhysicsBuffer(physBuf, groundHeightWithBridge);
+    let usedRustPhysics = false;
+    for (let sub = 0; sub < physSubsteps; sub++) {
+      if (sub > 0) physBuf[12] = 0; // jump impulse only on the first substep
+      if (rustPhysicsStep(physBuf)) usedRustPhysics = true;
+      else stepPhysicsBuffer(physBuf, groundHeightWithBridge);
+      resolveLocalObstacles();
+    }
     debugStats.physicsCore = usedRustPhysics ? "RUST" : "JS";
     debugStats.accelRate = physBuf[6] > 0.5 ? physBuf[13] : physBuf[14];
+
+    // Swim float: in water deeper than ~1.35m (sea shallows, any residual
+    // deep river pool) hold the feet at water-1.35 so the eye stays ~0.35m
+    // above the surface instead of walking the seabed with the camera
+    // submerged. On the bridge feet are above water, so this never fires.
+    const swimWaterY = inRiverNow ? riNow.water : (inSeaNow ? SEA_LEVEL : null);
+    if (swimWaterY !== null && physBuf[1] < swimWaterY - 1.35) {
+      physBuf[1] = swimWaterY - 1.35;
+      if (physBuf[4] < 0) physBuf[4] = 0;
+    }
 
     let feetX = physBuf[0], feetY = physBuf[1], feetZ = physBuf[2];
     const clampLimit = mapPreset.hardClamp;
@@ -2133,6 +2414,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     } else {
       camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
       camera.rotation.set(player.pitch, player.yaw, -mx * 0.014);
+    }
+    // Final camera-terrain clearance: even if a streamed LOD swap changes
+    // a triangle under the player, the near plane must never enter the
+    // hill in front of the eye. This lifts only the camera, not physics.
+    {
+      const fx = -sin, fz = -cos;
+      const camGround = Math.max(
+        terrainSurfaceHeight(camera.position.x, camera.position.z),
+        terrainSurfaceHeight(camera.position.x + fx * 0.55, camera.position.z + fz * 0.55),
+        terrainSurfaceHeight(camera.position.x + cos * 0.35, camera.position.z - sin * 0.35),
+        terrainSurfaceHeight(camera.position.x - cos * 0.35, camera.position.z + sin * 0.35)
+      );
+      const targetLift = clamp(camGround + 0.48 - camera.position.y, 0, 0.75);
+      player.cameraLift = (player.cameraLift || 0) + (targetLift - (player.cameraLift || 0)) * Math.min(1, dt * 14);
+      camera.position.y += player.cameraLift;
     }
 
     // Viewmodel: camera-synced walking bob + spring sway + recoil + reload.
@@ -2321,7 +2617,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           x = d.cx + Math.cos(a) * d.orbitR;
           z = d.cz + Math.sin(a) * d.orbitR;
         }
-        const y = terrainHeight(x, z) + d.hoverH + Math.sin(t * 1.4 + d.phase) * 0.7;
+        const y = terrainSurfaceHeight(x, z) + d.hoverH + Math.sin(t * 1.4 + d.phase) * 0.7;
         d.group.position.set(x, y, z);
         d.group.rotation.y = -a;
         d.body.rotation.y += dt * (d.engaged ? 3.0 : 1.6);
@@ -2332,7 +2628,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         d.group.rotation.set(0, 0, 0);
       } else {
         d.engaged = false;
-        const groundY = terrainHeight(d.group.position.x, d.group.position.z) + 0.7;
+        const groundY = terrainSurfaceHeight(d.group.position.x, d.group.position.z) + 0.7;
         if (d.group.position.y > groundY) {
           d.vy += 22 * dt;
           d.group.position.y = Math.max(groundY, d.group.position.y - d.vy * dt);
@@ -2589,11 +2885,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function isSafeGround(x, z) {
     const limit = mapPreset.hardClamp - 2;
     if (!Number.isFinite(x) || !Number.isFinite(z) || Math.abs(x) > limit || Math.abs(z) > limit) return false;
-    const h = terrainHeight(x, z);
-    const gx = (terrainHeight(x + 1, z) - terrainHeight(x - 1, z)) * 0.5;
-    const gz = (terrainHeight(x, z + 1) - terrainHeight(x, z - 1)) * 0.5;
+    const h = terrainSurfaceHeight(x, z);
+    const gx = (terrainSurfaceHeight(x + 1, z) - terrainSurfaceHeight(x - 1, z)) * 0.5;
+    const gz = (terrainSurfaceHeight(x, z + 1) - terrainSurfaceHeight(x, z - 1)) * 0.5;
     const normalY = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
-    if (normalY < 0.72) return false;
+    if (normalY < 0.72 || h < SEA_LEVEL + 0.2) return false;
     const ri = riverInfoInto(x, z, _riverWorldInfo);
     if (ri.d < 14 && h < ri.water + 0.05) return false;
     return true;
@@ -2609,7 +2905,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (isSafeGround(sx, sz)) return { x: sx, z: sz, y: groundHeightWithBridge(sx, sz) };
       }
     }
-    return { x: WORLD.spawn.x, z: WORLD.spawn.z, y: terrainHeight(WORLD.spawn.x, WORLD.spawn.z) };
+    return { x: WORLD.spawn.x, z: WORLD.spawn.z, y: terrainSurfaceHeight(WORLD.spawn.x, WORLD.spawn.z) };
   }
   function rescuePlayer(code, groundY) {
     const feetY = physBuf[1];
@@ -2642,12 +2938,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     for (let i = 0; i < drones.length; i++) {
       const d = drones[i];
       if (!d.alive) continue;
-      const gy = terrainHeight(d.group.position.x, d.group.position.z);
+      const gy = terrainSurfaceHeight(d.group.position.x, d.group.position.z);
       if (!Number.isFinite(d.group.position.y) || d.group.position.y < gy + 1.0) {
         recordSafetyReport(2, d.group.position.x, d.group.position.y, d.group.position.z, gy);
         debugStats.safetyRescues++;
         d.cx = d.ax; d.cz = d.az; d.vy = 0;
-        d.group.position.set(d.ax, terrainHeight(d.ax, d.az) + d.hoverH, d.az);
+        d.group.position.set(d.ax, terrainSurfaceHeight(d.ax, d.az) + d.hoverH, d.az);
       }
     }
   }

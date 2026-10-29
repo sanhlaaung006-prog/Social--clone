@@ -37,8 +37,10 @@ fn value_noise(seed: u32, x: f64, z: f64) -> f64 {
     let zi = z.floor();
     let xf = x - xi;
     let zf = z - zi;
-    let u = xf * xf * (3.0 - 2.0 * xf);
-    let v = zf * zf * (3.0 - 2.0 * zf);
+    // Quintic interpolation, mirrored from JS: C2 value noise without the
+    // cubic lattice creases that made broad Myanmar lowland look square.
+    let u = xf * xf * xf * (xf * (xf * 6.0 - 15.0) + 10.0);
+    let v = zf * zf * zf * (zf * (zf * 6.0 - 15.0) + 10.0);
     let a = hash2(seed, xi, zi);
     let b = hash2(seed, xi + 1.0, zi);
     let c = hash2(seed, xi, zi + 1.0);
@@ -49,24 +51,63 @@ fn value_noise(seed: u32, x: f64, z: f64) -> f64 {
 #[inline]
 fn fbm(seed: u32, x: f64, z: f64, octaves: u32) -> f64 {
     let mut amp = 0.5;
-    let mut freq = 1.0;
     let mut sum = 0.0;
     let mut norm = 0.0;
+    let mut px = x;
+    let mut pz = z;
     for _ in 0..octaves {
-        sum += amp * value_noise(seed, x * freq, z * freq);
+        sum += amp * value_noise(seed, px, pz);
         norm += amp;
         amp *= 0.5;
-        freq *= 2.03;
+        let nx = (px * 0.8 - pz * 0.6) * 2.03 + 11.31;
+        let nz = (px * 0.6 + pz * 0.8) * 2.03 - 7.87;
+        px = nx;
+        pz = nz;
     }
     sum / norm
 }
 
 #[inline]
-fn base_height(seed: u32, x: f64, z: f64) -> f64 {
-    let mut h = fbm(seed, x * 0.011 + 13.7, z * 0.011 - 4.2, 5) * 30.0;
-    let n = fbm(seed, x * 0.0038 - 7.1, z * 0.0038 + 9.3, 3);
-    h += n * n * 46.0;
-    h
+fn base_smoothstep(a: f64, b: f64, x: f64) -> f64 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[inline]
+fn base_lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t }
+
+#[inline]
+fn base_height(seed: u32, x: f64, z: f64, half: f64) -> f64 {
+    // Myanmar-balanced sector, field-for-field with world.js: southern
+    // delta/coast, central Dry-Zone lowland, and hill belts only to the
+    // north/west plus a lower eastern plateau.
+    let inv_half = 1.0 / half.max(1.0);
+    let warp_x = (fbm(seed, x * 0.00125 + 31.7, z * 0.00125 - 18.2, 2) - 0.5) * 0.24;
+    let warp_z = (fbm(seed, x * 0.00115 - 24.6, z * 0.00115 + 9.4, 2) - 0.5) * 0.24;
+    let u = (x * inv_half + warp_x).clamp(-1.0, 1.0);
+    let v = (z * inv_half + warp_z).clamp(-1.0, 1.0);
+    let macro_n = fbm(seed, x * 0.00155 - 3.1, z * 0.00155 + 8.7, 3);
+    let roll = fbm(seed, x * 0.0042 + 17.4, z * 0.0042 - 5.6, 3);
+    let detail = fbm(seed, x * 0.011 - 9.8, z * 0.011 + 4.4, 2);
+    let ridge_noise = fbm(seed, x * 0.0028 + 43.1, z * 0.0028 - 27.5, 3);
+    let ridge_band = (1.0 - (ridge_noise * 2.0 - 1.0).abs()).clamp(0.0, 1.0);
+    let ridge = ridge_band * ridge_band;
+
+    let south = base_smoothstep(0.02, 0.48, v);
+    let north = base_smoothstep(-0.05, -0.58, v);
+    let west = base_smoothstep(-0.12, -0.66, u);
+    let east = base_smoothstep(0.28, 0.78, u);
+    let hills = (north.max(west * 0.92).max(east * 0.62) * (1.0 - south * 0.88)).clamp(0.0, 1.0);
+
+    let delta_h = 2.2 + macro_n * 3.6 + roll * 1.15 + detail * 0.28;
+    let dry_h = 9.0 + macro_n * 7.0 + roll * 3.4 + detail * 0.55;
+    let hill_h = 19.0 + macro_n * 15.0 + ridge * 25.0 + roll * 6.5 + detail * 1.5;
+    let mut h = base_lerp(dry_h, delta_h, south);
+    h = base_lerp(h, hill_h, hills);
+
+    let coast_line = 0.82 + (macro_n - 0.5) * 0.08;
+    let coast = base_smoothstep(coast_line - 0.10, coast_line + 0.08, z * inv_half);
+    base_lerp(h, -2.4 + roll * 0.7, coast)
 }
 
 #[inline]
@@ -80,12 +121,17 @@ fn rim_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
     let shaped = ((3.1 * t.min(1.0)).exp() - 1.0) / ((3.1_f64).exp() - 1.0);
     let ridge = 0.72 + 0.55 * fbm(seed, x * 0.009 + 41.3, z * 0.009 - 23.8, 3);
     let beyond = if t > 1.0 { (t - 1.0) * width * 0.9 } else { 0.0 };
-    shaped * 165.0 * ridge + beyond
+    let south_edge = if z > 0.0 && z.abs() >= x.abs() {
+        base_smoothstep(rim_start, half, z) * base_smoothstep(-0.78, -0.18, x / half.max(1.0))
+    } else {
+        0.0
+    };
+    (shaped * 165.0 * ridge + beyond) * (1.0 - south_edge * 0.94)
 }
 
 #[inline]
 fn raw_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
-    base_height(seed, x, z) + rim_height(seed, x, z, half, rim_start)
+    base_height(seed, x, z, half) + rim_height(seed, x, z, half, rim_start)
 }
 
 #[no_mangle]
@@ -313,7 +359,6 @@ pub extern "C" fn ironveil_build_chunk_mesh(
 
                 let mut c = mix3([low_r, low_g, low_b], [mid_r, mid_g, mid_b], sstep(2.0, 26.0, h));
                 c = mix3(c, [peak_r, peak_g, peak_b], sstep(38.0, 78.0, h) * 0.8);
-                c = mix3(c, [rock_r, rock_g, rock_b], sstep(0.18, 0.5, slope));
 
                 let moisture = fbm(seed ^ 0x9e37_79b9, wx * 0.0035 + 8.4, wz * 0.0035 - 2.7, 3);
                 let dry_noise = fbm(seed ^ 0x51f2_7a35, wx * 0.006 - 5.1, wz * 0.006 + 11.9, 3);
@@ -323,10 +368,18 @@ pub extern "C" fn ironveil_build_chunk_mesh(
                     + sstep(0.35, 2.4, concavity) * 0.38).clamp(0.0, 1.0);
                 let dry = sstep(0.55, 0.86, dry_noise) * (1.0 - wet);
                 let rock = sstep(0.2, 0.55, slope).max(sstep(52.0, 92.0, h) * 0.68);
-                c = mix3(c, [c[0] * 1.24, c[1] * 1.08, c[2] * 0.66], dry * 0.58);
-                c = mix3(c, [c[0] * 0.5, c[1] * 0.66, c[2] * 0.54], wet * 0.66);
-                let shade = (0.82 + 0.18 * hash2(seed, wx * 3.1, wz * 3.1))
-                    * (*light.add(i) as f64) * (0.92 + 0.08 * ny);
+                // Linear-space biome tints matching the JS palette: vivid
+                // delta green, warm Dry-Zone patches, deep hill forest and
+                // a pale beach at sea level. Elevation bands are reliable
+                // here because the height model itself is biome-authored.
+                c = mix3(c, [0.072, 0.324, 0.048], sstep(10.0, 5.0, h) * sstep(0.38, 0.72, moisture) * 0.55);
+                c = mix3(c, [0.399, 0.252, 0.078], dry * sstep(7.0, 13.0, h) * (1.0 - sstep(24.0, 38.0, h)) * 0.48);
+                c = mix3(c, [0.017, 0.109, 0.026], sstep(20.0, 34.0, h) * sstep(0.42, 0.74, moisture) * 0.48);
+                c = mix3(c, [c[0] * 0.55, c[1] * 0.72, c[2] * 0.58], wet * 0.38);
+                c = mix3(c, [0.478, 0.331, 0.141], sstep(2.6, 0.5, h) * (1.0 - sstep(0.12, 0.32, slope)) * 0.72);
+                c = mix3(c, [rock_r, rock_g, rock_b], sstep(0.18, 0.5, slope));
+                let shade = (0.90 + 0.10 * hash2(seed, wx * 3.1, wz * 3.1))
+                    * (*light.add(i) as f64) * (0.94 + 0.06 * ny);
                 *color.add(i * 3) = (c[0] * shade) as f32;
                 *color.add(i * 3 + 1) = (c[1] * shade) as f32;
                 *color.add(i * 3 + 2) = (c[2] * shade) as f32;

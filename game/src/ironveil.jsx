@@ -159,6 +159,10 @@
       isMenuOpen: true,
       mapMode: getInitialMapMode(),
       isOutOfBounds: false,
+      // F3 perf/debug overlay is OFF by default on a mobile HUD. One shared
+      // store flag drives the F3 key, the HUD chip, the Settings toggle and
+      // the overlay's own close button, so they can never disagree.
+      showDebug: false,
 
       // Session flow: the game boots to the title / start screen and only
       // enters the field when the operator hits START (see StartScreen).
@@ -204,6 +208,8 @@
       openMenu: () => set({ isMenuOpen: true, screen: "main" }),
       openScreen: (screen) => set({ isMenuOpen: true, screen }),
       resume: () => set({ isMenuOpen: false }),
+      setShowDebug: (showDebug) => set({ showDebug: !!showDebug }),
+      toggleDebug: () => set((state) => ({ showDebug: !state.showDebug })),
       handleEscape: () => {
         const state = get();
         if (!state.hasStarted) {
@@ -318,25 +324,30 @@
     });
 
     // === [WORLD: THREE_TERRAIN / REACT BRIDGE] ===
-    // Perf/debug overlay (top-left). Toggle with ` or F3. Reads mutable
-    // debugStats on a 4Hz tick so the render loop never touches React.
+    // Perf/debug overlay (top-left). Shared ON/OFF state: F3/backtick, the
+    // HUD "F3" chip, Settings > Interface, and the header button below all
+    // flip the same store flag. Reads mutable debugStats on a 4Hz tick so
+    // the render loop never touches React; the tick stops while hidden.
     function DebugOverlay() {
-      const [open, setOpen] = useState(true);
+      const open = useGameStore((state) => state.showDebug);
+      const toggleDebug = useGameStore((state) => state.toggleDebug);
+      const setShowDebug = useGameStore((state) => state.setShowDebug);
       const [, setTick] = useState(0);
       useEffect(() => {
-        const id = setInterval(() => setTick((t) => t + 1), 250);
         const onKey = (e) => {
           if (e.code === "Backquote" || e.code === "F3") {
             e.preventDefault();
-            setOpen((o) => !o);
+            toggleDebug();
           }
         };
         window.addEventListener("keydown", onKey);
-        return () => {
-          clearInterval(id);
-          window.removeEventListener("keydown", onKey);
-        };
-      }, []);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [toggleDebug]);
+      useEffect(() => {
+        if (!open) return undefined;
+        const id = setInterval(() => setTick((t) => t + 1), 250);
+        return () => clearInterval(id);
+      }, [open]);
       if (!open) return null;
       const d = debugStats;
       const heap =
@@ -388,7 +399,10 @@
       ];
       return (
         <div className="debug-overlay">
-          <div className="dbg-head">DEBUG // PERF [` / F3]</div>
+          <div className="dbg-head">
+            <span>DEBUG // PERF [F3]</span>
+            <button type="button" className="dbg-toggle" onClick={() => setShowDebug(false)} aria-label="Turn F3 debug overlay off">F3 · ON</button>
+          </div>
           {rows.map(([k, v]) => (
             <div className="dbg-row" key={k}>
               <span>{k}</span>
@@ -747,6 +761,22 @@
       );
     });
 
+    const HudDebugToggle = React.memo(function HudDebugToggle() {
+      const showDebug = useGameStore((state) => state.showDebug);
+      const toggleDebug = useGameStore((state) => state.toggleDebug);
+      return (
+        <button
+          type="button"
+          className={`hud-debug-toggle ${showDebug ? "is-on" : ""}`}
+          onClick={toggleDebug}
+          aria-pressed={showDebug}
+          aria-label={showDebug ? "Turn F3 debug overlay off" : "Turn F3 debug overlay on"}
+        >
+          <span>F3</span><b>{showDebug ? "ON" : "OFF"}</b>
+        </button>
+      );
+    });
+
     const GameHUD = React.memo(function GameHUD() {
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
       return (
@@ -758,7 +788,10 @@
               <small>KARST-9 / GRID 04-C · <FactionCode /> FORWARD</small>
             </div>
             <Compass />
-            <HudPauseButton />
+            <div className="hud-top-actions">
+              <HudDebugToggle />
+              <HudPauseButton />
+            </div>
           </div>
           <Crosshair />
           <ObjectiveLabel />
@@ -768,11 +801,11 @@
             <div className="hud-bottom-spacer" aria-hidden="true" />
           </div>
           <div className="hud-hints" aria-hidden="true">
-            <span><kbd>WASD</kbd> MOVE</span>
+            <span><kbd>LEFT STICK</kbd> MOVE</span>
             <span><kbd>DRAG</kbd> AIM</span>
-            <span><kbd>TAP</kbd> FIRE</span>
-            <span><kbd>R</kbd> RELOAD</span>
-            <span><kbd>ESC</kbd> COMMAND</span>
+            <span><kbd>FIRE</kbd> SHOOT</span>
+            <span><kbd>RLD</kbd> RELOAD</span>
+            <span><kbd>CRCH</kbd> CROUCH</span>
           </div>
         </div>
       );
@@ -1922,6 +1955,8 @@
       const goHome = useGameStore((state) => state.goHome);
       const hasStarted = useGameStore((state) => state.hasStarted);
       const notify = useGameStore((state) => state.notify);
+      const showDebug = useGameStore((state) => state.showDebug);
+      const setShowDebug = useGameStore((state) => state.setShowDebug);
       const [tab, setTab] = useState("controls");
       const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, quality: renderQualitySetting }));
 
@@ -1933,6 +1968,7 @@
       const reset = () => {
         applyLookSensitivity(SETTINGS_DEFAULTS.sensitivity);
         applyRenderQuality(SETTINGS_DEFAULTS.quality);
+        setShowDebug(false);
         setSettings({ ...SETTINGS_DEFAULTS });
         notify("DEFAULT PROFILE RESTORED // UNSAVED CHANGES CLEARED");
       };
@@ -2003,14 +2039,16 @@
                     <SettingToggle label="INVERT VERTICAL AXIS" hint="Invert the camera pitch response." value={settings.invertY} onChange={(value) => update("invertY", value)} />
                     <SettingToggle label="HAPTIC FEEDBACK" hint="Short impulse on fire and damage." value={settings.vibration} onChange={(value) => update("vibration", value)} />
                   </SettingSection>
-                  <SettingSection title="FIELD BINDINGS / KEYBOARD">
+                  <SettingSection title="FIELD BINDINGS / TOUCH FIRST">
                     <div className="keybind-list">
-                      <div className="keybind-row"><span>FIRE WEAPON</span><span><kbd>LMB</kbd></span></div>
-                      <div className="keybind-row"><span>JUMP</span><span><kbd>SPACE</kbd></span></div>
-                      <div className="keybind-row"><span>RELOAD</span><span><kbd>R</kbd></span></div>
-                      <div className="keybind-row"><span>INTERACT</span><span><kbd>E</kbd></span></div>
-                      <div className="keybind-row"><span>TRAUMA KIT</span><span><kbd>H</kbd></span></div>
-                      <div className="keybind-row"><span>COMMAND MENU</span><span><kbd>ESC</kbd></span></div>
+                      <div className="keybind-row"><span>MOVE</span><span><kbd>LEFT STICK</kbd></span></div>
+                      <div className="keybind-row"><span>AIM</span><span><kbd>RIGHT DRAG</kbd></span></div>
+                      <div className="keybind-row"><span>FIRE WEAPON</span><span><kbd>FIRE</kbd></span></div>
+                      <div className="keybind-row"><span>RELOAD</span><span><kbd>RLD</kbd></span></div>
+                      <div className="keybind-row"><span>CROUCH</span><span><kbd>CRCH</kbd></span></div>
+                      <div className="keybind-row"><span>JUMP</span><span><kbd>JUMP</kbd></span></div>
+                      <div className="keybind-row"><span>F3 DEBUG OVERLAY</span><span><kbd>F3 CHIP</kbd></span></div>
+                      <div className="keybind-row"><span>COMMAND MENU</span><span><kbd>❚❚</kbd></span></div>
                     </div>
                   </SettingSection>
                 </div>
@@ -2069,6 +2107,7 @@
                 <div className="settings-sections">
                   <SettingSection title="HUD / PRESENCE">
                     <SettingSlider label="HUD OPACITY" hint="Panel presence against the field feed." value={settings.hudOpacity} onChange={(value) => update("hudOpacity", value)} />
+                    <SettingToggle label="F3 DEBUG / PERF OVERLAY" hint="Same switch as the HUD F3 chip and the F3 key. Off keeps the mobile HUD clean." value={showDebug} onChange={(value) => setShowDebug(value)} />
                     <SettingToggle label="COMPASS TICK SCALE" hint="Show bearing ticks along the compass strip." value={settings.compassTicks} onChange={(value) => update("compassTicks", value)} />
                     <SettingToggle label="REDUCE RETICLE SHAKE" hint="Stabilize the reticle during fire and impact." value={settings.reduceShake} onChange={(value) => update("reduceShake", value)} />
                     <SettingToggle label="INTERFACE MOTION" hint="Panel transitions and field-feed animations." value={settings.uiMotion} onChange={(value) => update("uiMotion", value)} />
@@ -2200,7 +2239,8 @@
       const aimBaseRef = React.useRef(null);
       const aimNubRef = React.useRef(null);
       const fireTimerRef = React.useRef(null);
-      const MAX = 52;
+      const [crouchOn, setCrouchOn] = useState(false);
+      const MAX = 64;
 
       useEffect(() => () => {
         if (fireTimerRef.current) clearInterval(fireTimerRef.current);
@@ -2208,6 +2248,7 @@
         inputState.moveY = 0;
         inputState.aimX = 0;
         inputState.aimY = 0;
+        inputState.touchCrouch = false;
       }, []);
 
       if (!hasStarted || isMenuOpen) return null;
@@ -2330,6 +2371,30 @@
             onContextMenu={(event) => event.preventDefault()}
           >
             <span>JUMP</span>
+          </button>
+          <button
+            type="button"
+            className="touch-action-btn reload-touch-btn"
+            aria-label="Reload weapon"
+            onPointerDown={(event) => { event.preventDefault(); useGameStore.getState().reload(); }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <span>RLD</span><small>RELOAD</small>
+          </button>
+          <button
+            type="button"
+            className={`touch-action-btn crouch-touch-btn ${crouchOn ? "is-on" : ""}`}
+            aria-label="Toggle crouch"
+            aria-pressed={crouchOn}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              const next = !inputState.touchCrouch;
+              inputState.touchCrouch = next;
+              setCrouchOn(next);
+            }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <span>CRCH</span><small>{crouchOn ? "ON" : "CROUCH"}</small>
           </button>
         </div>
       );
