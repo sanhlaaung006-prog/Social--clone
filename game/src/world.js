@@ -10,6 +10,39 @@
 // pushed out through hooks only when their rounded value changes.
 
 import * as THREE from "three";
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
+
+// BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
+// shooting rays against 18k-triangle terrain chunks become a tree walk
+// instead of a full triangle sweep. Meshes without a bounds tree keep the
+// stock three.js raycast path.
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+// Rapier physics (Rust -> WASM via @dimforge/rapier3d-compat, Apache-2.0)
+// loads lazily so first paint never waits on it. Until the WASM core is
+// ready — or if it fails to load — the analytic terrain solver in
+// updatePlayer resolves ground collision with the same velocity model.
+let RAPIER = null;
+let rapierReady = false;
+let rapierTries = 0;
+function loadRapier() {
+  rapierTries++;
+  import("@dimforge/rapier3d-compat")
+    .then(async (m) => {
+      const R = m.default || m;
+      await R.init();
+      RAPIER = R;
+      rapierReady = true;
+    })
+    .catch(() => {
+      // Transient failure (dev-server dep optimization, flaky network):
+      // keep the analytic solver and retry with backoff.
+      if (rapierTries < 6) setTimeout(loadRapier, 3000 * rapierTries);
+    });
+}
+loadRapier();
 
 export const inputState = {
   moveX: 0, // strafe  -1..1 (move stick)
@@ -20,6 +53,7 @@ export const inputState = {
   lookDY: 0,
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
+  jump: false, // pulsed by the touch JUMP button; the world consumes it
 };
 
 // Live perf counters, filled by the render loop, read by the React debug overlay.
@@ -33,6 +67,8 @@ export const debugStats = {
   mapMode: "survival", mapSizeM: 4000, worldSeed: 0,
   chunksLoaded: 0, chunksVisible: 0, chunksTotal: 16,
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
+  physics: 0, grounded: 0, vy: 0, speed: 0, physChunks: 0,
+  chunkJobs: 0, chunkBuildMs: 0, lod96: 0, lod48: 0, lod24: 0, bvhPending: 0,
 };
 
 // External debug/test control. The render loop consumes a pending teleport
@@ -467,11 +503,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   const rand = mulberry32((sessionWorldSeed ^ 0x90210) >>> 0);
 
-  // ----- terrain: 1km chunk manager (96x96 segments per chunk) -----
-  // Center four chunks are built at boot; the rest stream in around the
-  // camera (immediately when inside render range, otherwise one prefetched
-  // chunk per streaming tick). Only chunks whose bounds come within 230m
-  // are visible — beyond the 200m fog wall nothing else can be seen.
+  // ----- terrain: 1km chunks, tiered LOD + time-sliced builds -----
+  // Resolution by Chebyshev chunk distance from the camera chunk: the
+  // current chunk and ring-1 stay at the full 96x96 segments (nothing
+  // inside or near the 200m fog wall is ever downgraded), ring-2 builds
+  // at 48 and ring-3+ at 24 — those chunks sit fully behind fog, so the
+  // reduction is invisible. Builds run as sliced jobs (~3.5ms of work
+  // per frame) prioritised by distance and view direction, so crossing
+  // into a new chunk never stalls a frame on a synchronous build.
+  // Center four chunks are still built synchronously at boot (menu
+  // backdrop), and a teleport builds its destination synchronously (cut).
+  // Only chunks whose bounds come within 230m are visible.
   const terrainMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
   });
@@ -486,42 +528,233 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const minZ = -mapPreset.half + iz * CHUNK_SIZE_M;
     return { minX, maxX: minX + CHUNK_SIZE_M, minZ, maxZ: minZ + CHUNK_SIZE_M, cx: minX + CHUNK_SIZE_M / 2, cz: minZ + CHUNK_SIZE_M / 2 };
   }
-  function buildTerrainChunk(ix, iz) {
+  const LOD_SEGMENTS = [96, 96, 48, 24]; // by Chebyshev ring from camera chunk
+  const chunkJobs = new Map(); // key -> build job
+  const chunkQueue = []; // job keys, best score first
+  const bvhQueue = []; // finished meshes awaiting an idle-frame BVH build
+  const _vFwd = new THREE.Vector3();
+  function chunkIndexAt(x, z) {
+    const n = mapPreset.chunksPerAxis;
+    return {
+      ix: clamp(Math.floor((x + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1),
+      iz: clamp(Math.floor((z + mapPreset.half) / CHUNK_SIZE_M), 0, n - 1),
+    };
+  }
+  function desiredSegments(ix, iz, cix, ciz) {
+    const d = Math.max(Math.abs(ix - cix), Math.abs(iz - ciz));
+    return LOD_SEGMENTS[Math.min(d, LOD_SEGMENTS.length - 1)];
+  }
+  function startChunkJob(ix, iz, seg) {
     const key = ix + "," + iz;
-    const existing = terrainChunks.get(key);
+    const existing = chunkJobs.get(key);
     if (existing) return existing;
     const b = chunkBounds(ix, iz);
-    const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, CHUNK_SEGMENTS, CHUNK_SEGMENTS);
+    const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, terrainHeight(pos.getX(i) + b.cx, pos.getZ(i) + b.cz));
-    }
-    geo.computeVertexNormals();
-    const norm = geo.attributes.normal;
-    const colors = new Float32Array(pos.count * 3);
-    const cLow = new THREE.Color(0x232b1e), cMid = new THREE.Color(0x3d4a32);
-    const cRock = new THREE.Color(0x5d6157), cPeak = new THREE.Color(0x878e80);
-    const tmp = new THREE.Color();
-    for (let i = 0; i < pos.count; i++) {
-      const wx = pos.getX(i) + b.cx, wz = pos.getZ(i) + b.cz;
-      const h = pos.getY(i), slope = 1 - norm.getY(i);
-      tmp.copy(cLow).lerp(cMid, smoothstep(2, 26, h));
-      tmp.lerp(cPeak, smoothstep(38, 78, h) * 0.8);
-      tmp.lerp(cRock, smoothstep(0.18, 0.5, slope));
-      const shade = 0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1);
-      colors[i * 3] = tmp.r * shade; colors[i * 3 + 1] = tmp.g * shade; colors[i * 3 + 2] = tmp.b * shade;
-    }
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, score: 1e9 };
+    chunkJobs.set(key, job);
+    chunkQueue.push(key);
+    return job;
+  }
+  const _cLow = new THREE.Color(0x232b1e), _cMid = new THREE.Color(0x3d4a32);
+  const _cRock = new THREE.Color(0x5d6157), _cPeak = new THREE.Color(0x878e80);
+  const _ctmp = new THREE.Color();
+  function finishChunkJob(job) {
+    const geo = job.geo;
     geo.computeBoundingSphere();
+    // BVH build is deferred to an idle frame (pumpBvh): it is atomic and
+    // must not inflate the chunk-build slice. Until it runs, shooting
+    // raycasts against this chunk use the stock three.js path.
     const mesh = new THREE.Mesh(geo, terrainMaterial);
-    mesh.position.set(b.cx, 0, b.cz);
+    mesh.position.set(job.b.cx, 0, job.b.cz);
     mesh.userData.isTerrainChunk = true;
-    mesh.userData.chunkKey = key;
+    mesh.userData.chunkKey = job.key;
+    mesh.userData.seg = job.seg;
+    mesh.visible = distanceToChunk(camera.position.x, camera.position.z, job.b) <= 230;
+    const old = terrainChunks.get(job.key);
+    if (old) { // LOD swap: the new mesh replaces the old with no gap
+      terrainGroup.remove(old);
+      old.geometry.disposeBoundsTree();
+      old.geometry.dispose();
+      const oi = terrainMeshes.indexOf(old);
+      if (oi >= 0) terrainMeshes.splice(oi, 1);
+    }
     terrainGroup.add(mesh);
-    terrainChunks.set(key, mesh);
+    terrainChunks.set(job.key, mesh);
     terrainMeshes.push(mesh);
+    bvhQueue.push(mesh);
+    chunkJobs.delete(job.key);
     return mesh;
+  }
+  // Advances one job until `deadline` (performance.now() ms). Returns true
+  // when the mesh is finished. Heights and vertex colors are the two hot
+  // loops; each checks the clock every 256 vertices.
+  function stepChunkJob(job, deadline) {
+    const pos = job.pos, b = job.b;
+    if (job.stage === "heights") {
+      while (job.i < pos.count) {
+        pos.setY(job.i, terrainHeight(pos.getX(job.i) + b.cx, pos.getZ(job.i) + b.cz));
+        job.i++;
+        if ((job.i & 127) === 0 && performance.now() > deadline) return false;
+      }
+      job.colors = new Float32Array(pos.count * 3);
+      job.stage = "colors";
+      job.i = 0;
+    }
+    // Slope for coloring comes from the height gradient over grid
+    // neighbours — the material is flat-shaded (fragment-derivative
+    // normals), so no computeVertexNormals pass is needed at all.
+    const colors = job.colors;
+    const rowW = job.seg + 1, cell = CHUNK_SIZE_M / job.seg;
+    while (job.i < pos.count) {
+      const i = job.i;
+      const col = i % rowW, row = (i / rowW) | 0;
+      const iL = col > 0 ? i - 1 : i, iR = col < job.seg ? i + 1 : i;
+      const iU = row > 0 ? i - rowW : i, iD = row < job.seg ? i + rowW : i;
+      const gx = (pos.getY(iR) - pos.getY(iL)) / (((col < job.seg ? 1 : 0) + (col > 0 ? 1 : 0)) * cell || cell);
+      const gz = (pos.getY(iD) - pos.getY(iU)) / (((row < job.seg ? 1 : 0) + (row > 0 ? 1 : 0)) * cell || cell);
+      const slope = 1 - 1 / Math.sqrt(1 + gx * gx + gz * gz);
+      const wx = pos.getX(i) + b.cx, wz = pos.getZ(i) + b.cz;
+      const h = pos.getY(i);
+      _ctmp.copy(_cLow).lerp(_cMid, smoothstep(2, 26, h));
+      _ctmp.lerp(_cPeak, smoothstep(38, 78, h) * 0.8);
+      _ctmp.lerp(_cRock, smoothstep(0.18, 0.5, slope));
+      const shade = 0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1);
+      colors[i * 3] = _ctmp.r * shade; colors[i * 3 + 1] = _ctmp.g * shade; colors[i * 3 + 2] = _ctmp.b * shade;
+      job.i++;
+      if ((job.i & 127) === 0 && performance.now() > deadline) return false;
+    }
+    job.geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    finishChunkJob(job);
+    return true;
+  }
+  function pumpChunkJobs(budgetMs) {
+    debugStats.chunkJobs = chunkQueue.length;
+    if (!chunkQueue.length) return;
+    const t0 = performance.now();
+    const deadline = t0 + budgetMs;
+    while (chunkQueue.length) {
+      const job = chunkJobs.get(chunkQueue[0]);
+      if (!job) { chunkQueue.shift(); continue; }
+      const done = stepChunkJob(job, deadline);
+      if (done) chunkQueue.shift();
+      if (!done || performance.now() > deadline) break;
+    }
+    const used = performance.now() - t0;
+    if (used > debugStats.chunkBuildMs) debugStats.chunkBuildMs = used;
+    debugStats.chunkJobs = chunkQueue.length;
+  }
+  function pumpBvh() {
+    debugStats.bvhPending = bvhQueue.length;
+    if (chunkQueue.length || !bvhQueue.length) return;
+    const mesh = bvhQueue.shift();
+    if (mesh.geometry && !mesh.geometry.boundsTree && terrainChunks.get(mesh.userData.chunkKey) === mesh) {
+      mesh.geometry.computeBoundsTree();
+    }
+    debugStats.bvhPending = bvhQueue.length;
+  }
+  function buildTerrainChunkSync(ix, iz, seg) {
+    const job = startChunkJob(ix, iz, seg);
+    const qi = chunkQueue.indexOf(job.key);
+    if (qi >= 0) chunkQueue.splice(qi, 1);
+    while (!stepChunkJob(job, Infinity)) { /* monotone progress; runs to completion */ }
+    return terrainChunks.get(job.key);
+  }
+
+  // ----- physics: Rapier WASM character controller over heightfields -----
+  // One 48-seg heightfield collider per chunk in the 3x3 neighbourhood of
+  // the player (sampled in slices, same job discipline as the meshes).
+  // Rapier heightfield layout is x-major: heights[xi*(N+1)+zi] — verified
+  // empirically against the WASM build. Capsule: 0.55 half-height +
+  // 0.35 radius (1.8m tall), center rides 0.9m above the feet.
+  const GRAVITY = -21; // slightly heavy vs -9.8: grounded, weighty jump arc
+  const PHYS_SEG = 48;
+  const phys = { world: null, controller: null, body: null, collider: null, ready: false };
+  const physJobs = new Map();
+  const physColliders = new Map();
+  function physEnsure() {
+    if (phys.ready || !rapierReady || !RAPIER) return;
+    try {
+      phys.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
+      phys.world.timestep = 1 / 60;
+      phys.controller = phys.world.createCharacterController(0.02);
+      phys.controller.enableAutostep(0.45, 0.25, true);
+      phys.controller.enableSnapToGround(0.5);
+      phys.controller.setMaxSlopeClimbAngle((52 * Math.PI) / 180);
+      phys.controller.setMinSlopeSlideAngle((58 * Math.PI) / 180);
+      phys.body = phys.world.createRigidBody(
+        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(player.pos.x, player.pos.y - 0.8, player.pos.z)
+      );
+      phys.collider = phys.world.createCollider(RAPIER.ColliderDesc.capsule(0.55, 0.35), phys.body);
+      phys.ready = true;
+      debugStats.physics = 1;
+      const c = chunkIndexAt(player.pos.x, player.pos.z);
+      syncPhysicsColliders(c.ix, c.iz);
+    } catch (e) {
+      phys.ready = false; // analytic solver remains in charge
+    }
+  }
+  function startPhysJob(ix, iz) {
+    const key = ix + "," + iz;
+    if (physColliders.has(key) || physJobs.has(key)) return;
+    physJobs.set(key, {
+      key, i: 0, b: chunkBounds(ix, iz),
+      heights: new Float32Array((PHYS_SEG + 1) * (PHYS_SEG + 1)),
+    });
+  }
+  function pumpPhysJobs(budgetMs) {
+    if (!phys.ready || !physJobs.size) return;
+    const deadline = performance.now() + budgetMs;
+    const N1 = PHYS_SEG + 1, step = CHUNK_SIZE_M / PHYS_SEG;
+    for (const job of physJobs.values()) {
+      while (job.i < N1 * N1) {
+        const xi = Math.floor(job.i / N1), zi = job.i % N1;
+        job.heights[job.i] = terrainHeight(job.b.minX + xi * step, job.b.minZ + zi * step);
+        job.i++;
+        if ((job.i & 127) === 0 && performance.now() > deadline) return;
+      }
+      const desc = RAPIER.ColliderDesc
+        .heightfield(PHYS_SEG, PHYS_SEG, job.heights, { x: CHUNK_SIZE_M, y: 1, z: CHUNK_SIZE_M })
+        .setTranslation(job.b.cx, 0, job.b.cz);
+      physColliders.set(job.key, phys.world.createCollider(desc));
+      physJobs.delete(job.key);
+      debugStats.physChunks = physColliders.size;
+      if (performance.now() > deadline) return;
+    }
+  }
+  function syncPhysicsColliders(cix, ciz) {
+    if (!phys.ready) return;
+    const n = mapPreset.chunksPerAxis;
+    for (let ix = 0; ix < n; ix++) {
+      for (let iz = 0; iz < n; iz++) {
+        const d = Math.max(Math.abs(ix - cix), Math.abs(iz - ciz));
+        const key = ix + "," + iz;
+        if (d <= 1) startPhysJob(ix, iz);
+        else if (d > 2) {
+          const col = physColliders.get(key);
+          if (col) { phys.world.removeCollider(col, true); physColliders.delete(key); }
+          physJobs.delete(key);
+        }
+      }
+    }
+    debugStats.physChunks = physColliders.size;
+  }
+  const _physDesired = { x: 0, y: 0, z: 0 };
+  const _physOut = { x: 0, y: 0, z: 0, grounded: false };
+  // Moves the capsule from feet (fx,fy,fz) by (dx,dy,dz); returns the
+  // collision-corrected feet position + grounded flag in _physOut.
+  function physMove(fx, fy, fz, dx, dy, dz) {
+    phys.body.setTranslation({ x: fx, y: fy + 0.9, z: fz }, true);
+    _physDesired.x = dx; _physDesired.y = dy; _physDesired.z = dz;
+    phys.controller.computeColliderMovement(phys.collider, _physDesired);
+    const corrected = phys.controller.computedMovement();
+    _physOut.x = fx + corrected.x;
+    _physOut.y = fy + corrected.y;
+    _physOut.z = fz + corrected.z;
+    _physOut.grounded = phys.controller.computedGrounded();
+    phys.body.setNextKinematicTranslation({ x: _physOut.x, y: _physOut.y + 0.9, z: _physOut.z });
+    phys.world.step();
+    return _physOut;
   }
   function distanceToChunk(x, z, b) {
     const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0;
@@ -530,37 +763,51 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
   function updateChunkStreaming() {
     const fx = camera.position.x, fz = camera.position.z;
-    let visible = 0;
-    const candidates = [];
+    const cam = chunkIndexAt(fx, fz);
+    camera.getWorldDirection(_vFwd);
+    let visible = 0, l96 = 0, l48 = 0, l24 = 0;
     for (let ix = 0; ix < mapPreset.chunksPerAxis; ix++) {
       for (let iz = 0; iz < mapPreset.chunksPerAxis; iz++) {
         const b = chunkBounds(ix, iz);
         const d = distanceToChunk(fx, fz, b);
-        let mesh = terrainChunks.get(ix + "," + iz);
-        if (!mesh && d <= 245) mesh = buildTerrainChunk(ix, iz);
-        if (!mesh && d <= 1100) candidates.push({ ix, iz, d });
+        const key = ix + "," + iz;
+        const mesh = terrainChunks.get(key);
+        let job = chunkJobs.get(key);
+        const want = desiredSegments(ix, iz, cam.ix, cam.iz);
+        if (!mesh && !job && d <= 1700) job = startChunkJob(ix, iz, want); // prefetch
+        else if (mesh && !job && mesh.userData.seg < want) job = startChunkJob(ix, iz, want); // upgrade on approach
+        else if (mesh && !job && mesh.userData.seg > want && d > 500) job = startChunkJob(ix, iz, want); // downgrade behind fog
+        if (job) {
+          // Priority: near chunks first, view-direction bonus, and any
+          // missing chunk before an LOD swap of an existing mesh.
+          const dx = b.cx - fx, dz = b.cz - fz;
+          const dl = Math.hypot(dx, dz) || 1;
+          const fwd = (dx / dl) * _vFwd.x + (dz / dl) * _vFwd.z;
+          job.score = d - fwd * 300 + (mesh ? 400 : 0);
+        }
         if (mesh) {
           mesh.visible = d <= 230;
           if (mesh.visible) visible++;
+          if (mesh.userData.seg >= 96) l96++; else if (mesh.userData.seg >= 48) l48++; else l24++;
         }
       }
     }
-    if (candidates.length) {
-      candidates.sort((a, b2) => a.d - b2.d);
-      const c = candidates[0];
-      const mesh = buildTerrainChunk(c.ix, c.iz);
-      mesh.visible = c.d <= 230;
-      if (mesh.visible) visible++;
-    }
+    chunkQueue.sort((a, b2) => {
+      const ja = chunkJobs.get(a), jb = chunkJobs.get(b2);
+      return (ja ? ja.score : 1e9) - (jb ? jb.score : 1e9);
+    });
     debugStats.chunksLoaded = terrainChunks.size;
     debugStats.chunksVisible = visible;
     debugStats.chunksTotal = mapPreset.chunkCount;
+    debugStats.lod96 = l96; debugStats.lod48 = l48; debugStats.lod24 = l24;
+    syncPhysicsColliders(cam.ix, cam.iz);
   }
-  // Boot: the four chunks meeting at the center spawn.
+  // Boot: the four chunks meeting at the center spawn, full detail, so the
+  // menu backdrop is complete on the first frame.
   for (let ix = 0; ix < mapPreset.chunksPerAxis; ix++) {
     for (let iz = 0; iz < mapPreset.chunksPerAxis; iz++) {
       const b = chunkBounds(ix, iz);
-      if (b.minX <= 0 && b.maxX >= 0 && b.minZ <= 0 && b.maxZ >= 0) buildTerrainChunk(ix, iz);
+      if (b.minX <= 0 && b.maxX >= 0 && b.minZ <= 0 && b.maxZ >= 0) buildTerrainChunkSync(ix, iz, CHUNK_SEGMENTS);
     }
   }
   updateChunkStreaming();
@@ -949,6 +1196,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const spawnDir = new THREE.Vector2(WORLD.relay.x - WORLD.spawn.x, WORLD.relay.z - WORLD.spawn.z).normalize();
   const player = {
     pos: new THREE.Vector3(WORLD.spawn.x, terrainHeight(WORLD.spawn.x, WORLD.spawn.z) + 1.7, WORLD.spawn.z),
+    vel: new THREE.Vector3(), // horizontal velocity (m/s); vy is vertical
+    vy: 0,
+    grounded: true,
+    jumpHeld: false,
+    coyote: 0,
+    landDip: 0, // camera settle after a hard landing
     yaw: Math.atan2(-spawnDir.x, -spawnDir.y),
     pitch: -0.03,
     bobPhase: 0,
@@ -971,10 +1224,32 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const limit = mapPreset.hardClamp;
     player.pos.set(clamp(x, -limit, limit), 0, clamp(z, -limit, limit));
     player.pos.y = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    player.vel.set(0, 0, 0);
+    player.vy = 0;
+    player.grounded = true;
     player.yaw = -(headingDeg * Math.PI) / 180; // heading = -yaw in this engine
     player.pitch = -0.03;
     transition = null;
-    if (playing) camera.position.copy(player.pos);
+    // A teleport is a cut: build the destination neighbourhood
+    // synchronously so arrival never shows a hole in the ground.
+    const t = chunkIndexAt(player.pos.x, player.pos.z);
+    const n = mapPreset.chunksPerAxis;
+    for (let ix = Math.max(0, t.ix - 1); ix <= Math.min(n - 1, t.ix + 1); ix++) {
+      for (let iz = Math.max(0, t.iz - 1); iz <= Math.min(n - 1, t.iz + 1); iz++) {
+        const key = ix + "," + iz;
+        const want = desiredSegments(ix, iz, t.ix, t.iz);
+        const mesh = terrainChunks.get(key);
+        if (!mesh || mesh.userData.seg < want) buildTerrainChunkSync(ix, iz, want);
+      }
+    }
+    if (phys.ready) {
+      phys.body.setTranslation({ x: player.pos.x, y: player.pos.y - 0.8, z: player.pos.z }, true);
+      syncPhysicsColliders(t.ix, t.iz);
+    }
+    if (playing) {
+      camera.position.copy(player.pos);
+      updateChunkStreaming();
+    }
   }
   const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q1 = new THREE.Quaternion();
 
@@ -1030,8 +1305,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   // ----- keyboard movement -----
-  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"];
-  const onKeyDown = (e) => { if (MOVE_CODES.includes(e.code)) inputState.keys.add(e.code); };
+  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space"];
+  const onKeyDown = (e) => {
+    if (MOVE_CODES.includes(e.code)) {
+      inputState.keys.add(e.code);
+      if (e.code === "Space") e.preventDefault(); // jump, not page scroll
+    }
+  };
   const onKeyUp = (e) => inputState.keys.delete(e.code);
   const onBlur = () => inputState.keys.clear();
   window.addEventListener("keydown", onKeyDown);
@@ -1085,12 +1365,65 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
     player.wading = inWaterNow;
     const sprint = k.has("ShiftLeft") || k.has("ShiftRight");
-    const speed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
+    const maxSpeed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
-    // forward = (-sin, -cos), right = (cos, -sin)
-    player.pos.x += (-sin * mz + cos * mx) * speed * dt;
-    player.pos.z += (-cos * mz - sin * mx) * speed * dt;
+    // --- velocity model: ground acceleration/friction, weak air control,
+    // gravity + coyote-timed jump. Collision: Rapier character controller
+    // when the WASM core is ready, analytic heightfield solver otherwise
+    // (identical velocity model feeds both). forward = (-sin, -cos).
+    const wishX = -sin * mz + cos * mx, wishZ = -cos * mz - sin * mx;
+    const accel = player.grounded ? 11 : 2.4;
+    const vBlend = 1 - Math.exp(-accel * dt);
+    player.vel.x += (wishX * maxSpeed - player.vel.x) * vBlend;
+    player.vel.z += (wishZ * maxSpeed - player.vel.z) * vBlend;
+    const jumpDown = k.has("Space") || inputState.jump;
+    inputState.jump = false;
+    if (jumpDown && !player.jumpHeld && (player.grounded || player.coyote > 0)) {
+      player.vy = 7.7; // ~1.4m apex at GRAVITY=-21
+      player.grounded = false;
+      player.coyote = 0;
+    }
+    player.jumpHeld = jumpDown;
+    player.coyote = player.grounded ? 0.12 : Math.max(0, player.coyote - dt);
+    player.vy = Math.max(player.vy + GRAVITY * dt, -38);
+    const wasGrounded = player.grounded;
+    const fallSpeed = Math.max(0, -player.vy);
+    // Integrate from the feet; player.pos is the eye (feet + 1.7m).
+    let feetX = player.pos.x, feetY = player.pos.y - 1.7, feetZ = player.pos.z;
+    const mdx = player.vel.x * dt, mdy = player.vy * dt, mdz = player.vel.z * dt;
+    if (phys.ready) {
+      const pfx = feetX, pfz = feetZ;
+      const out = physMove(feetX, feetY, feetZ, mdx, mdy, mdz);
+      feetX = out.x; feetY = out.y; feetZ = out.z;
+      player.grounded = out.grounded;
+      // Anti-wedge referee: a capsule can snag on heightfield triangle
+      // edges/seams even on gentle ground (observed riding the z=0 chunk
+      // seam: Rapier cancelled all horizontal motion at <18deg slope).
+      // If >75% of the desired move was cancelled but the analytic
+      // surface just ahead is walkable and within step height, take the
+      // analytic step this frame instead of wedging. Truly steep faces
+      // (rise >= 0.85m over 0.7m, ~50deg) stay blocked by Rapier.
+      const wantSq = mdx * mdx + mdz * mdz;
+      if (wantSq > 1e-6) {
+        const ratio = ((feetX - pfx) * mdx + (feetZ - pfz) * mdz) / wantSq;
+        if (ratio < 0.25) {
+          const inv = 1 / Math.sqrt(wantSq);
+          const gHere = terrainHeight(pfx, pfz);
+          const gAhead = terrainHeight(pfx + mdx * inv * 0.7, pfz + mdz * inv * 0.7);
+          if (gAhead - gHere < 0.85 && gAhead - feetY < 0.55) {
+            feetX = pfx + mdx;
+            feetZ = pfz + mdz;
+            if (feetY - gAhead < 0.4) player.grounded = true;
+          }
+        }
+      }
+    } else {
+      feetX += mdx; feetY += mdy; feetZ += mdz;
+      player.grounded = false;
+    }
+    player.pos.x = feetX;
+    player.pos.z = feetZ;
     // Mode-specific square boundary.
     // Survival: hard clamp at +/-1950m (inside the rim ring).
     // BR: terrain ends at +/-1000m; pressing on that line is out of bounds
@@ -1115,21 +1448,47 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       setOutOfBounds(false);
     }
     debugStats.travelM += Math.hypot(player.pos.x - prevX, player.pos.z - prevZ);
-    let ground = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    // Analytic ground truth (matches the rendered surface exactly).
+    let groundY = terrainHeight(player.pos.x, player.pos.z);
     const bdx = player.pos.x - bridge.cx, bdz = player.pos.z - bridge.cz;
     const alongB = bdx * bridge.ax + bdz * bridge.az;
     const acrossB = bdx * bridge.px + bdz * bridge.pz;
-    if (Math.abs(alongB) < 5.8 && Math.abs(acrossB) < 1.7) ground = Math.max(ground, bridge.deckY + 1.7);
-    player.pos.y += (ground - player.pos.y) * (1 - Math.exp(-11 * dt));
-    const moving = Math.min(1, Math.hypot(mx, mz));
+    if (Math.abs(alongB) < 5.8 && Math.abs(acrossB) < 1.7) groundY = Math.max(groundY, bridge.deckY);
+    if (!phys.ready) {
+      if (feetY <= groundY) { feetY = groundY; player.grounded = true; }
+    } else {
+      // 48-seg colliders can sit slightly off the rendered surface on
+      // sharp ridges: settle onto the analytic surface while grounded,
+      // and never let the feet sink below it (also covers the frames
+      // before a fresh chunk collider exists).
+      if (!player.grounded && player.vy <= 0.5 && feetY - groundY < 0.35 && feetY >= groundY - 0.05) {
+        feetY = groundY; // within snap distance of the true surface
+        player.grounded = true;
+      }
+      if (player.grounded) feetY += (groundY - feetY) * Math.min(1, dt * 16);
+      if (feetY < groundY - 0.05) { feetY = groundY; player.grounded = true; }
+    }
+    if (player.grounded) {
+      if (!wasGrounded && fallSpeed > 6) {
+        player.landDip = Math.min(0.16, fallSpeed * 0.012);
+        if (hooks.onLand) hooks.onLand();
+      }
+      if (player.vy < 0) player.vy = 0;
+    }
+    player.pos.y = feetY + 1.7;
+    debugStats.grounded = player.grounded ? 1 : 0;
+    debugStats.vy = Math.round(player.vy * 10) / 10;
+    debugStats.speed = Math.round(Math.hypot(player.vel.x, player.vel.z) * 10) / 10;
+    const moving = Math.min(1, Math.hypot(player.vel.x, player.vel.z) / 6) * (player.grounded ? 1 : 0.25);
     player.bobPhase += dt * (sprint ? 11 : 8) * moving;
     const stepIdx = Math.floor(player.bobPhase / Math.PI);
-    if (moving > 0.15 && stepIdx !== player.lastStep) {
+    if (moving > 0.15 && stepIdx !== player.lastStep && player.grounded) {
       player.lastStep = stepIdx;
       if (hooks.onStep) hooks.onStep(inWaterNow);
     }
     const bobY = Math.sin(player.bobPhase) * 0.055 * moving;
     const bobX = Math.cos(player.bobPhase * 0.5) * 0.03 * moving;
+    player.landDip = Math.max(0, player.landDip - dt * 0.5);
 
     if (transition) {
       transition.t += dt / 0.9;
@@ -1140,7 +1499,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       camera.quaternion.slerpQuaternions(transition.fromQuat, _q1, t);
       if (transition.t >= 1) transition = null;
     } else {
-      camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY, player.pos.z - bobX * sin);
+      camera.position.set(player.pos.x + bobX * cos, player.pos.y + bobY - player.landDip, player.pos.z - bobX * sin);
       camera.rotation.set(player.pitch, player.yaw, -mx * 0.014);
     }
 
@@ -1352,6 +1711,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       chunkStreamAcc = 0;
       updateChunkStreaming();
     }
+    // Time-sliced background work: at most ~5ms/frame total, so streaming
+    // a fresh 96-seg chunk (or a physics heightfield) never hitches.
+    physEnsure();
+    pumpChunkJobs(3.5);
+    pumpPhysJobs(1.5);
+    pumpBvh();
     renderer.render(scene, camera);
     { // debug counters (renderer.info is valid right after render)
       const now = performance.now();
@@ -1384,8 +1749,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     window.removeEventListener("keyup", onKeyUp);
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("resize", onResize);
+    if (phys.world) {
+      try { phys.world.free(); } catch (e) { /* already freed */ }
+      phys.world = null;
+      phys.ready = false;
+    }
     scene.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
+      if (obj.geometry) {
+        if (obj.geometry.disposeBoundsTree) obj.geometry.disposeBoundsTree();
+        obj.geometry.dispose();
+      }
       if (obj.material) (Array.isArray(obj.material) ? obj.material : [obj.material]).forEach((m) => m.dispose());
     });
     renderer.dispose();

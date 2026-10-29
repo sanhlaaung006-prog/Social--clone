@@ -1,8 +1,11 @@
 // === [AUDIO: SYNTH SFX] ===
-// Fully synthesized WebAudio soundscape — zero audio files. The context is
-// created lazily on the first user gesture (autoplay policy), then ambient
-// loops (wind, river) start and one-shot voices fire on demand. Day/night
-// and river proximity are fed in via setAmbience() from the world loop.
+// Synthesized WebAudio soundscape, plus one recorded rifle shot shipped as
+// public/sfx/gunshot.wav (Godot TPS demo, CC-BY 3.0 — see README credits);
+// if the sample cannot load, shot() falls back to the synthesized layer.
+// The context is created lazily on the first user gesture (autoplay
+// policy), then ambient loops (wind, river) start and one-shot voices
+// fire on demand. Day/night and river proximity are fed in via
+// setAmbience() from the world loop.
 
 let ctx = null;
 let master = null;
@@ -12,6 +15,19 @@ let ambience = { water: 0, day: 1, night: 0 };
 let windGain = null;
 let riverGain = null;
 let schedulerOn = false;
+let gunBuffer = null; // decoded recorded gunshot (null = synth fallback)
+let gunLoadTried = false;
+
+function loadGunSample() {
+  if (gunLoadTried || !ctx) return;
+  gunLoadTried = true;
+  const base = (import.meta.env && import.meta.env.BASE_URL) || "/";
+  fetch(base + "sfx/gunshot.wav")
+    .then((r) => { if (!r.ok) throw new Error("gunshot " + r.status); return r.arrayBuffer(); })
+    .then((buf) => ctx.decodeAudioData(buf))
+    .then((decoded) => { gunBuffer = decoded; })
+    .catch(() => { gunBuffer = null; });
+}
 
 function ensure() {
   return ctx && ctx.state !== "closed" ? ctx : null;
@@ -145,6 +161,7 @@ export const sfx = {
         const data = noiseBuffer.getChannelData(0);
         for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
         startLoops();
+        loadGunSample();
         document.addEventListener("pointerdown", (e) => {
           const btn = e.target.closest && e.target.closest("button");
           if (btn && !btn.classList.contains("fire-btn")) sfx.click();
@@ -190,6 +207,19 @@ export const sfx = {
   shot() {
     if (!ensure()) return;
     const t0 = ctx.currentTime;
+    if (gunBuffer) {
+      // Recorded shot with per-shot pitch/gain jitter (so automatic fire
+      // never sounds cloned) over a short sub-bass thump for body.
+      const src = ctx.createBufferSource();
+      src.buffer = gunBuffer;
+      src.playbackRate.value = 0.94 + Math.random() * 0.12;
+      const g = ctx.createGain();
+      g.gain.value = 0.85 + Math.random() * 0.15;
+      src.connect(g).connect(master);
+      src.start(t0);
+      tone({ t0, dur: 0.09, type: "sine", from: 120, to: 38, peak: 0.28 });
+      return;
+    }
     noiseBurst({ t0, dur: 0.16, type: "lowpass", from: 3400, to: 280, q: 0.4, peak: 0.85 });
     tone({ t0, dur: 0.11, type: "square", from: 160, to: 42, peak: 0.4 });
     noiseBurst({ t0, dur: 0.04, type: "highpass", from: 4000, peak: 0.25 });
@@ -231,6 +261,12 @@ export const sfx = {
       noiseBurst({ t0, dur: 0.09, type: "lowpass", from: 520 + Math.random() * 140, peak: 0.16 });
       noiseBurst({ t0, dur: 0.05, type: "bandpass", from: 2800, q: 0.7, peak: 0.035 });
     }
+  },
+  land() {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    noiseBurst({ t0, dur: 0.14, type: "lowpass", from: 420, to: 110, q: 0.6, peak: 0.42 });
+    tone({ t0, dur: 0.09, type: "sine", from: 95, to: 45, peak: 0.22 });
   },
   splash() {
     if (!ensure()) return;

@@ -325,6 +325,10 @@
         ["PROGRAMS", d.programs],
         ["MAP", (MAP_PRESETS[d.mapMode]?.label || d.mapMode) + " " + d.mapSizeM + "M"],
         ["CHUNKS", d.chunksVisible + " VIS / " + d.chunksLoaded + "/" + d.chunksTotal],
+        ["LOD 96/48/24", d.lod96 + "/" + d.lod48 + "/" + d.lod24],
+        ["CHUNK BUILD", d.chunkBuildMs.toFixed(1) + " MS MAX"],
+        ["PHYSICS", d.physics ? "RAPIER WASM" : "ANALYTIC"],
+        ["MOVE", (d.grounded ? "GND" : "AIR") + " " + d.speed.toFixed(1) + " M/S VY " + d.vy.toFixed(1)],
         ["OUT OF BOUNDS", d.outOfBounds ? "YES -" + d.boundaryDamage + "/S" : "NO"],
         ["SHADOW MAPS", d.shadowMapsFrozen ? "FROZEN/OFF" : "LIVE"],
         ["CULL <=60M", d.cullNear],
@@ -368,6 +372,7 @@
             gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1");
           },
           onStep: (inWater) => sfx.step(!!inWater),
+          onLand: () => sfx.land(),
           onSplash: () => sfx.splash(),
           onAmbience: (a) => sfx.setAmbience(a),
           onOutOfBoundsChange: (active) => {
@@ -1216,7 +1221,8 @@
                       <div className="brief-controls">
                         <span className="brief-control"><kbd>WASD / L-STICK</kbd> MOVE</span>
                         <span className="brief-control"><kbd>DRAG / R-STICK</kbd> AIM</span>
-                        <span className="brief-control"><kbd>TAP / SPACE / FIRE</kbd> FIRE</span>
+                        <span className="brief-control"><kbd>LMB / FIRE BTN</kbd> FIRE</span>
+                        <span className="brief-control"><kbd>SPACE / JUMP BTN</kbd> JUMP</span>
                         <span className="brief-control"><kbd>R</kbd> RELOAD</span>
                         <span className="brief-control"><kbd>H</kbd> TRAUMA KIT</span>
                         <span className="brief-control"><kbd>ESC</kbd> COMMAND MENU</span>
@@ -1855,7 +1861,8 @@
                   </SettingSection>
                   <SettingSection title="FIELD BINDINGS / KEYBOARD">
                     <div className="keybind-list">
-                      <div className="keybind-row"><span>FIRE WEAPON</span><span><kbd>SPACE</kbd><kbd>LMB</kbd></span></div>
+                      <div className="keybind-row"><span>FIRE WEAPON</span><span><kbd>LMB</kbd></span></div>
+                      <div className="keybind-row"><span>JUMP</span><span><kbd>SPACE</kbd></span></div>
                       <div className="keybind-row"><span>RELOAD</span><span><kbd>R</kbd></span></div>
                       <div className="keybind-row"><span>INTERACT</span><span><kbd>E</kbd></span></div>
                       <div className="keybind-row"><span>TRAUMA KIT</span><span><kbd>H</kbd></span></div>
@@ -2148,6 +2155,15 @@
             <UiIcon name="target" size={22} />
             <span>FIRE</span>
           </button>
+          <button
+            type="button"
+            className="jump-btn"
+            aria-label="Jump"
+            onPointerDown={(event) => { event.preventDefault(); inputState.jump = true; }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <span>JUMP</span>
+          </button>
         </div>
       );
     });
@@ -2175,7 +2191,7 @@
           if (state.isMenuOpen) return;
           if (event.code === "Space") {
             event.preventDefault();
-            state.fire();
+            inputState.jump = true; // world also tracks Space via its key set
           } else if (event.key.toLowerCase() === "r") {
             state.reload();
           } else if (event.key.toLowerCase() === "h") {
