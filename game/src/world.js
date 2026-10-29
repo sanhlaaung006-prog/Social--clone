@@ -1190,10 +1190,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // three-segment curved magazine, skeletal stock and small controls.
     // Everything is merged by material (4 meshes + lens/dot), so the
     // detail costs no meaningful draw calls and loads no external model.
-    const gm = new THREE.MeshStandardMaterial({ color: 0x2a302b, roughness: 0.38, metalness: 0.62, emissive: 0x050705, flatShading: true });
-    const gm2 = new THREE.MeshStandardMaterial({ color: 0x4b5a3c, roughness: 0.78, metalness: 0.12, emissive: 0x0d120a, flatShading: true });
-    const gm3 = new THREE.MeshStandardMaterial({ color: 0x8a7350, roughness: 0.6, metalness: 0.3, emissive: 0x171207, flatShading: true });
-    const gm4 = new THREE.MeshStandardMaterial({ color: 0x11150f, roughness: 0.95, metalness: 0.02, emissive: 0x030403, flatShading: true });
+    const gm = new THREE.MeshStandardMaterial({ color: 0x3b453e, roughness: 0.34, metalness: 0.58, emissive: 0x0b0f0b, flatShading: true });
+    const gm2 = new THREE.MeshStandardMaterial({ color: 0x5d7048, roughness: 0.74, metalness: 0.12, emissive: 0x14200e, flatShading: true });
+    const gm3 = new THREE.MeshStandardMaterial({ color: 0xa28259, roughness: 0.55, metalness: 0.3, emissive: 0x201708, flatShading: true });
+    const gm4 = new THREE.MeshStandardMaterial({ color: 0x1a201a, roughness: 0.92, metalness: 0.02, emissive: 0x050605, flatShading: true });
     const dark = [], polymer = [], accent = [], rubber = [];
     const finish = (list, g) => list.push(g.index ? g.toNonIndexed() : g);
     const box = (list, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) => {
@@ -1321,16 +1321,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     gun.add(new THREE.Mesh(mergeGeometries(accent, false), gm3));
     gun.add(new THREE.Mesh(mergeGeometries(rubber, false), gm4));
     const lens = new THREE.Mesh(
-      new THREE.CircleGeometry(0.023, 18),
-      new THREE.MeshBasicMaterial({ color: 0x86d9e8 })
+      new THREE.CircleGeometry(0.019, 18),
+      new THREE.MeshStandardMaterial({ color: 0x102f38, roughness: 0.16, metalness: 0.1, emissive: 0x1d5d6b, emissiveIntensity: 0.55 })
     );
     lens.position.set(0, 0.148, 0.037); gun.add(lens);
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.0045, 6, 5), new THREE.MeshBasicMaterial({ color: 0xc8f45c }));
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.003, 6, 5), new THREE.MeshBasicMaterial({ color: 0xb7e34f }));
     dot.position.set(0, 0.148, 0.04); gun.add(dot);
   }
-  gun.position.set(0.22, -0.24, -0.62);
+  gun.position.set(0.205, -0.225, -0.65);
   gun.scale.setScalar(0.82);
   camera.add(gun);
+  // Short-range camera-side fill so the receiver/optic facets remain
+  // readable when the sun is behind the player; its 1.5m cutoff keeps
+  // it from becoming a general scene light.
+  const gunFill = new THREE.PointLight(0xe8f0d8, 0.65, 1.5, 2);
+  gunFill.position.set(0.18, 0.22, 0.34);
+  gun.add(gunFill);
   const muzzle = new THREE.Object3D();
   muzzle.position.set(0, 0.032, -0.93); gun.add(muzzle);
   const flash = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0 }));
@@ -1655,9 +1661,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.recoil = Math.max(0, player.recoil - dt * 7);
     const rk = player.recoil * player.recoil;
     gun.position.set(
-      0.22 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16,
-      -0.24 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11,
-      -0.62 + rk * 0.07
+      0.205 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16,
+      -0.225 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11,
+      -0.65 + rk * 0.07
     );
     gun.rotation.set(rk * 0.09 + player.swayPitch * 0.85, player.swayYaw, player.swayYaw * 0.35);
     flash.material.opacity = Math.max(0, flash.material.opacity - dt * 16);

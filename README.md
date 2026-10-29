@@ -101,6 +101,10 @@ at the +1000 m line, and midnight under the stars and galaxies.
 
 ![IRONVEIL Survival spawn](screenshots/ironveil-survival-spawn.png)
 
+**Rust ABI v2 — baked terrain AO and refined rifle viewmodel:**
+
+![IRONVEIL Rust lighting and rifle](screenshots/rust-v2-rifle.png)
+
 **Monsoon weather — screen-space rain, 80 m AI LOS, no drones engaged:**
 
 ![IRONVEIL Monsoon weather](screenshots/ironveil-monsoon.png)
