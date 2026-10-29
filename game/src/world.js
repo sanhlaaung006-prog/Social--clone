@@ -11,6 +11,7 @@
 
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -20,29 +21,8 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-// Rapier physics (Rust -> WASM via @dimforge/rapier3d-compat, Apache-2.0)
-// loads lazily so first paint never waits on it. Until the WASM core is
-// ready — or if it fails to load — the analytic terrain solver in
-// updatePlayer resolves ground collision with the same velocity model.
-let RAPIER = null;
-let rapierReady = false;
-let rapierTries = 0;
-function loadRapier() {
-  rapierTries++;
-  import("@dimforge/rapier3d-compat")
-    .then(async (m) => {
-      const R = m.default || m;
-      await R.init();
-      RAPIER = R;
-      rapierReady = true;
-    })
-    .catch(() => {
-      // Transient failure (dev-server dep optimization, flaky network):
-      // keep the analytic solver and retry with backoff.
-      if (rapierTries < 6) setTimeout(loadRapier, 3000 * rapierTries);
-    });
-}
-loadRapier();
+// No rigid-body physics engine is loaded. Character motion below is a
+// deterministic kinematic velocity solver against terrainHeight().
 
 export const inputState = {
   moveX: 0, // strafe  -1..1 (move stick)
@@ -67,13 +47,17 @@ export const debugStats = {
   mapMode: "survival", mapSizeM: 4000, worldSeed: 0,
   chunksLoaded: 0, chunksVisible: 0, chunksTotal: 16,
   outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
-  physics: 0, grounded: 0, vy: 0, speed: 0, physChunks: 0,
+  grounded: 0, vy: 0, speed: 0, accelRate: 0, swayYaw: 0, swayPitch: 0,
+  grass: 0, pebbles: 0, blobShadows: 0, fogDensity: 0,
+  season: "COOL", weather: "SUNNY", macroDay: 0, seasonDay: 1,
+  seasonBlend: 1, weatherBlend: 1, weatherRollS: 600, weatherRolls: 0,
+  aiLosM: 300, dronesEngaged: 0, rain: 0, mud: 0, seasonTint: "ffffff",
   chunkJobs: 0, chunkBuildMs: 0, lod96: 0, lod48: 0, lod24: 0, bvhPending: 0,
 };
 
 // External debug/test control. The render loop consumes a pending teleport
 // once; used by automated boundary/spawn verification.
-export const worldControl = { teleport: null };
+export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false };
 
 // ---------- deterministic rng / noise ----------
 function mulberry32(seed) {
@@ -362,7 +346,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0f0a); // behind the sky dome
-  scene.fog = new THREE.Fog(0x0a0f0a, 120, 200); // 200m fog wall
+  scene.fog = new THREE.FogExp2(0xb7c8ae, 0.0026); // exponential atmosphere; density is climate-driven
 
   const camera = new THREE.PerspectiveCamera(71, window.innerWidth / window.innerHeight, 0.1, 900);
   camera.rotation.order = "YXZ";
@@ -394,6 +378,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     uSunColor: { value: new THREE.Color(0xfff2d8) },
     uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
     uNight: { value: 0 },
+    uSunGlow: { value: 1 },
   };
   const skyDome = new THREE.Mesh(
     new THREE.SphereGeometry(780, 28, 16),
@@ -415,6 +400,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         uniform vec3 uSunColor;
         uniform vec3 uMoonDir;
         uniform float uNight;
+        uniform float uSunGlow;
         varying vec3 vDir;
         void main() {
           vec3 dir = normalize(vDir);
@@ -422,7 +408,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           vec3 col = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.58));
           col = mix(col, uHorizon * 0.55, smoothstep(0.0, -0.25, h));
           float sDot = max(dot(dir, normalize(uSunDir)), 0.0);
-          col += uSunColor * (pow(sDot, 700.0) * 1.9 + pow(sDot, 20.0) * 0.22);
+          col += uSunColor * ((pow(sDot, 700.0) * 1.9 + pow(sDot, 20.0) * 0.22) * (0.3 + uSunGlow) + pow(sDot, 3.0) * 0.16 * uSunGlow);
           float mDot = max(dot(dir, normalize(uMoonDir)), 0.0);
           col += vec3(0.78, 0.85, 0.97) * (smoothstep(0.9992, 0.99965, mDot) * 0.9 + pow(mDot, 120.0) * 0.12) * uNight;
           gl_FragColor = vec4(col, 1.0);
@@ -513,7 +499,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // into a new chunk never stalls a frame on a synchronous build.
   // Center four chunks are still built synchronously at boot (menu
   // backdrop), and a teleport builds its destination synchronously (cut).
-  // Only chunks whose bounds come within 230m are visible.
+  // Only chunks whose bounds come within 340m are visible, giving clear
+  // ~300m combat sightlines under exponential fog.
   const terrainMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
   });
@@ -570,7 +557,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     mesh.userData.isTerrainChunk = true;
     mesh.userData.chunkKey = job.key;
     mesh.userData.seg = job.seg;
-    mesh.visible = distanceToChunk(camera.position.x, camera.position.z, job.b) <= 230;
+    mesh.visible = distanceToChunk(camera.position.x, camera.position.z, job.b) <= 340;
     const old = terrainChunks.get(job.key);
     if (old) { // LOD swap: the new mesh replaces the old with no gap
       terrainGroup.remove(old);
@@ -661,101 +648,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     return terrainChunks.get(job.key);
   }
 
-  // ----- physics: Rapier WASM character controller over heightfields -----
-  // One 48-seg heightfield collider per chunk in the 3x3 neighbourhood of
-  // the player (sampled in slices, same job discipline as the meshes).
-  // Rapier heightfield layout is x-major: heights[xi*(N+1)+zi] — verified
-  // empirically against the WASM build. Capsule: 0.55 half-height +
-  // 0.35 radius (1.8m tall), center rides 0.9m above the feet.
-  const GRAVITY = -21; // slightly heavy vs -9.8: grounded, weighty jump arc
-  const PHYS_SEG = 48;
-  const phys = { world: null, controller: null, body: null, collider: null, ready: false };
-  const physJobs = new Map();
-  const physColliders = new Map();
-  function physEnsure() {
-    if (phys.ready || !rapierReady || !RAPIER) return;
-    try {
-      phys.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
-      phys.world.timestep = 1 / 60;
-      phys.controller = phys.world.createCharacterController(0.02);
-      phys.controller.enableAutostep(0.45, 0.25, true);
-      phys.controller.enableSnapToGround(0.5);
-      phys.controller.setMaxSlopeClimbAngle((52 * Math.PI) / 180);
-      phys.controller.setMinSlopeSlideAngle((58 * Math.PI) / 180);
-      phys.body = phys.world.createRigidBody(
-        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(player.pos.x, player.pos.y - 0.8, player.pos.z)
-      );
-      phys.collider = phys.world.createCollider(RAPIER.ColliderDesc.capsule(0.55, 0.35), phys.body);
-      phys.ready = true;
-      debugStats.physics = 1;
-      const c = chunkIndexAt(player.pos.x, player.pos.z);
-      syncPhysicsColliders(c.ix, c.iz);
-    } catch (e) {
-      phys.ready = false; // analytic solver remains in charge
-    }
-  }
-  function startPhysJob(ix, iz) {
-    const key = ix + "," + iz;
-    if (physColliders.has(key) || physJobs.has(key)) return;
-    physJobs.set(key, {
-      key, i: 0, b: chunkBounds(ix, iz),
-      heights: new Float32Array((PHYS_SEG + 1) * (PHYS_SEG + 1)),
-    });
-  }
-  function pumpPhysJobs(budgetMs) {
-    if (!phys.ready || !physJobs.size) return;
-    const deadline = performance.now() + budgetMs;
-    const N1 = PHYS_SEG + 1, step = CHUNK_SIZE_M / PHYS_SEG;
-    for (const job of physJobs.values()) {
-      while (job.i < N1 * N1) {
-        const xi = Math.floor(job.i / N1), zi = job.i % N1;
-        job.heights[job.i] = terrainHeight(job.b.minX + xi * step, job.b.minZ + zi * step);
-        job.i++;
-        if ((job.i & 127) === 0 && performance.now() > deadline) return;
-      }
-      const desc = RAPIER.ColliderDesc
-        .heightfield(PHYS_SEG, PHYS_SEG, job.heights, { x: CHUNK_SIZE_M, y: 1, z: CHUNK_SIZE_M })
-        .setTranslation(job.b.cx, 0, job.b.cz);
-      physColliders.set(job.key, phys.world.createCollider(desc));
-      physJobs.delete(job.key);
-      debugStats.physChunks = physColliders.size;
-      if (performance.now() > deadline) return;
-    }
-  }
-  function syncPhysicsColliders(cix, ciz) {
-    if (!phys.ready) return;
-    const n = mapPreset.chunksPerAxis;
-    for (let ix = 0; ix < n; ix++) {
-      for (let iz = 0; iz < n; iz++) {
-        const d = Math.max(Math.abs(ix - cix), Math.abs(iz - ciz));
-        const key = ix + "," + iz;
-        if (d <= 1) startPhysJob(ix, iz);
-        else if (d > 2) {
-          const col = physColliders.get(key);
-          if (col) { phys.world.removeCollider(col, true); physColliders.delete(key); }
-          physJobs.delete(key);
-        }
-      }
-    }
-    debugStats.physChunks = physColliders.size;
-  }
-  const _physDesired = { x: 0, y: 0, z: 0 };
-  const _physOut = { x: 0, y: 0, z: 0, grounded: false };
-  // Moves the capsule from feet (fx,fy,fz) by (dx,dy,dz); returns the
-  // collision-corrected feet position + grounded flag in _physOut.
-  function physMove(fx, fy, fz, dx, dy, dz) {
-    phys.body.setTranslation({ x: fx, y: fy + 0.9, z: fz }, true);
-    _physDesired.x = dx; _physDesired.y = dy; _physDesired.z = dz;
-    phys.controller.computeColliderMovement(phys.collider, _physDesired);
-    const corrected = phys.controller.computedMovement();
-    _physOut.x = fx + corrected.x;
-    _physOut.y = fy + corrected.y;
-    _physOut.z = fz + corrected.z;
-    _physOut.grounded = phys.controller.computedGrounded();
-    phys.body.setNextKinematicTranslation({ x: _physOut.x, y: _physOut.y + 0.9, z: _physOut.z });
-    phys.world.step();
-    return _physOut;
-  }
+  const GRAVITY = -21; // kinematic jump/fall acceleration (m/s^2)
+
   function distanceToChunk(x, z, b) {
     const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0;
     const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0;
@@ -786,7 +680,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           job.score = d - fwd * 300 + (mesh ? 400 : 0);
         }
         if (mesh) {
-          mesh.visible = d <= 230;
+          mesh.visible = d <= 340;
           if (mesh.visible) visible++;
           if (mesh.userData.seg >= 96) l96++; else if (mesh.userData.seg >= 48) l48++; else l24++;
         }
@@ -800,7 +694,6 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.chunksVisible = visible;
     debugStats.chunksTotal = mapPreset.chunkCount;
     debugStats.lod96 = l96; debugStats.lod48 = l48; debugStats.lod24 = l24;
-    syncPhysicsColliders(cam.ix, cam.iz);
   }
   // Boot: the four chunks meeting at the center spawn, full detail, so the
   // menu backdrop is complete on the first frame.
@@ -920,6 +813,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   // ----- scatter: rocks + pines (instanced) -----
   const dummy = new THREE.Object3D();
+  const blobShadowMaterial = new THREE.MeshBasicMaterial({
+    color: 0x020403, transparent: true, opacity: 0.34, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const blobShadowGeometry = new THREE.CircleGeometry(1, 12).rotateX(-Math.PI / 2);
   const clearOf = (x, z, r) =>
     Math.hypot(x - WORLD.relay.x, z - WORLD.relay.z) > r &&
     Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) > r;
@@ -973,11 +871,41 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 1 }),
     TREE_N
   );
+  const canopyMaterial = new THREE.MeshStandardMaterial({ color: 0x1b2a17, roughness: 1, flatShading: true });
   const canopies = new THREE.InstancedMesh(
     new THREE.ConeGeometry(1.55, 5, 6),
-    new THREE.MeshStandardMaterial({ color: 0x1b2a17, roughness: 1, flatShading: true }),
+    canopyMaterial,
     TREE_N
   );
+  const treeBlobShadows = new THREE.InstancedMesh(blobShadowGeometry, blobShadowMaterial, TREE_N);
+  treeBlobShadows.renderOrder = 1;
+  // Local jungle-floor tufts: three tapered triangles per instance. A
+  // deterministic world-space grid around the camera keeps a dense 60m
+  // floor available anywhere on the 4km map without storing hundreds of
+  // thousands of placements.
+  const grassGeometry = (() => {
+    const verts = [];
+    const normals = [];
+    const blades = [
+      { a: 0.2, h: 0.72, bend: 0.10 },
+      { a: 2.25, h: 0.9, bend: 0.14 },
+      { a: 4.2, h: 0.78, bend: 0.08 },
+    ];
+    for (const b of blades) {
+      const dx = Math.sin(b.a), dz = Math.cos(b.a);
+      const sx = dz * 0.14, sz = -dx * 0.14;
+      verts.push(-sx, 0, -sz, sx, 0, sz, dx * b.bend, b.h, dz * b.bend);
+      normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+    return g;
+  })();
+  const grassMaterial = new THREE.MeshStandardMaterial({
+    color: 0x35542a, roughness: 1, flatShading: true, side: THREE.DoubleSide,
+  });
+  const grassTufts = new THREE.InstancedMesh(grassGeometry, grassMaterial, 900);
   scatter(TREE_N, (x, y, z, i) => {
     const s = 0.8 + rand() * 1.15, rot = rand() * Math.PI * 2;
     treePlacements.push({ x, y, z, s, rot });
@@ -987,8 +915,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     dummy.position.set(x, y + (1.7 + 2.1) * s, z); dummy.updateMatrix();
     canopies.setMatrixAt(i, dummy.matrix);
   });
-  scene.add(trunks, canopies);
-  for (const mesh of [rocks, trunks, canopies]) {
+  scene.add(trunks, canopies, treeBlobShadows, grassTufts);
+  for (const mesh of [rocks, trunks, canopies, treeBlobShadows, grassTufts]) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false; // contents are per-instance distance-compacted below
   }
@@ -1008,7 +936,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   let scatterCullAcc = Infinity;
   function refreshScatterCulling() {
     const cx = camera.position.x, cz = camera.position.z;
-    let rockN = 0, trunkN = 0, canopyN = 0, farTrees = 0;
+    let rockN = 0, trunkN = 0, canopyN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
 
     for (const p of rockPlacements) {
       const dx = p.x - cx, dz = p.z - cz;
@@ -1020,6 +948,51 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       rocks.setMatrixAt(rockN++, dummy.matrix);
     }
 
+    // Supplement the sparse global rock field with deterministic small
+    // pebbles in a 6m world grid, compacted into the same InstancedMesh.
+    {
+      const cell = 6;
+      const gx0 = Math.floor((cx - CULL_NEAR_M) / cell), gx1 = Math.floor((cx + CULL_NEAR_M) / cell);
+      const gz0 = Math.floor((cz - CULL_NEAR_M) / cell), gz1 = Math.floor((cz + CULL_NEAR_M) / cell);
+      for (let gx = gx0; gx <= gx1 && rockN < ROCK_N; gx++) {
+        for (let gz = gz0; gz <= gz1 && rockN < ROCK_N; gz++) {
+          if (hash2(gx * 19 + 401, gz * 23 - 137) < 0.24) continue;
+          const x = (gx + 0.18 + hash2(gx * 7 - 31, gz * 11 + 71) * 0.64) * cell;
+          const z = (gz + 0.18 + hash2(gx * 13 + 97, gz * 5 - 53) * 0.64) * cell;
+          const dx = x - cx, dz = z - cz;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 4) || riverInfo(x, z).d < 4.8) continue;
+          const s = 0.13 + hash2(gx * 29 + 3, gz * 31 + 9) * 0.34;
+          dummy.position.set(x, terrainHeight(x, z) + s * 0.22, z);
+          dummy.rotation.set(hash2(gx, gz) * 3, hash2(gx + 9, gz - 4) * 3, hash2(gx - 6, gz + 8) * 3);
+          dummy.scale.set(s, s * 0.62, s * (0.75 + hash2(gx + 2, gz + 2) * 0.45));
+          dummy.updateMatrix();
+          rocks.setMatrixAt(rockN++, dummy.matrix);
+          pebbleN++;
+        }
+      }
+    }
+
+    // Dense deterministic grass within the 60m detail radius (4m cells).
+    {
+      const cell = 4;
+      const gx0 = Math.floor((cx - CULL_NEAR_M) / cell), gx1 = Math.floor((cx + CULL_NEAR_M) / cell);
+      const gz0 = Math.floor((cz - CULL_NEAR_M) / cell), gz1 = Math.floor((cz + CULL_NEAR_M) / cell);
+      for (let gx = gx0; gx <= gx1 && grassN < 900; gx++) {
+        for (let gz = gz0; gz <= gz1 && grassN < 900; gz++) {
+          if (hash2(gx * 37 - 811, gz * 41 + 609) < 0.12) continue;
+          const x = (gx + 0.2 + hash2(gx * 17 + 19, gz * 19 - 23) * 0.6) * cell;
+          const z = (gz + 0.2 + hash2(gx * 23 - 41, gz * 29 + 13) * 0.6) * cell;
+          const dx = x - cx, dz = z - cz;
+          if (dx * dx + dz * dz > CULL_NEAR2 || !clearOf(x, z, 3) || riverInfo(x, z).d < 4.7) continue;
+          dummy.position.set(x, terrainHeight(x, z) - 0.02, z);
+          dummy.rotation.set(0, hash2(gx * 43, gz * 47) * Math.PI * 2, 0);
+          dummy.scale.setScalar(0.75 + hash2(gx * 53 + 7, gz * 59 - 5) * 0.85);
+          dummy.updateMatrix();
+          grassTufts.setMatrixAt(grassN++, dummy.matrix);
+        }
+      }
+    }
+
     for (const p of treePlacements) {
       const dx = p.x - cx, dz = p.z - cz;
       const d2 = dx * dx + dz * dz;
@@ -1029,6 +1002,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       dummy.position.set(p.x, p.y + 3.8 * p.s, p.z);
       dummy.updateMatrix();
       canopies.setMatrixAt(canopyN++, dummy.matrix);
+      dummy.position.set(p.x, p.y + 0.045, p.z);
+      dummy.scale.setScalar(2.15 * p.s);
+      dummy.updateMatrix();
+      treeBlobShadows.setMatrixAt(blobN++, dummy.matrix);
       if (d2 <= CULL_NEAR2) {
         dummy.position.set(p.x, p.y + 0.8 * p.s, p.z);
         dummy.updateMatrix();
@@ -1039,9 +1016,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     rocks.count = rockN;
     trunks.count = trunkN;
     canopies.count = canopyN;
+    treeBlobShadows.count = blobN;
+    grassTufts.count = grassN;
     rocks.instanceMatrix.needsUpdate = true;
     trunks.instanceMatrix.needsUpdate = true;
     canopies.instanceMatrix.needsUpdate = true;
+    treeBlobShadows.instanceMatrix.needsUpdate = true;
+    grassTufts.instanceMatrix.needsUpdate = true;
 
     // The relay point light has a 90m radius; don't include it in material
     // lighting once the objective is outside the 150m combat band.
@@ -1050,6 +1031,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     debugStats.cullNear = rockN + trunkN;
     debugStats.cullMid = canopyN;
+    debugStats.grass = grassN;
+    debugStats.pebbles = pebbleN;
+    debugStats.blobShadows = blobN;
     debugStats.cullFar = farTrees;
     debugStats.shadowMapsFrozen = renderer.shadowMap.autoUpdate ? 0 : 1;
     debugStats.shadowMapUpdates = 0;
@@ -1068,6 +1052,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   {
     const platform = new THREE.Mesh(new THREE.CylinderGeometry(8.2, 9, 1.1, 8), darkMetal);
     platform.position.y = 0.4; relay.add(platform);
+    const relayBlob = new THREE.Mesh(blobShadowGeometry, blobShadowMaterial);
+    relayBlob.scale.setScalar(10.5); relayBlob.position.y = 0.06; relayBlob.renderOrder = 1;
+    relay.add(relayBlob);
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.34, 27, 6), metal);
     mast.position.y = 13.5; relay.add(mast);
     addBox(relay, 7.5, 0.18, 0.18, 0, 21, 0);
@@ -1109,7 +1096,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     group.add(body, eye);
     scene.add(group);
     drones.push({
-      group, body, eye, ax, az,
+      group, body, eye, ax, az, cx: ax, cz: az, engaged: false,
       hoverH: 6.5 + rand() * 4,
       phase: rand() * Math.PI * 2,
       orbitR: 4 + rand() * 4.5,
@@ -1168,27 +1155,70 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // ----- weapon viewmodel -----
   const gun = new THREE.Group();
   {
-    const gm = new THREE.MeshStandardMaterial({ color: 0x2c352b, roughness: 0.5, metalness: 0.45, emissive: 0x11160f });
-    const gm2 = new THREE.MeshStandardMaterial({ color: 0x3d4836, roughness: 0.6, metalness: 0.3, emissive: 0x161c13 });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.15, 0.58), gm); gun.add(body);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.34, 8), gm);
-    barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.035, -0.44); gun.add(barrel);
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.3), gm2);
-    guard.position.set(0, -0.01, -0.34); gun.add(guard);
-    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.1), gm);
-    mag.position.set(0, -0.15, -0.06); mag.rotation.x = 0.28; gun.add(mag);
-    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.12, 0.22), gm2);
-    stock.position.set(0, -0.02, 0.36); gun.add(stock);
-    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.06, 0.09), gm);
-    sight.position.set(0, 0.105, -0.05); gun.add(sight);
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.011, 6, 5), new THREE.MeshBasicMaterial({ color: 0xc8f45c }));
-    dot.position.set(0, 0.108, -0.05); gun.add(dot);
+    // Stylized low-poly tactical rifle, merged by material into four
+    // viewmodel meshes: detailed silhouette, minimal draw calls, no
+    // external model fetch during boot.
+    const gm = new THREE.MeshStandardMaterial({ color: 0x252c25, roughness: 0.42, metalness: 0.58, emissive: 0x090d08, flatShading: true });
+    const gm2 = new THREE.MeshStandardMaterial({ color: 0x46523a, roughness: 0.72, metalness: 0.18, emissive: 0x10150d, flatShading: true });
+    const gm3 = new THREE.MeshStandardMaterial({ color: 0x7a6a4d, roughness: 0.62, metalness: 0.28, emissive: 0x171207, flatShading: true });
+    const dark = [], polymer = [], accent = [];
+    const box = (list, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) => {
+      const g = new THREE.BoxGeometry(w, h, d);
+      if (rx) g.rotateX(rx); if (ry) g.rotateY(ry); if (rz) g.rotateZ(rz);
+      g.translate(x, y, z); list.push(g);
+    };
+    const cyl = (list, r, len, x, y, z, seg = 10) => {
+      const g = new THREE.CylinderGeometry(r, r, len, seg);
+      g.rotateX(Math.PI / 2); g.translate(x, y, z); list.push(g);
+    };
+    // Receiver, rail, barrel group and optic.
+    box(dark, 0.075, 0.115, 0.56, 0, 0.02, -0.04);
+    box(dark, 0.07, 0.09, 0.34, 0, -0.055, 0.05);
+    box(dark, 0.082, 0.095, 0.36, 0, 0.005, -0.36);
+    box(dark, 0.046, 0.022, 0.64, 0, 0.095, -0.16);
+    cyl(dark, 0.016, 0.37, 0, 0.025, -0.58, 10);
+    cyl(dark, 0.028, 0.11, 0, 0.025, -0.76, 8);
+    box(dark, 0.055, 0.08, 0.07, 0, 0.045, -0.52);
+    box(dark, 0.056, 0.025, 0.07, 0, 0.055, 0.29);
+    box(dark, 0.014, 0.036, 0.11, 0.043, 0.025, -0.02);
+    box(dark, 0.035, 0.05, 0.065, 0, 0.108, -0.12);
+    cyl(dark, 0.035, 0.16, 0, 0.148, -0.12, 14);
+    cyl(dark, 0.041, 0.025, 0, 0.148, -0.19, 14);
+    box(dark, 0.012, 0.055, 0.018, 0, 0.118, -0.5);
+    box(dark, 0.012, 0.045, 0.018, 0, 0.112, 0.18);
+    // Polymer furniture: stock, grips, curved magazine, handguard panels.
+    box(polymer, 0.045, 0.05, 0.22, 0, 0.0, 0.34);
+    box(polymer, 0.07, 0.145, 0.18, 0, -0.035, 0.47);
+    box(polymer, 0.062, 0.035, 0.13, 0, 0.047, 0.46);
+    box(polymer, 0.055, 0.165, 0.075, 0, -0.14, 0.14, 0.35);
+    box(polymer, 0.045, 0.135, 0.055, 0, -0.105, -0.38, 0.12);
+    box(polymer, 0.056, 0.16, 0.09, 0, -0.145, -0.08, 0.18);
+    box(polymer, 0.052, 0.15, 0.086, 0, -0.255, -0.045, 0.38);
+    box(polymer, 0.014, 0.055, 0.26, -0.049, -0.005, -0.36);
+    box(polymer, 0.014, 0.055, 0.26, 0.049, -0.005, -0.36);
+    box(polymer, 0.05, 0.018, 0.22, 0, -0.062, -0.36);
+    // Desert accent panels/details match the HUD's tactical palette.
+    box(accent, 0.058, 0.028, 0.095, 0, -0.315, -0.02, 0.38);
+    box(accent, 0.016, 0.045, 0.18, -0.045, 0.055, -0.36);
+    box(accent, 0.016, 0.045, 0.18, 0.045, 0.055, -0.36);
+    box(accent, 0.02, 0.02, 0.055, 0.052, -0.035, 0.08);
+    box(accent, 0.05, 0.018, 0.1, 0, 0.075, 0.43);
+    gun.add(new THREE.Mesh(mergeGeometries(dark, false), gm));
+    gun.add(new THREE.Mesh(mergeGeometries(polymer, false), gm2));
+    gun.add(new THREE.Mesh(mergeGeometries(accent, false), gm3));
+    const lens = new THREE.Mesh(
+      new THREE.CircleGeometry(0.026, 16),
+      new THREE.MeshBasicMaterial({ color: 0x9feaff })
+    );
+    lens.position.set(0, 0.148, -0.039); gun.add(lens);
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 6, 5), new THREE.MeshBasicMaterial({ color: 0xc8f45c }));
+    dot.position.set(0, 0.148, -0.035); gun.add(dot);
   }
   gun.position.set(0.22, -0.24, -0.62);
   gun.scale.setScalar(0.85);
   camera.add(gun);
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.035, -0.62); gun.add(muzzle);
+  muzzle.position.set(0, 0.025, -0.83); gun.add(muzzle);
   const flash = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0 }));
   flash.position.copy(muzzle.position); gun.add(flash);
 
@@ -1202,6 +1232,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     jumpHeld: false,
     coyote: 0,
     landDip: 0, // camera settle after a hard landing
+    swayYaw: 0, swayPitch: 0, swayYawVel: 0, swayPitchVel: 0,
     yaw: Math.atan2(-spawnDir.x, -spawnDir.y),
     pitch: -0.03,
     bobPhase: 0,
@@ -1209,6 +1240,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     lastStep: 0,
     wading: false,
   };
+  const playerBlobMaterial = blobShadowMaterial.clone();
+  const playerBlobShadow = new THREE.Mesh(blobShadowGeometry, playerBlobMaterial);
+  playerBlobShadow.scale.setScalar(0.62);
+  playerBlobShadow.renderOrder = 1;
+  playerBlobShadow.visible = false;
+  scene.add(playerBlobShadow);
   let playing = false;
   let transition = null; // { t, fromPos, fromQuat }
   let outOfBounds = false;
@@ -1241,10 +1278,6 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const mesh = terrainChunks.get(key);
         if (!mesh || mesh.userData.seg < want) buildTerrainChunkSync(ix, iz, want);
       }
-    }
-    if (phys.ready) {
-      phys.body.setTranslation({ x: player.pos.x, y: player.pos.y - 0.8, z: player.pos.z }, true);
-      syncPhysicsColliders(t.ix, t.iz);
     }
     if (playing) {
       camera.position.copy(player.pos);
@@ -1346,10 +1379,27 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   function updatePlayer(dt) {
     // look: drag deltas + aim-stick rate
+    const prevYaw = player.yaw, prevPitch = player.pitch;
     player.yaw -= inputState.lookDX * 0.0026 + inputState.aimX * 2.5 * dt;
     player.pitch -= inputState.lookDY * 0.0026 + inputState.aimY * 1.9 * dt;
     player.pitch = clamp(player.pitch, -1.35, 1.35);
     inputState.lookDX = 0; inputState.lookDY = 0;
+    // Viewmodel spring: while the camera is turning, the rifle's target
+    // offset trails that angular velocity; a damped spring then returns
+    // it to center with a small physical overshoot.
+    let yawDelta = player.yaw - prevYaw;
+    if (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
+    if (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
+    const yawRate = dt > 0.0001 ? yawDelta / dt : 0;
+    const pitchRate = dt > 0.0001 ? (player.pitch - prevPitch) / dt : 0;
+    const swayYawTarget = clamp(-yawRate * 0.035, -0.15, 0.15);
+    const swayPitchTarget = clamp(-pitchRate * 0.03, -0.12, 0.12);
+    player.swayYawVel += ((swayYawTarget - player.swayYaw) * 110 - player.swayYawVel * 16) * dt;
+    player.swayPitchVel += ((swayPitchTarget - player.swayPitch) * 110 - player.swayPitchVel * 16) * dt;
+    player.swayYaw = clamp(player.swayYaw + player.swayYawVel * dt, -0.22, 0.22);
+    player.swayPitch = clamp(player.swayPitch + player.swayPitchVel * dt, -0.18, 0.18);
+    debugStats.swayYaw = Math.round(player.swayYaw * 1000) / 1000;
+    debugStats.swayPitch = Math.round(player.swayPitch * 1000) / 1000;
 
     // move: keys + move stick
     let mx = inputState.moveX, mz = inputState.moveY;
@@ -1368,15 +1418,29 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const maxSpeed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     const prevX = player.pos.x, prevZ = player.pos.z;
-    // --- velocity model: ground acceleration/friction, weak air control,
-    // gravity + coyote-timed jump. Collision: Rapier character controller
-    // when the WASM core is ready, analytic heightfield solver otherwise
-    // (identical velocity model feeds both). forward = (-sin, -cos).
+    // --- kinematic inertia: explicit accel/decel response, weak air
+    // control, gravity + coyote jump. Exponential rates give roughly
+    // 86% of a start in 0.20s and 88% of a stop in 0.15s, so starts
+    // and stops carry visible weight without a rigid-body engine.
     const wishX = -sin * mz + cos * mx, wishZ = -cos * mz - sin * mx;
-    const accel = player.grounded ? 11 : 2.4;
-    const vBlend = 1 - Math.exp(-accel * dt);
-    player.vel.x += (wishX * maxSpeed - player.vel.x) * vBlend;
-    player.vel.z += (wishZ * maxSpeed - player.vel.z) * vBlend;
+    const wishMag = Math.hypot(mx, mz);
+    let slopeSpeedMul = 1;
+    if (player.grounded && wishMag > 0.01) {
+      const ahead = 2.2;
+      const grade = (terrainHeight(player.pos.x + wishX * ahead, player.pos.z + wishZ * ahead) - terrainHeight(player.pos.x, player.pos.z)) / ahead;
+      slopeSpeedMul = clamp(1 - grade * 0.55, 0.35, 1.12);
+    }
+    const targetX = wishX * maxSpeed * slopeSpeedMul;
+    const targetZ = wishZ * maxSpeed * slopeSpeedMul;
+    const decelerating = wishMag < 0.03 || (player.vel.x * targetX + player.vel.z * targetZ) < 0;
+    const mud = climateNow.mud;
+    const accelRate = !player.grounded ? 2.3
+      : decelerating ? 14 * (1 - 0.45 * mud)  // monsoon mud: longer slide
+      : 10 * (1 - 0.3 * mud);                 // monsoon mud: -30% acceleration
+    debugStats.accelRate = accelRate;
+    const vBlend = 1 - Math.exp(-accelRate * dt);
+    player.vel.x += (targetX - player.vel.x) * vBlend;
+    player.vel.z += (targetZ - player.vel.z) * vBlend;
     const jumpDown = k.has("Space") || inputState.jump;
     inputState.jump = false;
     if (jumpDown && !player.jumpHeld && (player.grounded || player.coyote > 0)) {
@@ -1392,36 +1456,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // Integrate from the feet; player.pos is the eye (feet + 1.7m).
     let feetX = player.pos.x, feetY = player.pos.y - 1.7, feetZ = player.pos.z;
     const mdx = player.vel.x * dt, mdy = player.vy * dt, mdz = player.vel.z * dt;
-    if (phys.ready) {
-      const pfx = feetX, pfz = feetZ;
-      const out = physMove(feetX, feetY, feetZ, mdx, mdy, mdz);
-      feetX = out.x; feetY = out.y; feetZ = out.z;
-      player.grounded = out.grounded;
-      // Anti-wedge referee: a capsule can snag on heightfield triangle
-      // edges/seams even on gentle ground (observed riding the z=0 chunk
-      // seam: Rapier cancelled all horizontal motion at <18deg slope).
-      // If >75% of the desired move was cancelled but the analytic
-      // surface just ahead is walkable and within step height, take the
-      // analytic step this frame instead of wedging. Truly steep faces
-      // (rise >= 0.85m over 0.7m, ~50deg) stay blocked by Rapier.
-      const wantSq = mdx * mdx + mdz * mdz;
-      if (wantSq > 1e-6) {
-        const ratio = ((feetX - pfx) * mdx + (feetZ - pfz) * mdz) / wantSq;
-        if (ratio < 0.25) {
-          const inv = 1 / Math.sqrt(wantSq);
-          const gHere = terrainHeight(pfx, pfz);
-          const gAhead = terrainHeight(pfx + mdx * inv * 0.7, pfz + mdz * inv * 0.7);
-          if (gAhead - gHere < 0.85 && gAhead - feetY < 0.55) {
-            feetX = pfx + mdx;
-            feetZ = pfz + mdz;
-            if (feetY - gAhead < 0.4) player.grounded = true;
-          }
-        }
-      }
-    } else {
-      feetX += mdx; feetY += mdy; feetZ += mdz;
-      player.grounded = false;
-    }
+    feetX += mdx; feetY += mdy; feetZ += mdz;
+    player.grounded = false;
     player.pos.x = feetX;
     player.pos.z = feetZ;
     // Mode-specific square boundary.
@@ -1454,19 +1490,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const alongB = bdx * bridge.ax + bdz * bridge.az;
     const acrossB = bdx * bridge.px + bdz * bridge.pz;
     if (Math.abs(alongB) < 5.8 && Math.abs(acrossB) < 1.7) groundY = Math.max(groundY, bridge.deckY);
-    if (!phys.ready) {
-      if (feetY <= groundY) { feetY = groundY; player.grounded = true; }
-    } else {
-      // 48-seg colliders can sit slightly off the rendered surface on
-      // sharp ridges: settle onto the analytic surface while grounded,
-      // and never let the feet sink below it (also covers the frames
-      // before a fresh chunk collider exists).
-      if (!player.grounded && player.vy <= 0.5 && feetY - groundY < 0.35 && feetY >= groundY - 0.05) {
-        feetY = groundY; // within snap distance of the true surface
-        player.grounded = true;
-      }
-      if (player.grounded) feetY += (groundY - feetY) * Math.min(1, dt * 16);
-      if (feetY < groundY - 0.05) { feetY = groundY; player.grounded = true; }
+    const snapDistance = wasGrounded && player.vy <= 0 ? 0.55 : 0;
+    if (feetY <= groundY + snapDistance) {
+      if (feetY < groundY) feetY = groundY;
+      else feetY += (groundY - feetY) * Math.min(1, dt * 20); // smooth downhill snap
+      player.grounded = true;
     }
     if (player.grounded) {
       if (!wasGrounded && fallSpeed > 6) {
@@ -1476,11 +1504,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       if (player.vy < 0) player.vy = 0;
     }
     player.pos.y = feetY + 1.7;
+    playerBlobShadow.visible = true;
+    playerBlobShadow.position.set(player.pos.x, groundY + 0.04, player.pos.z);
+    const airH = clamp(feetY - groundY, 0, 3);
+    playerBlobShadow.scale.setScalar(0.62 * (1 - airH * 0.1));
+    playerBlobMaterial.opacity = clamp(climateNow.blobOpacity + 0.02 - airH * 0.055, 0.05, 0.42);
     debugStats.grounded = player.grounded ? 1 : 0;
     debugStats.vy = Math.round(player.vy * 10) / 10;
     debugStats.speed = Math.round(Math.hypot(player.vel.x, player.vel.z) * 10) / 10;
-    const moving = Math.min(1, Math.hypot(player.vel.x, player.vel.z) / 6) * (player.grounded ? 1 : 0.25);
-    player.bobPhase += dt * (sprint ? 11 : 8) * moving;
+    const hSpeed = Math.hypot(player.vel.x, player.vel.z);
+    const moving = clamp(hSpeed / 8, 0, 1) * (player.grounded ? 1 : 0.2);
+    player.bobPhase += dt * hSpeed * 1.18 * (player.grounded ? 1 : 0.25);
     const stepIdx = Math.floor(player.bobPhase / Math.PI);
     if (moving > 0.15 && stepIdx !== player.lastStep && player.grounded) {
       player.lastStep = stepIdx;
@@ -1503,15 +1537,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       camera.rotation.set(player.pitch, player.yaw, -mx * 0.014);
     }
 
-    // viewmodel sway + recoil
+    // Viewmodel: camera-synced walking bob + spring sway + recoil.
     player.recoil = Math.max(0, player.recoil - dt * 7);
     const rk = player.recoil * player.recoil;
     gun.position.set(
-      0.22 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving,
-      -0.24 + Math.sin(player.bobPhase) * 0.014 * moving,
+      0.22 + Math.cos(player.bobPhase * 0.5) * 0.012 * moving - player.swayYaw * 0.16,
+      -0.24 + Math.sin(player.bobPhase) * 0.014 * moving + player.swayPitch * 0.11,
       -0.62 + rk * 0.07
     );
-    gun.rotation.x = rk * 0.09;
+    gun.rotation.set(rk * 0.09 + player.swayPitch * 0.85, player.swayYaw, player.swayYaw * 0.35);
     flash.material.opacity = Math.max(0, flash.material.opacity - dt * 16);
   }
 
@@ -1526,43 +1560,75 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     );
     camera.lookAt(cx, terrainHeight(cx, cz) + 8, cz);
     gun.visible = false;
+    playerBlobShadow.visible = false;
   }
 
   function updateDrones(dt, t) {
     const nowSec = performance.now() / 1000;
-    let visibleN = 0;
+    const losM = climateNow.losM;
+    const renderRange = Math.max(CULL_MID_M, losM);
+    let visibleN = 0, engagedN = 0;
     for (let di = 0; di < drones.length; di++) {
       const d = drones[di];
-      const adx = d.ax - camera.position.x, adz = d.az - camera.position.z;
+      const adx = d.cx - camera.position.x, adz = d.cz - camera.position.z;
       const approxDist = Math.max(0, Math.sqrt(adx * adx + adz * adz) - d.orbitR);
-      if (approxDist > CULL_MID_M) {
+      if (approxDist > renderRange) {
         d.group.visible = false;
-        // Respawn bookkeeping still advances while the mesh is culled.
+        d.engaged = false;
         if (!d.alive && nowSec >= d.respawnAt) {
           d.alive = true;
           d.vy = 0;
-          d.eye.material.color.set(0xff5040);
+          d.eye.material.color.set(0xffb347);
           d.group.rotation.set(0, 0, 0);
         }
         continue;
       }
       d.group.visible = true;
       visibleN++;
-      // Full-rate inside 60m; quarter-rate analytic motion at 60-150m.
-      if (d.alive && approxDist > CULL_NEAR_M && ((frameSerial + di) & 3) !== 0) continue;
       if (d.alive) {
         const a = t * d.speed + d.phase;
-        const x = d.ax + Math.cos(a) * d.orbitR;
-        const z = d.az + Math.sin(a) * d.orbitR;
+        let x = d.cx + Math.cos(a) * d.orbitR;
+        let z = d.cz + Math.sin(a) * d.orbitR;
+        const actualDist = Math.hypot(x - camera.position.x, z - camera.position.z);
+        d.engaged = playing && actualDist <= losM;
+        if (d.engaged) engagedN++;
+        d.eye.material.color.set(d.engaged ? 0xff5040 : 0xffb347);
+        // Positional updates remain quarter-rate at 60m+, as before.
+        // Engagement above is evaluated from the analytic orbit
+        // every frame, so LOS changes take effect immediately as the
+        // weather value itself lerps.
+        if (approxDist > CULL_NEAR_M && ((frameSerial + di) & 3) !== 0) continue;
+        const stepDt = approxDist > CULL_NEAR_M ? dt * 4 : dt;
+        // Hunt inside a 28m anchor leash while engaged; drift home when
+        // weather LOS no longer reaches the player.
+        let targetX = d.ax, targetZ = d.az;
+        if (d.engaged) {
+          const hx = camera.position.x - d.ax, hz = camera.position.z - d.az;
+          const hd = Math.hypot(hx, hz) || 1;
+          const leash = Math.min(28, hd);
+          targetX = d.ax + (hx / hd) * leash;
+          targetZ = d.az + (hz / hd) * leash;
+        }
+        const mx2 = targetX - d.cx, mz2 = targetZ - d.cz;
+        const md = Math.hypot(mx2, mz2);
+        if (md > 0.001) {
+          const step = Math.min(md, (d.engaged ? 0.9 : 0.55) * stepDt);
+          d.cx += (mx2 / md) * step;
+          d.cz += (mz2 / md) * step;
+          x = d.cx + Math.cos(a) * d.orbitR;
+          z = d.cz + Math.sin(a) * d.orbitR;
+        }
         const y = terrainHeight(x, z) + d.hoverH + Math.sin(t * 1.4 + d.phase) * 0.7;
         d.group.position.set(x, y, z);
         d.group.rotation.y = -a;
-        d.body.rotation.y += dt * 1.6;
-      } else if (performance.now() / 1000 >= d.respawnAt) {
+        d.body.rotation.y += dt * (d.engaged ? 3.0 : 1.6);
+      } else if (nowSec >= d.respawnAt) {
         d.alive = true;
-        d.eye.material.color.set(0xff5040);
+        d.engaged = false;
+        d.eye.material.color.set(0xffb347);
         d.group.rotation.set(0, 0, 0);
       } else {
+        d.engaged = false;
         const groundY = terrainHeight(d.group.position.x, d.group.position.z) + 0.7;
         if (d.group.position.y > groundY) {
           d.vy += 22 * dt;
@@ -1573,6 +1639,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       }
     }
     debugStats.dronesVisible = visibleN;
+    debugStats.dronesEngaged = engagedN;
+    debugStats.aiLosM = Math.round(losM * 10) / 10;
   }
 
   function updateFx(dt) {
@@ -1597,9 +1665,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
 
-  // ----- day/night cycle (20-min day / 10-min night; T skips +3h; ?phase= sets start) -----
-  const DAY_SECONDS = 1200; // 20-minute day
-  const NIGHT_SECONDS = 600; // 10-minute night
+  // ----- day/night + macro climate (15-min in-game day; T skips +3h) -----
+  const DAY_SECONDS = 600; // 10-minute daylight half
+  const NIGHT_SECONDS = 300; // 5-minute night half = 15-minute macro day
   let cycleT = (() => {
     try {
       const p = parseFloat(new URLSearchParams(window.location.search).get("phase"));
@@ -1615,44 +1683,274 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   };
   const _c1 = new THREE.Color(), _c2 = new THREE.Color();
   let ambAcc = 1;
+
+  // ----- macro seasons + micro weather -----
+  // Macro clock: macroDays advances with the sun cycle (900s/day); a
+  // season is 10 macro days. Micro clock: an active-time real-seconds
+  // accumulator rolls weather every 600s using the current season's
+  // weights. Season palette and all weather scalars transition over 30s.
+  const SEASON_ORDER = ["dry", "cool", "monsoon"];
+  const SEASON_PALETTES = {
+    dry: {
+      terrain: new THREE.Color(0xd8bd83), canopy: new THREE.Color(0x716b35), grass: new THREE.Color(0x8a8142),
+      weights: [["sunny", 0.60], ["mist", 0.30], ["monsoon", 0.10]],
+    },
+    cool: {
+      terrain: new THREE.Color(0xffffff), canopy: new THREE.Color(0x1b2a17), grass: new THREE.Color(0x35542a),
+      weights: [["sunny", 0.50], ["mist", 0.40], ["monsoon", 0.10]],
+    },
+    monsoon: {
+      terrain: new THREE.Color(0x9fd3a8), canopy: new THREE.Color(0x0e3520), grass: new THREE.Color(0x1f6b32),
+      weights: [["monsoon", 0.50], ["mist", 0.40], ["sunny", 0.10]],
+    },
+  };
+  const WEATHER_TARGETS = {
+    sunny: {
+      density: 0.0024, tint: new THREE.Color(0xd7e4c2), tintStrength: 0.08,
+      sunMul: 1.12, hemiMul: 1.05, exposureMul: 1.05, cloud: 0.05,
+      sunGlow: 1, rain: 0, mud: 0, losM: 300, blobOpacity: 0.36,
+    },
+    mist: {
+      density: 0.034, tint: new THREE.Color(0xd8ddd6), tintStrength: 0.72,
+      sunMul: 0.38, hemiMul: 0.82, exposureMul: 0.94, cloud: 0.55,
+      sunGlow: 0.08, rain: 0, mud: 0, losM: 50, blobOpacity: 0.18,
+    },
+    monsoon: {
+      density: 0.0215, tint: new THREE.Color(0x5f7162), tintStrength: 0.68,
+      sunMul: 0.28, hemiMul: 0.68, exposureMul: 0.88, cloud: 0.9,
+      sunGlow: 0.03, rain: 1, mud: 1, losM: 80, blobOpacity: 0.16,
+    },
+  };
+  const WEATHER_FIELDS = ["density", "tintStrength", "sunMul", "hemiMul", "exposureMul", "cloud", "sunGlow", "rain", "mud", "losM", "blobOpacity"];
+  function normalizeSeason(name) {
+    name = String(name || "").toLowerCase();
+    return SEASON_ORDER.includes(name) ? name : null;
+  }
+  function normalizeWeather(name) {
+    name = String(name || "").toLowerCase();
+    if (name === "rain") return "monsoon";
+    return Object.prototype.hasOwnProperty.call(WEATHER_TARGETS, name) ? name : null;
+  }
+  function snapshotWeather(p) {
+    const out = { tint: p.tint.clone() };
+    for (const f of WEATHER_FIELDS) out[f] = p[f];
+    return out;
+  }
+  function clonePalette(p) {
+    return { terrain: p.terrain.clone(), canopy: p.canopy.clone(), grass: p.grass.clone() };
+  }
+  function currentMaterialPalette() {
+    return {
+      terrain: terrainMaterial.color.clone(),
+      canopy: canopyMaterial.color.clone(),
+      grass: grassMaterial.color.clone(),
+    };
+  }
+  function applySeasonPalette(p) {
+    terrainMaterial.color.copy(p.terrain);
+    canopyMaterial.color.copy(p.canopy);
+    grassMaterial.color.copy(p.grass);
+  }
+
+  const dayParam = parseFloat(getSearchParam("day"));
+  let macroDays = Number.isFinite(dayParam) ? Math.max(0, dayParam) : 0;
+  const requestedSeason = normalizeSeason(getSearchParam("season")) || "cool";
+  let seasonOffset = SEASON_ORDER.indexOf(requestedSeason) - Math.floor(macroDays / 10);
+  function seasonForMacroDay(days) {
+    const idx = ((seasonOffset + Math.floor(days / 10)) % 3 + 3) % 3;
+    return SEASON_ORDER[idx];
+  }
+  let seasonName = seasonForMacroDay(macroDays);
+  let seasonFrom = clonePalette(SEASON_PALETTES[seasonName]);
+  let seasonTo = clonePalette(SEASON_PALETTES[seasonName]);
+  let seasonBlend = 1;
+  applySeasonPalette(seasonTo);
+  function setSeason(name, adjustOffset = true) {
+    name = normalizeSeason(name);
+    if (!name || name === seasonName && seasonBlend >= 1) return;
+    seasonFrom = currentMaterialPalette();
+    seasonTo = clonePalette(SEASON_PALETTES[name]);
+    seasonName = name;
+    seasonBlend = 0;
+    if (adjustOffset) seasonOffset = SEASON_ORDER.indexOf(name) - Math.floor(macroDays / 10);
+  }
+
+  let weatherName = "sunny";
+  let weatherFrom = snapshotWeather(WEATHER_TARGETS.sunny);
+  let weatherTo = snapshotWeather(WEATHER_TARGETS.sunny);
+  let weatherBlend = 1;
+  // Shared live parameters consumed by movement, drones and sky. Defined
+  // before the first rendered frame; earlier function bodies only read it
+  // once the frame loop starts.
+  const climateNow = snapshotWeather(WEATHER_TARGETS.sunny);
+  function setWeather(name) {
+    name = normalizeWeather(name);
+    if (!name || name === weatherName && weatherBlend >= 1) return;
+    weatherFrom = snapshotWeather(climateNow);
+    weatherTo = snapshotWeather(WEATHER_TARGETS[name]);
+    weatherName = name;
+    weatherBlend = 0;
+  }
+  function rollWeather() {
+    const weights = SEASON_PALETTES[seasonName].weights;
+    let r = rand();
+    debugStats.weatherRolls++;
+    for (const [name, w] of weights) {
+      if (r < w) { setWeather(name); return; }
+      r -= w;
+    }
+    setWeather(weights[weights.length - 1][0]);
+  }
+  let weatherRollAcc = 0;
+  let lastClimateReal = performance.now() / 1000;
+  const initialWeather = normalizeWeather(getSearchParam("weather")) || "sunny";
+  if (initialWeather !== "sunny") setWeather(initialWeather);
+
+  // Screen-space rain: one fullscreen shader quad, no particle system.
+  const rainUniforms = {
+    uTime: { value: 0 }, uIntensity: { value: 0 }, uAspect: { value: camera.aspect || 1 },
+  };
+  const rainOverlay = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.ShaderMaterial({
+      uniforms: rainUniforms,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy * 2.0, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uAspect;
+        varying vec2 vUv;
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        void main() {
+          vec2 uv = vUv;
+          vec2 rainUv = vec2(uv.x * uAspect, uv.y);
+          // Slanted falling streak cells.
+          vec2 gv = vec2(rainUv.x * 95.0 + rainUv.y * 18.0 + uTime * 9.0,
+                         rainUv.y * 7.0 + uTime * 2.8);
+          vec2 id = floor(gv);
+          vec2 f = fract(gv);
+          float rnd = hash21(id);
+          float x = 0.15 + 0.7 * rnd;
+          float streak = smoothstep(0.08, 0.0, abs(f.x - x))
+            * smoothstep(0.0, 0.25, f.y) * smoothstep(1.0, 0.55, f.y)
+            * step(0.45, rnd);
+          // Slow visor droplets crawling down in hashed columns.
+          vec2 dg = vec2(rainUv.x * 30.0, rainUv.y * 18.0);
+          vec2 did = floor(dg);
+          float speed = 0.12 + hash21(did) * 0.35;
+          vec2 center = vec2(0.25 + hash21(did + 4.0) * 0.5,
+                             fract(hash21(did + 9.0) - uTime * speed));
+          float drop = smoothstep(0.22, 0.03, distance(fract(dg), center))
+            * step(0.58, hash21(did + 2.0));
+          float edgeWet = smoothstep(0.42, 1.0, length(uv - 0.5)) * 0.06;
+          float a = (streak * 0.28 + drop * 0.18 + edgeWet) * uIntensity;
+          gl_FragColor = vec4(vec3(0.78, 0.86, 0.88), a);
+        }`,
+    })
+  );
+  rainOverlay.frustumCulled = false;
+  rainOverlay.renderOrder = 999;
+  rainOverlay.visible = false;
+  scene.add(rainOverlay);
+
+  function updateClimate(dt) {
+    const computedSeason = seasonForMacroDay(macroDays);
+    if (computedSeason !== seasonName) setSeason(computedSeason, false);
+    seasonBlend = Math.min(1, seasonBlend + dt / 30);
+    const sb = seasonBlend;
+    // The terrain material color multiplies every baked terrain vertex
+    // color in-shader; canopy/grass material colors lerp in parallel.
+    terrainMaterial.color.lerpColors(seasonFrom.terrain, seasonTo.terrain, sb);
+    canopyMaterial.color.lerpColors(seasonFrom.canopy, seasonTo.canopy, sb);
+    grassMaterial.color.lerpColors(seasonFrom.grass, seasonTo.grass, sb);
+
+    weatherBlend = Math.min(1, weatherBlend + dt / 30);
+    const wb = weatherBlend;
+    for (const f of WEATHER_FIELDS) climateNow[f] = lerp(weatherFrom[f], weatherTo[f], wb);
+    climateNow.tint.lerpColors(weatherFrom.tint, weatherTo.tint, wb);
+    blobShadowMaterial.opacity = climateNow.blobOpacity;
+
+    const nowReal = performance.now() / 1000;
+    const realDt = Math.min(1, Math.max(0, nowReal - lastClimateReal));
+    lastClimateReal = nowReal;
+    weatherRollAcc += realDt;
+    if (weatherRollAcc >= 600) {
+      weatherRollAcc -= 600;
+      rollWeather();
+    }
+
+    debugStats.season = seasonName.toUpperCase();
+    debugStats.weather = weatherName.toUpperCase();
+    debugStats.macroDay = Math.round(macroDays * 100) / 100;
+    debugStats.seasonDay = Math.floor(macroDays % 10) + 1;
+    debugStats.seasonBlend = Math.round(seasonBlend * 100) / 100;
+    debugStats.weatherBlend = Math.round(weatherBlend * 100) / 100;
+    debugStats.weatherRollS = Math.max(0, Math.round(600 - weatherRollAcc));
+    debugStats.rain = Math.round(climateNow.rain * 100) / 100;
+    debugStats.mud = Math.round(climateNow.mud * 100) / 100;
+    debugStats.seasonTint = terrainMaterial.color.getHexString();
+    return climateNow;
+  }
+
   function updateSky(dt) {
     if (inputState.timeSkip) {
       inputState.timeSkip = false;
       cycleT = (cycleT + 0.125) % 1;
+      macroDays += 0.125;
     }
-    // Sun-up half (cycleT 0..0.5) lasts DAY_SECONDS, night half NIGHT_SECONDS.
+    // Sun-up half (cycleT 0..0.5) lasts DAY_SECONDS, night half
+    // NIGHT_SECONDS; together exactly one 900s macro day.
     const seg = cycleT < 0.5 ? DAY_SECONDS : NIGHT_SECONDS;
-    cycleT = (cycleT + (dt * 0.5) / seg) % 1;
+    const cycleAdvance = (dt * 0.5) / seg;
+    cycleT = (cycleT + cycleAdvance) % 1;
+    macroDays += cycleAdvance;
     const th = cycleT * Math.PI * 2;
     const elev = Math.sin(th);
     const daylight = smoothstep(-0.06, 0.28, elev);
     const nightness = 1 - smoothstep(-0.32, -0.04, elev);
     const duskness = clamp(1 - Math.abs(elev + 0.02) / 0.3, 0, 1) * (1 - nightness * 0.55);
 
+    const climate = updateClimate(dt);
     const sunDir = _v1.set(Math.cos(th) * 0.88, elev, 0.38).normalize();
     skyUniforms.uSunDir.value.copy(sunDir);
     skyUniforms.uMoonDir.value.copy(sunDir).multiplyScalar(-1);
-    skyUniforms.uNight.value = nightness;
+    skyUniforms.uNight.value = nightness * (1 - climate.cloud * 0.75);
+    skyUniforms.uSunGlow.value = climate.sunGlow * daylight;
     skyUniforms.uSunColor.value.lerpColors(SKY.sunLow, SKY.sunHigh, clamp(elev * 1.7, 0, 1));
     skyUniforms.uZenith.value.lerpColors(SKY.zenNight, SKY.zenDay, daylight);
     _c1.lerpColors(SKY.horNight, SKY.horDay, daylight).lerp(SKY.horDusk, duskness * 0.72);
+    _c1.lerp(climate.tint, climate.tintStrength * (0.35 + 0.65 * daylight));
     skyUniforms.uHorizon.value.copy(_c1);
-    scene.fog.color.copy(_c1).multiplyScalar(0.82);
+    scene.fog.color.copy(_c1); // exact weather-tinted sky horizon: no seam
+    scene.fog.density = climate.density * lerp(1.28, 1, daylight);
+    debugStats.fogDensity = Math.round(scene.fog.density * 100000) / 100000;
 
     sunLight.position.copy(sunDir).multiplyScalar(220).add(camera.position);
     sunLight.target.position.copy(camera.position);
-    sunLight.intensity = 2.3 * Math.pow(clamp(elev, 0, 1), 0.7) * (0.2 + 0.8 * daylight);
+    sunLight.intensity = 2.3 * Math.pow(clamp(elev, 0, 1), 0.7) * (0.2 + 0.8 * daylight) * climate.sunMul;
     sunLight.color.copy(skyUniforms.uSunColor.value);
     moonLight.position.copy(sunDir).multiplyScalar(-200).add(camera.position);
     moonLight.target.position.copy(camera.position);
-    moonLight.intensity = 0.55 * nightness;
-    hemi.intensity = lerp(0.23, 0.8, daylight);
+    moonLight.intensity = 0.55 * nightness * (1 - climate.cloud * 0.6);
+    hemi.intensity = lerp(0.23, 0.8, daylight) * climate.hemiMul;
     hemi.color.lerpColors(SKY.hemiNight, SKY.hemiDay, daylight);
-    renderer.toneMappingExposure = lerp(1.0, 1.08, daylight);
+    renderer.toneMappingExposure = lerp(1.0, 1.08, daylight) * climate.exposureMul;
 
-    starMat.opacity = nightness * (0.78 + 0.22 * Math.sin(elapsed * 2.7));
+    starMat.opacity = nightness * (0.78 + 0.22 * Math.sin(elapsed * 2.7)) * (1 - climate.cloud * 0.82);
     for (const g of galaxies) {
-      g.material.opacity = nightness * 0.9;
+      g.material.opacity = nightness * 0.9 * (1 - climate.cloud * 0.82);
       g.material.rotation += dt * 0.004;
     }
     stars.rotation.y = cycleT * 0.6;
@@ -1660,6 +1958,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     waterUniforms.uTime.value = elapsed;
     waterUniforms.uDay.value = daylight;
+    rainUniforms.uTime.value = elapsed;
+    rainUniforms.uIntensity.value = climate.rain;
+    rainUniforms.uAspect.value = camera.aspect || 1;
+    rainOverlay.visible = playing && climate.rain > 0.01;
 
     ambAcc += dt;
     if (ambAcc > 0.18 && hooks.onAmbience) {
@@ -1683,6 +1985,18 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const tp = worldControl.teleport;
       worldControl.teleport = null;
       teleport(tp.x || 0, tp.z || 0, tp.heading || 0);
+    }
+    if (worldControl.weather) {
+      setWeather(worldControl.weather);
+      worldControl.weather = null;
+    }
+    if (worldControl.season) {
+      setSeason(worldControl.season);
+      worldControl.season = null;
+    }
+    if (worldControl.rollWeather) {
+      worldControl.rollWeather = false;
+      rollWeather();
     }
     if (playing) {
       gun.visible = true;
@@ -1711,11 +2025,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       chunkStreamAcc = 0;
       updateChunkStreaming();
     }
-    // Time-sliced background work: at most ~5ms/frame total, so streaming
-    // a fresh 96-seg chunk (or a physics heightfield) never hitches.
-    physEnsure();
+    // Time-sliced chunk work remains capped so terrain streaming does
+    // not hitch movement.
     pumpChunkJobs(3.5);
-    pumpPhysJobs(1.5);
     pumpBvh();
     renderer.render(scene, camera);
     { // debug counters (renderer.info is valid right after render)
@@ -1749,11 +2061,6 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     window.removeEventListener("keyup", onKeyUp);
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("resize", onResize);
-    if (phys.world) {
-      try { phys.world.free(); } catch (e) { /* already freed */ }
-      phys.world = null;
-      phys.ready = false;
-    }
     scene.traverse((obj) => {
       if (obj.geometry) {
         if (obj.geometry.disposeBoundsTree) obj.geometry.disposeBoundsTree();
