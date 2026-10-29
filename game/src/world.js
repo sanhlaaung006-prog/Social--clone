@@ -34,6 +34,7 @@ export const inputState = {
   lookDX: 0, // accumulated mouse-drag deltas (consumed each frame)
   lookDY: 0,
   sensitivity: 0.55, // lower default look multiplier (settings slider writes this)
+  quality: "MED", // render-quality preset (settings writes this; DPR caps read it live)
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
   jump: false, // pulsed by the touch JUMP button; the world consumes it
@@ -520,15 +521,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   const noop = { setPlaying() {}, shoot() {}, reload() {}, teleport() {}, dispose() {} };
+  const coarse = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    // MSAA is a major mobile fill-rate cost; coarse pointers render with
+    // adaptive DPR instead (medium-quality default targets ~70fps).
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: !coarse, powerPreference: "high-performance", stencil: false });
   } catch (err) {
     return noop; // very old device: UI still works over the CSS gradient
   }
-  const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
-  const renderDprCap = Math.min(window.devicePixelRatio || 1, coarse ? 1.6 : 2);
-  let renderDpr = Math.min(renderDprCap, coarse ? 1.35 : renderDprCap);
+  const dprCapForQuality = () => {
+    const device = window.devicePixelRatio || 1;
+    const q = inputState.quality || "MED";
+    const cap = q === "LOW" ? 1 : q === "HIGH" ? (coarse ? 1.6 : 2) : q === "ULTRA" ? (coarse ? 2 : 2) : (coarse ? 1.25 : 1.5);
+    return Math.min(device, cap);
+  };
+  let renderDprCap = dprCapForQuality();
+  let renderDpr = Math.min(renderDprCap, coarse ? 1.1 : renderDprCap);
   let dprSampleMs = 0, dprSamples = 0, dprCooldown = 0;
   renderer.setPixelRatio(renderDpr);
   debugStats.dpr = renderDpr;
@@ -1839,6 +1848,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (next === playing) return;
     playing = next;
     if (playing) {
+      // Hand keyboard focus to the game itself: drop focus from the
+      // START/menu button that was just clicked and focus the canvas so
+      // WASD/arrows/Space reach the world even inside a preview iframe.
+      try {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        if (canvas && canvas.focus) canvas.focus({ preventScroll: true });
+      } catch (e) { /* focus is best-effort */ }
       transition = { t: 0, fromPos: camera.position.clone(), fromQuat: camera.quaternion.clone() };
     } else {
       transition = null;
@@ -1891,18 +1907,40 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
 
   // ----- keyboard movement -----
+  // Capture-phase listeners + an e.key fallback: movement keys must land
+  // even when a menu button/slider still has focus, when an IME or a
+  // non-US layout reports an unfamiliar code, or when the game runs in a
+  // preview iframe that only just received focus.
   const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyC", "ControlLeft", "ControlRight"];
-  const onKeyDown = (e) => {
-    if (MOVE_CODES.includes(e.code)) {
-      inputState.keys.add(e.code);
-      if (e.code === "Space") e.preventDefault(); // jump, not page scroll
-    }
+  const KEY_FALLBACK = {
+    w: "KeyW", a: "KeyA", s: "KeyS", d: "KeyD", c: "KeyC",
+    arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
+    " ": "Space", spacebar: "Space", shift: "ShiftLeft", control: "ControlLeft",
   };
-  const onKeyUp = (e) => inputState.keys.delete(e.code);
+  const normMoveCode = (e) => {
+    if (e.code && MOVE_CODES.includes(e.code)) return e.code;
+    const byKey = KEY_FALLBACK[(e.key || "").toLowerCase()];
+    return byKey || null;
+  };
+  const onKeyDown = (e) => {
+    const code = normMoveCode(e);
+    if (!code) return;
+    inputState.keys.add(code);
+    // While deployed, movement keys belong to the game — not to a still-
+    // focused START button (Space/Enter re-click) or page scrolling.
+    if (playing && (code === "Space" || code.startsWith("Arrow"))) e.preventDefault();
+  };
+  const onKeyUp = (e) => {
+    const code = normMoveCode(e);
+    if (code) inputState.keys.delete(code);
+    if (e.code) inputState.keys.delete(e.code);
+  };
   const onBlur = () => inputState.keys.clear();
-  window.addEventListener("keydown", onKeyDown);
-  window.addEventListener("keyup", onKeyUp);
+  const onFocus = () => inputState.keys.clear(); // no stuck keys after alt-tab back
+  window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("keyup", onKeyUp, true);
   window.addEventListener("blur", onBlur);
+  window.addEventListener("focus", onFocus);
 
   const onResize = () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -2832,15 +2870,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       dprCooldown = Math.max(0, dprCooldown - dt);
       dprSampleMs += Math.min(ft, 100);
       dprSamples++;
-      if (dprSamples >= 45 && dprCooldown <= 0) {
+      if (dprSamples >= 35 && dprCooldown <= 0) {
         const avgFrameMs = dprSampleMs / dprSamples;
+        renderDprCap = dprCapForQuality(); // settings quality applies live
         let nextDpr = renderDpr;
-        if (avgFrameMs > 19 && renderDpr > 1) nextDpr = Math.max(1, renderDpr - 0.25);
-        else if (avgFrameMs < 12.5 && renderDpr < renderDprCap) nextDpr = Math.min(renderDprCap, renderDpr + 0.15);
+        // Target ~70fps (14.3ms): shed resolution above 15.5ms average,
+        // only buy it back when frames are comfortably under 11ms.
+        if (renderDpr > renderDprCap) nextDpr = renderDprCap;
+        else if (avgFrameMs > 15.5 && renderDpr > 1) nextDpr = Math.max(1, renderDpr - 0.2);
+        else if (avgFrameMs < 11 && renderDpr < renderDprCap) nextDpr = Math.min(renderDprCap, renderDpr + 0.1);
         if (nextDpr !== renderDpr) {
+          const goingDown = nextDpr < renderDpr;
           renderDpr = nextDpr;
           renderer.setPixelRatio(renderDpr);
-          dprCooldown = nextDpr < renderDpr ? 2 : 4;
+          dprCooldown = goingDown ? 1.5 : 4;
         }
         dprSampleMs = 0;
         dprSamples = 0;
@@ -2870,9 +2913,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (terrainWorker) { terrainWorker.terminate(); terrainWorker = null; }
     setRustGroundProvider(null);
     cancelAnimationFrame(raf);
-    window.removeEventListener("keydown", onKeyDown);
-    window.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("keyup", onKeyUp, true);
     window.removeEventListener("blur", onBlur);
+    window.removeEventListener("focus", onFocus);
     window.removeEventListener("resize", onResize);
     scene.traverse((obj) => {
       if (obj.geometry) {

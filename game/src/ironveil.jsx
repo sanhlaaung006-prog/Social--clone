@@ -441,7 +441,7 @@
 
       return (
         <div className="world" aria-hidden="true">
-          <canvas ref={canvasRef} />
+          <canvas ref={canvasRef} tabIndex={-1} />
           <div className="world-grade" />
         </div>
       );
@@ -1813,10 +1813,16 @@
       lookSensitivitySetting = value;
       inputState.sensitivity = 0.25 + value * 0.01;
     };
+    let renderQualitySetting = "MED"; // medium default: capped/adaptive DPR for smooth ~70fps
+    const applyRenderQuality = (value) => {
+      renderQualitySetting = value;
+      inputState.quality = value;
+    };
+    applyRenderQuality(renderQualitySetting);
     const SETTINGS_DEFAULTS = {
       sensitivity: 30, adsSensitivity: 26, fov: 92, invertY: false, vibration: true,
       master: 78, effects: 64, comms: 55, music: 22, voiceActivation: false, muteOnFocus: true,
-      quality: "HIGH", brightness: 58, filmGrain: true, motionBlur: false,
+      quality: "MED", brightness: 58, filmGrain: true, motionBlur: false,
       hudOpacity: 86, compassTicks: true, reduceShake: true, uiMotion: true
     };
 
@@ -1917,14 +1923,16 @@
       const hasStarted = useGameStore((state) => state.hasStarted);
       const notify = useGameStore((state) => state.notify);
       const [tab, setTab] = useState("controls");
-      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting }));
+      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, quality: renderQualitySetting }));
 
       const update = (key, value) => {
         if (key === "sensitivity") applyLookSensitivity(value);
+        if (key === "quality") applyRenderQuality(value);
         setSettings((current) => ({ ...current, [key]: value }));
       };
       const reset = () => {
         applyLookSensitivity(SETTINGS_DEFAULTS.sensitivity);
+        applyRenderQuality(SETTINGS_DEFAULTS.quality);
         setSettings({ ...SETTINGS_DEFAULTS });
         notify("DEFAULT PROFILE RESTORED // UNSAVED CHANGES CLEARED");
       };
@@ -2145,6 +2153,11 @@
         if (event.pointerType === "mouse" && event.button !== 0) return;
         const state = useGameStore.getState();
         if (state.isMenuOpen) return;
+        // A click on the field also (re)claims keyboard focus for WASD.
+        try {
+          if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+          window.focus();
+        } catch (e) { /* best effort */ }
         dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
         event.currentTarget.setPointerCapture(event.pointerId);
         state.fire();

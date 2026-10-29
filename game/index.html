@@ -1613,6 +1613,22 @@
       .health-state { display: none; }
       .squad-copy b { font-size: 12px; }
     }
+    /* Short landscape screens (phones, split-screen, embedded previews):
+       compact the title stack so START is visible without scrolling. */
+    @media (max-height: 700px) {
+      .console-header { min-height: 48px; }
+      .console-main { padding-top: 6px; }
+      .start-title { font-size: clamp(54px, 12vh, 76px); margin-top: 2px; }
+      .start-tagline { display: none; }
+      .start-loading { margin-top: 6px; padding: 7px 9px 8px; }
+      .start-percent { font-size: 19px; }
+      .start-progress { margin-top: 5px; }
+      .load-steps { display: none; }
+      .start-ready-line { margin-top: 5px; padding-top: 5px; }
+      .menu-actions { margin-top: 7px; }
+      .menu-action { min-height: 38px; }
+      .menu-hints { margin-top: 6px; }
+    }
     @media (max-height: 610px) and (min-width: 761px) {
       .console-header { min-height: 56px; }
       .console-main { padding-top: 12px; }
@@ -1711,6 +1727,12 @@
        overlay/panel gradients underneath are already near-opaque. */
     @media (max-width: 760px) {
       .compass, .dialog-scrim, .hud-panel, .hud-pause, .intel-card, .overlay, .start-loading { -webkit-backdrop-filter: none; backdrop-filter: none; }
+    }
+    /* Keep the cheap vignette/grade, but drop the full-screen SVG noise
+       blend layer on touch GPUs — mix-blend-mode forces an extra
+       full-screen composite on every frame. */
+    @media (pointer: coarse) {
+      .world-grade::after { display: none; }
     }
 
     /* ============ TOUCH CONTROLS (dual sticks + fire) ============ */

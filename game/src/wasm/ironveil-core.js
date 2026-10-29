@@ -22,10 +22,32 @@ export function loadRustCore() {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
     try {
+      // Resolve the WASM under root domains (Vercel), repo subpaths
+      // (GitHub Pages), Vite dev, and inside the terrain Worker (whose
+      // module lives under assets/). SPA fallbacks answer missing paths
+      // with index.html, so a candidate only counts with WASM magic.
       const base = (import.meta.env && import.meta.env.BASE_URL) || "/";
-      const res = await fetch(base + "wasm/ironveil_core.wasm");
-      if (!res.ok) return false;
-      const bytes = await res.arrayBuffer();
+      const candidates = [];
+      const addCandidate = (make) => {
+        try {
+          const url = make();
+          if (url && !candidates.includes(url)) candidates.push(url);
+        } catch (e) { /* try next candidate */ }
+      };
+      addCandidate(() => new URL(base + "wasm/ironveil_core.wasm", globalThis.location.href).href);
+      addCandidate(() => new URL("../wasm/ironveil_core.wasm", import.meta.url).href);
+      addCandidate(() => new URL("/wasm/ironveil_core.wasm", globalThis.location.href).href);
+      let bytes = null;
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const buf = await res.arrayBuffer();
+          const head = new Uint8Array(buf.slice(0, 4));
+          if (head[0] === 0x00 && head[1] === 0x61 && head[2] === 0x73 && head[3] === 0x6d) { bytes = buf; break; }
+        } catch (e) { /* try next candidate */ }
+      }
+      if (!bytes) return false;
       const { instance } = await WebAssembly.instantiate(bytes, {
         env: {
           ironveil_ground_height: (x, z) => {
