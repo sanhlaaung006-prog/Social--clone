@@ -750,9 +750,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const existing = chunkJobs.get(key);
     if (existing) return existing;
     const b = chunkBounds(ix, iz);
-    const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
-    geo.rotateX(-Math.PI / 2);
-    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, final: null, rustTried: false, workerTried: false, workerId: 0, workerResult: null, workerFailed: false, workerSentAt: 0, score: 1e9 };
+    // Do not allocate a PlaneGeometry up front: Rust/worker chunks replace
+    // it with final typed-array geometry, so the plane is created lazily
+    // only if the JS color fallback is actually needed.
+    const geo = new THREE.BufferGeometry();
+    const job = { key, ix, iz, seg, b, geo, pos: null, vertexCount: (seg + 1) * (seg + 1), posHeightsReady: false, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, final: null, rustTried: false, workerTried: false, workerId: 0, workerResult: null, workerFailed: false, workerSentAt: 0, score: 1e9 };
     chunkJobs.set(key, job);
     chunkQueue.push(key);
     return job;
@@ -795,6 +797,19 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     chunkJobs.delete(job.key);
     return mesh;
   }
+  function ensureFallbackGeometry(job) {
+    if (job.pos) return job.pos;
+    const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, job.seg, job.seg);
+    geo.rotateX(-Math.PI / 2);
+    job.geo.dispose();
+    job.geo = geo;
+    job.pos = geo.attributes.position;
+    if (job.final) {
+      for (let i = 0; i < job.pos.count; i++) job.pos.setY(i, job.final[i]);
+      job.posHeightsReady = true;
+    }
+    return job.pos;
+  }
   function finishRustMesh(job, rustMesh, fromWorker) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(rustMesh.positions, 3));
@@ -815,7 +830,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // when the mesh is finished. Heights and vertex colors are the two hot
   // loops; each checks the clock every 256 vertices.
   function stepChunkJob(job, deadline) {
-    const pos = job.pos, b = job.b;
+    const b = job.b;
+    const vertexCount = job.vertexCount;
     if (job.stage === "worker") {
       if (job.workerResult) {
         const result = job.workerResult;
@@ -855,20 +871,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (job.raw) debugStats.rustChunks++;
       }
       const rawRowW = job.seg + 1;
-      if (!job.final) job.final = new Float64Array(pos.count);
-      while (job.i < pos.count) {
-        const wx = pos.getX(job.i) + b.cx, wz = pos.getZ(job.i) + b.cz;
-        const col = Math.round((wx - b.minX) / (CHUNK_SIZE_M / job.seg));
-        const row = Math.round((wz - b.minZ) / (CHUNK_SIZE_M / job.seg));
-        const y = job.raw
-          ? terrainHeightFromRaw(job.raw[row * rawRowW + col], wx, wz)
+      const cellStep = CHUNK_SIZE_M / job.seg;
+      if (!job.final) job.final = new Float64Array(vertexCount);
+      while (job.i < vertexCount) {
+        const idx = job.i;
+        const col = idx % rawRowW;
+        const row = (idx / rawRowW) | 0;
+        const wx = b.minX + col * cellStep;
+        const wz = b.minZ + row * cellStep;
+        job.final[idx] = job.raw
+          ? terrainHeightFromRaw(job.raw[idx], wx, wz)
           : terrainHeight(wx, wz);
-        job.final[row * rawRowW + col] = y;
-        pos.setY(job.i, y);
         job.i++;
         if ((job.i & 127) === 0 && performance.now() > deadline) return false;
       }
-      job.colors = new Float32Array(pos.count * 3);
       job.stage = "colors";
       job.i = 0;
     }
@@ -886,9 +902,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // Slope for coloring comes from the height gradient over grid
     // neighbours — the material is flat-shaded (fragment-derivative
     // normals), so no computeVertexNormals pass is needed at all.
+    const pos = ensureFallbackGeometry(job);
+    if (!job.colors) job.colors = new Float32Array(vertexCount * 3);
     const colors = job.colors;
     const rowW = job.seg + 1, cell = CHUNK_SIZE_M / job.seg;
-    while (job.i < pos.count) {
+    while (job.i < vertexCount) {
       const i = job.i;
       const col = i % rowW, row = (i / rowW) | 0;
       const iL = col > 0 ? i - 1 : i, iR = col < job.seg ? i + 1 : i;

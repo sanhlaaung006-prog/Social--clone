@@ -34,13 +34,19 @@ run as time-sliced jobs (~3.5 ms of work per frame, prioritised by distance
 and view direction, with predictive prefetch), so crossing into a new chunk
 no longer hitches. Shooting raycasts run on a BVH
 ([three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), MIT).
-Movement is kinematic and weighty without a rigid-body physics engine:
-velocity accelerates toward input speed in ~0.20 s and decays in ~0.15 s,
-with slope/water speed factors, gravity, coyote-timed jumping, ground snap,
-stride-based camera bob, landing dip, and a damped-spring rifle viewmodel
-(sway + synced bob). Grounding comes from instanced blob shadows under the
-player, trees and the relay, deterministic instanced grass tufts and small
-pebbles inside 60 m, and a merged low-poly tactical rifle viewmodel.
+Movement is a PUBG-Mobile-style kinematic character controller without a
+rigid-body physics engine. The same deterministic step runs in Rust ABI v4
+on the main thread (with a field-for-field JS twin as fallback): Quake-style
+projection-capped acceleration and control-speed ground friction, capped
+air control, projected slope gravity, steep-slope blocking/sliding with
+contour slide, 0.55 m step-up and downhill snap, coyote-timed jumping, and
+hard-landing momentum damping. Existing top speeds are unchanged — 8.6 m/s
+run and 14.5 m/s sprint — while `C`/`Ctrl` crouch scales speed to 45% and
+lowers eye height from 1.70 m to 1.25 m. Stride-based camera bob, landing
+dip, and the damped-spring rifle viewmodel (sway + synced bob) remain.
+Grounding comes from instanced blob shadows under the player, trees and
+the relay, deterministic instanced grass tufts and small pebbles inside
+60 m, and a merged low-poly tactical rifle viewmodel.
 
 Weather & seasons are gameplay systems. Ten macro days form a season
 (Dry → Cool → Monsoon); terrain/foliage palettes, exponential-fog density
@@ -67,22 +73,51 @@ In-game, `ESC` (or the COMMAND button) opens the pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
 title screen before deployment and to the pause menu once in the field.
 
-Terrain generation runs on a **Rust → WebAssembly ABI v3 core**
-(`game/wasm/ironveil-core/`, dependency-free). Rust now handles four batch
-systems: **(1)** full chunk-mesh buffers (positions, normals, colors,
-indices), **(2)** deterministic local grass/pebble scatter batches,
-**(3)** drone LOS/threat/tactical-waypoint batches with coarse A* paths,
-and **(4)** precomputed visual data — a 3-weather × 128-bin sky/cloud LUT
-plus per-vertex terrain splat (rock/dry/wet) and roughness. Terrain colors
-also include Rust-baked AO (eight-direction horizon slope + concavity,
-faded to 1.0 at chunk borders to avoid seams). The 106 KB compiled asset
-is committed at `game/public/wasm/ironveil_core.wasm` and loaded locally —
-**fully offline at runtime, no CDN** — while the JS implementations remain
-as the instant fallback (the debug overlay shows `TERRAIN CORE: RUST
-WASM` and a `RUST V3` row when active). Rebuild it with the *Build Rust
-WASM terrain core* GitHub Action (or `cargo build --release --target
-wasm32-unknown-unknown` locally). River carving/objective flattening,
-movement, dynamic lighting and rendering stay in JS/Three.js.
+Terrain generation runs on a **Rust → WebAssembly ABI v4 core**
+(`game/wasm/ironveil-core/`, dependency-free). A dedicated module Web
+Worker (`game/src/wasm/terrain-worker.js`) owns a second Rust instance and
+returns transferable typed arrays for **(1)** streamed full chunk meshes
+(positions, normals, colors, splat/roughness, indices), **(2)** deterministic
+local grass/pebble scatter batches, and **(3)** drone LOS/threat/tactical
+waypoints plus coarse A* paths. The main thread keeps the ABI v4 Rust
+per-frame kinematic physics step (zero worker round-trip latency), the
+3-weather × 128-bin sky/cloud LUT and rendering. Terrain colors include
+Rust-baked AO (eight-direction horizon slope + concavity, faded to 1.0 at
+chunk borders to avoid seams). Streamed work uses the Worker; teleport
+destination cuts still finish synchronously on the main thread so arrival
+never shows a terrain hole, and if Worker or WASM fails the game
+falls back fully to the main-thread Rust/JS paths. The 111 KB compiled
+asset is committed at `game/public/wasm/ironveil_core.wasm` and loaded
+locally — **fully offline at runtime, no CDN**. The debug overlay shows
+`PHYSICS: RUST KINEMATIC`, `WORKER: RUST`, and live main-thread CPU ms when
+active. Rebuild it with the *Build Rust WASM terrain core* GitHub Action
+(or `cargo build --release --target wasm32-unknown-unknown` locally).
+
+The frame loop was also put through a zero-allocation pass: preallocated
+physics and profiler buffers, scratch river/chunk/palette objects, direct
+final-height grids, lazy JS fallback geometry (Rust chunks no longer build
+and discard a PlaneGeometry), and reused shooting targets. Frequent HUD
+values no longer flow through React renders — compass heading, objective
+distance/bearing, crosshair range/fire state and ammo mag/reserve/pips are
+updated through refs/direct DOM writes. No materials, fog, geometry, LOD
+segments/distances or triangle budgets were changed for this pass.
+
+**5-minute traversal CPU profile** (headless Chromium/SwiftShader, seed
+1234, Survival; sandbox FPS is not phone-representative, so these are
+main-thread CPU ms/frame from `?profile=1`):
+
+| Metric | Before (ABI v3) | After (ABI v4 + Worker) |
+| --- | ---: | ---: |
+| Update avg / p50 | 2.396 / 0.6 ms | 1.808 / 0.3 ms |
+| Update p95 / p99 / p99.9 | 7.3 / 50.1 / 103.6 ms | 7.0 / 33.3 / 96.0 ms |
+| Total avg / p50 | 3.366 / 1.3 ms | 2.844 / 0.8 ms |
+| Total p95 / p99 / p99.9 | 9.0 / 51.2 / 108.2 ms | 8.6 / 34.8 / 116.2 ms |
+
+The after run finished with 246 Worker chunks, 666 Worker scatter batches,
+319 Worker AI batches, 11 Worker paths, Rust physics active, 16/16 chunks,
+19 draw calls, 49,510 triangles, 9.54 MB heap and 0 page errors. Its 40
+update frames over 16.7 ms align with the harness's 40 intentional teleport
+cuts, whose destination neighbourhoods remain synchronous by design.
 
 **Developing:** edit [`game/src/ironveil.jsx`](game/src/ironveil.jsx) (UI) and
 [`game/src/world.js`](game/src/world.js) (3D world) — Vite serves with HMR on
@@ -112,6 +147,10 @@ at the +1000 m line, and midnight under the stars and galaxies.
 **Rust ABI v3 — mesh/scatter/AI batches and sky LUT active (`RUST V3` debug row):**
 
 ![IRONVEIL Rust v3 systems](screenshots/rust-v3-systems.png)
+
+**Rust ABI v4 + Worker — Rust kinematic physics and worker terrain/AI active (`PHYSICS` / `WORKER` debug rows):**
+
+![IRONVEIL Rust v4 worker physics](screenshots/rust-v4-worker-physics.png)
 
 **Monsoon weather — screen-space rain, 80 m AI LOS, no drones engaged:**
 
