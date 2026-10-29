@@ -181,7 +181,7 @@ pub extern "C" fn ironveil_chunk_raw_heights(
                 *out.add(row * n + col) = raw_height(seed, x, z, half, rim_start);
             }
         }
-        compute_lighting(seg, step);
+        compute_lighting_from(core::ptr::addr_of!(OUT) as *const f64, seg, step);
     }
     (n * n) as u32
 }
