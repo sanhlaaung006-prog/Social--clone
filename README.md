@@ -3,6 +3,8 @@ This is a SoCal clone that is same as Reddit and Instagram but more lightweight 
 
 ## IRONVEIL — Tactical Operations (game)
 
+**Play online:** <https://ironveil-game.vercel.app>
+
 A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
 [`game/`](game/) — run `cd game && npm install && npm run dev`, then open
 <http://localhost:8000>. The start world is a real-time 3D first-person
@@ -82,7 +84,11 @@ jitter and a synthesized sub-thump layered in `game/src/audio.js`.
 
 It boots straight to a **Start / Title screen** and **▶ START is playable
 instantly** — the systems check (uplink, field feed, armory, squad link,
-weapons) is a ~0.4s cosmetic flourish that never blocks input. INVENTORY,
+weapons) is a ~0.4s cosmetic flourish that never blocks input. Short
+landscape screens compact the title stack so START stays visible without
+scrolling; deploying hands keyboard focus to the game canvas, and WASD is
+listened for in the capture phase with an `e.key` fallback, so movement keys
+work even after clicking START inside an embedded preview. INVENTORY,
 SETTINGS and a mission BRIEFING (controls) are available before you deploy.
 In-game, `ESC` (or the COMMAND button) opens the pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
@@ -104,7 +110,10 @@ destination cuts still finish synchronously on the main thread so arrival
 never shows a terrain hole, and if Worker or WASM fails the game
 falls back fully to the main-thread Rust/JS paths. The 113,787-byte compiled
 asset is committed at `game/public/wasm/ironveil_core.wasm` and loaded
-locally — **fully offline at runtime, no CDN**. The debug overlay shows
+locally — **fully offline at runtime, no CDN**. The production build uses a
+relative Vite base, and the loader validates the WASM magic across root,
+subpath and Worker-relative candidates, so the same build runs from the
+Vercel domain above or a repository subpath. The debug overlay shows
 `PHYSICS: RUST KINEMATIC`, `WORKER: RUST`, and live main-thread CPU ms when
 active. Rebuild it with the *Build Rust WASM terrain core* GitHub Action
 (or `cargo build --release --target wasm32-unknown-unknown` locally).
@@ -116,10 +125,12 @@ and discard a PlaneGeometry), and reused shooting targets. Frequent HUD
 values no longer flow through React renders — compass heading, objective
 distance/bearing, crosshair range/fire state, weapon-slot ammo and the
 stamina stripe are updated through refs/direct DOM writes. Mobile fill
-rate is protected by an adaptive pixel-ratio controller (coarse pointers
-start at 1.35×, step down toward 1.0× under load and recover only when
-frames are comfortably fast), a cheap flow-sine water shader with horizon tint
-and sun glint, and the existing fragment-space sun disc/glow.
+rate is protected by the live render-quality setting — **MED is the default**
+(coarse pointers start at 1.1× DPR, cap at 1.25×, shed resolution above a
+15.5 ms average frame and only buy it back under 11 ms, targeting smooth
+~70 fps play; LOW pins 1.0×). MSAA and the full-screen CSS noise blend are
+disabled on coarse pointers, keeping a cheap flow-sine water shader with
+horizon tint and sun glint, and the existing fragment-space sun disc/glow.
 
 **1-minute traversal CPU profile** (final ABI v5 build, headless
 Chromium/SwiftShader, seed 20261029, Survival, 374 profiled frames;
