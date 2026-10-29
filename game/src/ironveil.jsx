@@ -2,6 +2,7 @@
     import { createRoot } from "react-dom/client";
     import { create } from "zustand";
     import { createWorld, inputState } from "./world.js";
+    import { sfx } from "./audio.js";
 
     // === [UI: ZUSTAND_STORE] ===
     const ITEMS = {
@@ -272,7 +273,13 @@
         const api = createWorld(canvasRef.current, {
           onHeading: (deg) => gameStore.setState({ heading: deg }),
           onObjective: (dist, bearing) => gameStore.setState({ objectiveDistance: dist, objectiveBearing: bearing }),
-          onDroneDown: () => gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1"),
+          onDroneDown: () => {
+            sfx.droneDown();
+            gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1");
+          },
+          onStep: (inWater) => sfx.step(!!inWater),
+          onSplash: () => sfx.splash(),
+          onAmbience: (a) => sfx.setAmbience(a),
         });
         apiRef.current = api;
         const unsubscribe = gameStore.subscribe((state, prev) => {
@@ -1086,6 +1093,8 @@
                         <span className="brief-control"><kbd>R</kbd> RELOAD</span>
                         <span className="brief-control"><kbd>H</kbd> TRAUMA KIT</span>
                         <span className="brief-control"><kbd>ESC</kbd> COMMAND MENU</span>
+                        <span className="brief-control"><kbd>T</kbd> TIME OF DAY +3H</span>
+                        <span className="brief-control"><kbd>M</kbd> MUTE AUDIO</span>
                       </div>
                     </section>
                   )}
@@ -2011,6 +2020,17 @@
             state.handleEscape();
             return;
           }
+          const pressed = event.key.toLowerCase();
+          if (pressed === "m") {
+            const m = sfx.setMuted(!sfx.isMuted());
+            state.notify(m ? "AUDIO MUTED // M TO RESTORE" : "AUDIO LIVE // FIELD MIX ON");
+            return;
+          }
+          if (pressed === "t") {
+            inputState.timeSkip = true;
+            state.notify("TIME SHIFT // +3H");
+            return;
+          }
           if (state.isMenuOpen) return;
           if (event.code === "Space") {
             event.preventDefault();
@@ -2023,6 +2043,34 @@
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
+      }, []);
+
+      // Audio: unlock on first gesture; store-driven one-shots.
+      useEffect(() => {
+        const unlock = () => sfx.unlock();
+        window.addEventListener("pointerdown", unlock);
+        window.addEventListener("keydown", unlock);
+        let firstMenuToggle = true;
+        const unsubscribe = gameStore.subscribe((state, prev) => {
+          if (state.shots > prev.shots) sfx.shot();
+          if (state.ammo > prev.ammo) sfx.reload();
+          if (state.health > prev.health) sfx.heal();
+          if (state.hasStarted && !prev.hasStarted) sfx.deploy();
+          if (
+            state.notice &&
+            state.notice.id !== (prev.notice && prev.notice.id) &&
+            state.notice.text.includes("MAGAZINE EMPTY")
+          ) sfx.dry();
+          if (state.isMenuOpen !== prev.isMenuOpen) {
+            if (firstMenuToggle) firstMenuToggle = false;
+            else sfx.whoosh();
+          }
+        });
+        return () => {
+          window.removeEventListener("pointerdown", unlock);
+          window.removeEventListener("keydown", unlock);
+          unsubscribe();
+        };
       }, []);
 
       return (

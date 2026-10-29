@@ -8,7 +8,11 @@ A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
 <http://localhost:8000>. The start world is a real-time 3D first-person
 terrain (procedurally generated Karst-9 ridges, the relay-station objective,
 hostile hover drones) — **WASD + drag-aim** on desktop, floating **MOVE /
-AIM thumbsticks + FIRE button** on touch devices.
+AIM thumbsticks + FIRE button** on touch devices. A 4-minute day/night
+cycle (sun, moon, stars, spiral galaxies — `T` skips +3h, `?phase=0.75`
+starts at midnight) plays over a river-carved valley with a plank bridge,
+and everything is sonified with synthesized WebAudio SFX: gunshots, UI
+clicks, grass/water footsteps, river, birdsong, crickets, wind (`M` mutes).
 
 It boots straight to a **Start / Title screen** and **▶ START is playable
 instantly** — the systems check (uplink, field feed, armory, squad link,
@@ -26,8 +30,8 @@ port 8000. `npm run build` produces `game/dist/`.
 
 Captured from the running game in headless Chromium. The terrain is rendered
 live by WebGL (no backdrop photo anymore); only Google Fonts was stubbed
-locally during capture because the sandbox can't reach it. Desktop shots show
-the deployed first-person view mid-transition from the menu camera.
+locally during capture because the sandbox can't reach it. Desktop shots: morning deployment at spawn (river on the left) and
+midnight under the stars and galaxies.
 
 **Start menu (desktop):**
 
@@ -37,9 +41,9 @@ the deployed first-person view mid-transition from the menu camera.
 
 ![IRONVEIL gameplay HUD](screenshots/ironveil-gameplay-hud.png)
 
-**Fired 8 rounds and reloaded (reserve 120 → 112):**
+**Midnight — stars, a spiral galaxy and moonlit ridges:**
 
-![IRONVEIL firing and reload](screenshots/ironveil-gameplay-firing.png)
+![IRONVEIL at night](screenshots/ironveil-night.png)
 
 **Start menu (mobile):**
 

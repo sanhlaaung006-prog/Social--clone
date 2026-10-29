@@ -19,6 +19,7 @@ export const inputState = {
   lookDX: 0, // accumulated mouse-drag deltas (consumed each frame)
   lookDY: 0,
   keys: new Set(),
+  timeSkip: false, // set by the T key: jump the day/night cycle +3h
 };
 
 // ---------- deterministic rng / noise ----------
@@ -76,12 +77,67 @@ function rawHeight(x, z) {
 }
 const relayBase = rawHeight(WORLD.relay.x, WORLD.relay.z);
 const spawnBase = rawHeight(WORLD.spawn.x, WORLD.spawn.z);
+
+// ---------- river: meandering channel carved across the sector ----------
+// A Catmull-Rom path is resampled; the terrain height function carves a
+// channel toward a smoothed, monotonically descending bed profile so the
+// water ribbon built on top always flows "downhill".
+const RIVER_CTRL = [
+  [-262, -218], [-185, -150], [-120, -95], [-58, -40], [0, 2],
+  [52, 36], [98, 86], [150, 140], [205, 205], [260, 264],
+];
+function catmull2(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  return [
+    0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+    0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3),
+  ];
+}
+const RIVER = (() => {
+  const pts = [];
+  for (let s = 0; s < RIVER_CTRL.length - 1; s++) {
+    const p0 = RIVER_CTRL[Math.max(0, s - 1)], p1 = RIVER_CTRL[s];
+    const p2 = RIVER_CTRL[s + 1], p3 = RIVER_CTRL[Math.min(RIVER_CTRL.length - 1, s + 2)];
+    for (let i = 0; i < 26; i++) pts.push(catmull2(p0, p1, p2, p3, i / 26));
+  }
+  pts.push(RIVER_CTRL[RIVER_CTRL.length - 1].slice());
+  let prof = pts.map(([x, z]) => rawHeight(x, z));
+  for (let pass = 0; pass < 2; pass++) {
+    prof = prof.map((v, i) => {
+      let sum = 0, n = 0;
+      for (let k = -4; k <= 4; k++) {
+        const q = prof[Math.max(0, Math.min(prof.length - 1, i + k))];
+        sum += q; n++;
+      }
+      return sum / n;
+    });
+  }
+  for (let i = 1; i < prof.length; i++) prof[i] = Math.min(prof[i], prof[i - 1] - 0.022);
+  const samples = pts.map(([x, z], i) => ({ x, z, bed: prof[i] - 1.55, water: prof[i] - 0.62 }));
+  return { samples };
+})();
+export function riverInfo(x, z) {
+  let best = null, bestD2 = Infinity;
+  const arr = RIVER.samples;
+  for (let i = 0; i < arr.length; i++) {
+    const dx = x - arr[i].x, dz = z - arr[i].z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) { bestD2 = d2; best = arr[i]; }
+  }
+  return { d: Math.sqrt(bestD2), bed: best.bed, water: best.water, x: best.x, z: best.z };
+}
+
 export function terrainHeight(x, z) {
   let h = rawHeight(x, z);
   const dRelay = Math.hypot(x - WORLD.relay.x, z - WORLD.relay.z);
   const dSpawn = Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z);
   h = lerp(relayBase, h, smoothstep(9, 26, dRelay));
   h = lerp(spawnBase, h, smoothstep(7, 20, dSpawn));
+  const ri = riverInfo(x, z);
+  if (ri.d < 17) {
+    const t = 1 - smoothstep(4.2, 17, ri.d);
+    h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
+  }
   return h;
 }
 
@@ -101,17 +157,138 @@ export function createWorld(canvas, hooks = {}) {
   renderer.toneMappingExposure = 1.06;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0f0a);
+  scene.background = new THREE.Color(0x0a0f0a); // behind the sky dome
   scene.fog = new THREE.Fog(0x0a0f0a, 55, 430);
 
   const camera = new THREE.PerspectiveCamera(71, window.innerWidth / window.innerHeight, 0.1, 900);
   camera.rotation.order = "YXZ";
   scene.add(camera);
 
-  scene.add(new THREE.HemisphereLight(0xbdd3a0, 0x0c100b, 0.85));
-  const moon = new THREE.DirectionalLight(0xd8e6c0, 1.5);
-  moon.position.set(90, 150, 40);
-  scene.add(moon);
+  const hemi = new THREE.HemisphereLight(0xbdd3a0, 0x0c100b, 0.85);
+  scene.add(hemi);
+  const sunLight = new THREE.DirectionalLight(0xd8e6c0, 1.5);
+  sunLight.position.set(90, 150, 40);
+  scene.add(sunLight);
+  const moonLight = new THREE.DirectionalLight(0x8fa8d8, 0);
+  moonLight.position.set(-60, 120, -30);
+  scene.add(moonLight);
+
+  // ----- sky: gradient dome + sun/moon discs, star field, galaxies -----
+  const skyGroup = new THREE.Group();
+  scene.add(skyGroup);
+  const skyUniforms = {
+    uZenith: { value: new THREE.Color(0x3f76b8) },
+    uHorizon: { value: new THREE.Color(0xb7c8ae) },
+    uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+    uSunColor: { value: new THREE.Color(0xfff2d8) },
+    uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
+    uNight: { value: 0 },
+  };
+  const skyDome = new THREE.Mesh(
+    new THREE.SphereGeometry(780, 28, 16),
+    new THREE.ShaderMaterial({
+      uniforms: skyUniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform vec3 uZenith;
+        uniform vec3 uHorizon;
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform vec3 uMoonDir;
+        uniform float uNight;
+        varying vec3 vDir;
+        void main() {
+          vec3 dir = normalize(vDir);
+          float h = clamp(dir.y, -1.0, 1.0);
+          vec3 col = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.58));
+          col = mix(col, uHorizon * 0.55, smoothstep(0.0, -0.25, h));
+          float sDot = max(dot(dir, normalize(uSunDir)), 0.0);
+          col += uSunColor * (pow(sDot, 700.0) * 1.9 + pow(sDot, 20.0) * 0.22);
+          float mDot = max(dot(dir, normalize(uMoonDir)), 0.0);
+          col += vec3(0.78, 0.85, 0.97) * (smoothstep(0.9992, 0.99965, mDot) * 0.9 + pow(mDot, 120.0) * 0.12) * uNight;
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    })
+  );
+  skyDome.frustumCulled = false;
+  skyDome.renderOrder = -10;
+  skyGroup.add(skyDome);
+
+  const starGeo = new THREE.BufferGeometry();
+  {
+    const starRand = mulberry32(777);
+    const sp = new Float32Array(1700 * 3);
+    for (let i = 0; i < 1700; i++) {
+      const v = new THREE.Vector3().setFromSphericalCoords(
+        750,
+        Math.acos(1 - starRand() * 1.15),
+        starRand() * Math.PI * 2
+      );
+      sp[i * 3] = v.x; sp[i * 3 + 1] = v.y; sp[i * 3 + 2] = v.z;
+    }
+    starGeo.setAttribute("position", new THREE.BufferAttribute(sp, 3));
+  }
+  const starMat = new THREE.PointsMaterial({
+    color: 0xdfe8ff, size: 1.7, sizeAttenuation: false,
+    transparent: true, opacity: 0, depthWrite: false, fog: false,
+  });
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.frustumCulled = false;
+  stars.renderOrder = -9;
+  skyGroup.add(stars);
+
+  function makeGalaxyTexture(core, arm, seed) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(128, 128, 0, 128, 128, 95);
+    grad.addColorStop(0, "rgba(255,246,220,0.95)");
+    grad.addColorStop(0.22, core);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 256, 256);
+    const R = mulberry32(seed);
+    for (let i = 0; i < 1500; i++) {
+      const a0 = (i % 3) * ((Math.PI * 2) / 3);
+      const r = Math.pow(R(), 0.62) * 118;
+      const a = a0 + r * 0.045 + (R() - 0.5) * 0.6 * (1 - r / 170);
+      const x = 128 + Math.cos(a) * r;
+      const y = 128 + Math.sin(a) * r * 0.62;
+      g.fillStyle = R() < 0.14 ? arm : `rgba(235,240,255,${0.25 + R() * 0.6})`;
+      g.beginPath();
+      g.arc(x, y, R() * 1.7 + 0.3, 0, 7);
+      g.fill();
+    }
+    return new THREE.CanvasTexture(c);
+  }
+  const galaxies = [];
+  {
+    const defs = [
+      { tex: makeGalaxyTexture("rgba(150,140,255,0.4)", "rgba(170,160,255,0.9)", 101), phi: 0.62, theta: 0.7, scale: 430, rot: 0.4 },
+      { tex: makeGalaxyTexture("rgba(255,170,210,0.35)", "rgba(255,190,220,0.9)", 202), phi: 0.95, theta: 2.9, scale: 300, rot: 1.8 },
+      { tex: makeGalaxyTexture("rgba(140,220,255,0.35)", "rgba(160,225,255,0.9)", 303), phi: 0.45, theta: 4.6, scale: 250, rot: 2.9 },
+    ];
+    for (const d of defs) {
+      const mat = new THREE.SpriteMaterial({
+        map: d.tex, transparent: true, opacity: 0, depthWrite: false,
+        blending: THREE.AdditiveBlending, fog: false, rotation: d.rot,
+      });
+      const spr = new THREE.Sprite(mat);
+      spr.position.setFromSphericalCoords(735, d.phi, d.theta);
+      spr.scale.set(d.scale, d.scale * 0.62, 1);
+      spr.renderOrder = -8;
+      skyGroup.add(spr);
+      galaxies.push(spr);
+    }
+  }
 
   const rand = mulberry32(90210);
 
@@ -144,6 +321,109 @@ export function createWorld(canvas, hooks = {}) {
     new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, flatShading: true })
   );
   scene.add(terrain);
+
+  // ----- river water ribbon + plank bridge on the spawn->relay line -----
+  const waterUniforms = THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uTime: { value: 0 }, uDay: { value: 1 } },
+  ]);
+  {
+    const pts = RIVER.samples;
+    const positions = new Float32Array(pts.length * 2 * 3);
+    const uvs = new Float32Array(pts.length * 2 * 2);
+    const indices = [];
+    let distAcc = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const pn = pts[Math.min(pts.length - 1, i + 1)];
+      const pp = pts[Math.max(0, i - 1)];
+      let tx = pn.x - pp.x, tz = pn.z - pp.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl; tz /= tl;
+      if (i > 0) distAcc += Math.hypot(p.x - pp.x, p.z - pp.z);
+      const taper = Math.min(1, Math.min(i, pts.length - 1 - i) / 8 + 0.25);
+      const hw = 3.4 * taper;
+      const sx = -tz * hw, sz = tx * hw;
+      positions.set([p.x - sx, p.water, p.z - sz, p.x + sx, p.water, p.z + sz], i * 6);
+      uvs.set([0, distAcc / 9, 1, distAcc / 9], i * 4);
+      if (i < pts.length - 1) {
+        const a = i * 2;
+        indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    const wgeo = new THREE.BufferGeometry();
+    wgeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    wgeo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    wgeo.setIndex(indices);
+    const wmat = new THREE.ShaderMaterial({
+      uniforms: waterUniforms,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: true,
+      vertexShader: `
+        uniform float uTime;
+        varying vec2 vUv;
+        #include <fog_pars_vertex>
+        void main() {
+          vUv = uv;
+          vec3 p = position;
+          p.y += sin(p.x * 0.55 + uTime * 1.9) * cos(p.z * 0.5 + uTime * 1.35) * 0.045;
+          vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+          #include <fog_vertex>
+        }`,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uDay;
+        varying vec2 vUv;
+        #include <fog_pars_fragment>
+        void main() {
+          float flow = sin(vUv.y * 46.0 - uTime * 2.4 + sin(vUv.x * 14.0 + uTime) * 0.8) * 0.5 + 0.5;
+          float sparkle = pow(flow, 7.0);
+          float edge = smoothstep(0.0, 0.16, vUv.x) * smoothstep(1.0, 0.84, vUv.x);
+          vec3 dayCol = mix(vec3(0.05, 0.19, 0.29), vec3(0.21, 0.44, 0.55), 0.25 + sparkle * 0.75);
+          vec3 nightCol = mix(vec3(0.012, 0.05, 0.09), vec3(0.06, 0.14, 0.21), sparkle * 0.7);
+          vec3 col = mix(nightCol, dayCol, uDay);
+          gl_FragColor = vec4(col, 0.52 + edge * 0.36);
+          #include <fog_fragment>
+        }`,
+    });
+    const water = new THREE.Mesh(wgeo, wmat);
+    water.renderOrder = 2;
+    water.frustumCulled = false;
+    scene.add(water);
+  }
+  const bridge = (() => {
+    const midX = (WORLD.spawn.x + WORLD.relay.x) / 2;
+    const midZ = (WORLD.spawn.z + WORLD.relay.z) / 2;
+    let bi = 0, bd = Infinity;
+    RIVER.samples.forEach((p, i) => {
+      const d = Math.hypot(p.x - midX, p.z - midZ);
+      if (d < bd) { bd = d; bi = i; }
+    });
+    const c = RIVER.samples[bi];
+    const axis = new THREE.Vector2(WORLD.relay.x - WORLD.spawn.x, WORLD.relay.z - WORLD.spawn.z).normalize();
+    const deckY = c.water + 0.55;
+    const wood = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
+    const group = new THREE.Group();
+    const rotY = Math.atan2(axis.x, axis.y);
+    for (let s = -5; s <= 5; s++) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.16, 0.94), wood);
+      plank.position.set(c.x + axis.x * s, deckY + 0.14 * (1 - (s / 5.6) * (s / 5.6)), c.z + axis.y * s);
+      plank.rotation.y = rotY;
+      group.add(plank);
+    }
+    for (const side of [-1, 1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 11.4), wood);
+      rail.position.set(c.x - axis.y * side * 1.45, deckY + 0.85, c.z + axis.x * side * 1.45);
+      rail.rotation.y = rotY;
+      group.add(rail);
+    }
+    scene.add(group);
+    return { cx: c.x, cz: c.z, deckY, ax: axis.x, az: axis.y, px: -axis.y, pz: axis.x };
+  })();
+
 
   // ----- scatter: rocks + pines (instanced) -----
   const dummy = new THREE.Object3D();
@@ -308,8 +588,8 @@ export function createWorld(canvas, hooks = {}) {
   // ----- weapon viewmodel -----
   const gun = new THREE.Group();
   {
-    const gm = new THREE.MeshStandardMaterial({ color: 0x2c352b, roughness: 0.5, metalness: 0.45 });
-    const gm2 = new THREE.MeshStandardMaterial({ color: 0x3d4836, roughness: 0.6, metalness: 0.3 });
+    const gm = new THREE.MeshStandardMaterial({ color: 0x2c352b, roughness: 0.5, metalness: 0.45, emissive: 0x11160f });
+    const gm2 = new THREE.MeshStandardMaterial({ color: 0x3d4836, roughness: 0.6, metalness: 0.3, emissive: 0x161c13 });
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.15, 0.58), gm); gun.add(body);
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.34, 8), gm);
     barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.035, -0.44); gun.add(barrel);
@@ -340,6 +620,8 @@ export function createWorld(canvas, hooks = {}) {
     pitch: -0.03,
     bobPhase: 0,
     recoil: 0,
+    lastStep: 0,
+    wading: false,
   };
   let playing = false;
   let transition = null; // { t, fromPos, fromQuat }
@@ -445,8 +727,12 @@ export function createWorld(canvas, hooks = {}) {
     if (k.has("KeyA") || k.has("ArrowLeft")) mx -= 1;
     const len = Math.hypot(mx, mz);
     if (len > 1) { mx /= len; mz /= len; }
+    const riNow = riverInfo(player.pos.x, player.pos.z);
+    const inWaterNow = riNow.d < 4.4 && terrainHeight(player.pos.x, player.pos.z) < riNow.water - 0.12;
+    if (inWaterNow && !player.wading && hooks.onSplash) hooks.onSplash();
+    player.wading = inWaterNow;
     const sprint = k.has("ShiftLeft") || k.has("ShiftRight");
-    const speed = sprint ? 14.5 : 8.6;
+    const speed = (sprint ? 14.5 : 8.6) * (inWaterNow ? 0.52 : 1);
     const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
     // forward = (-sin, -cos), right = (cos, -sin)
     player.pos.x += (-sin * mz + cos * mx) * speed * dt;
@@ -456,10 +742,19 @@ export function createWorld(canvas, hooks = {}) {
       player.pos.x *= WORLD.playableRadius / r;
       player.pos.z *= WORLD.playableRadius / r;
     }
-    const ground = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    let ground = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    const bdx = player.pos.x - bridge.cx, bdz = player.pos.z - bridge.cz;
+    const alongB = bdx * bridge.ax + bdz * bridge.az;
+    const acrossB = bdx * bridge.px + bdz * bridge.pz;
+    if (Math.abs(alongB) < 5.8 && Math.abs(acrossB) < 1.7) ground = Math.max(ground, bridge.deckY + 1.7);
     player.pos.y += (ground - player.pos.y) * (1 - Math.exp(-11 * dt));
     const moving = Math.min(1, Math.hypot(mx, mz));
     player.bobPhase += dt * (sprint ? 11 : 8) * moving;
+    const stepIdx = Math.floor(player.bobPhase / Math.PI);
+    if (moving > 0.15 && stepIdx !== player.lastStep) {
+      player.lastStep = stepIdx;
+      if (hooks.onStep) hooks.onStep(inWaterNow);
+    }
     const bobY = Math.sin(player.bobPhase) * 0.055 * moving;
     const bobX = Math.cos(player.bobPhase * 0.5) * 0.03 * moving;
 
@@ -547,6 +842,79 @@ export function createWorld(canvas, hooks = {}) {
     }
   }
 
+
+  // ----- day/night cycle (4-minute loop; T key skips +3h; ?phase= sets start) -----
+  const DAY_LENGTH = 240;
+  let cycleT = (() => {
+    try {
+      const p = parseFloat(new URLSearchParams(window.location.search).get("phase"));
+      return Number.isFinite(p) ? ((p % 1) + 1) % 1 : 0.1;
+    } catch (e) { return 0.1; }
+  })();
+  const SKY = {
+    zenDay: new THREE.Color(0x3f76b8), zenNight: new THREE.Color(0x030510),
+    horDay: new THREE.Color(0xb7c8ae), horNight: new THREE.Color(0x0a111c),
+    horDusk: new THREE.Color(0xe0914f),
+    sunLow: new THREE.Color(0xff9448), sunHigh: new THREE.Color(0xfff2d8),
+    hemiDay: new THREE.Color(0xaec6de), hemiNight: new THREE.Color(0x243049),
+  };
+  const _c1 = new THREE.Color(), _c2 = new THREE.Color();
+  let ambAcc = 1;
+  function updateSky(dt) {
+    if (inputState.timeSkip) {
+      inputState.timeSkip = false;
+      cycleT = (cycleT + 0.125) % 1;
+    }
+    cycleT = (cycleT + dt / DAY_LENGTH) % 1;
+    const th = cycleT * Math.PI * 2;
+    const elev = Math.sin(th);
+    const daylight = smoothstep(-0.06, 0.28, elev);
+    const nightness = 1 - smoothstep(-0.32, -0.04, elev);
+    const duskness = clamp(1 - Math.abs(elev + 0.02) / 0.3, 0, 1) * (1 - nightness * 0.55);
+
+    const sunDir = _v1.set(Math.cos(th) * 0.88, elev, 0.38).normalize();
+    skyUniforms.uSunDir.value.copy(sunDir);
+    skyUniforms.uMoonDir.value.copy(sunDir).multiplyScalar(-1);
+    skyUniforms.uNight.value = nightness;
+    skyUniforms.uSunColor.value.lerpColors(SKY.sunLow, SKY.sunHigh, clamp(elev * 1.7, 0, 1));
+    skyUniforms.uZenith.value.lerpColors(SKY.zenNight, SKY.zenDay, daylight);
+    _c1.lerpColors(SKY.horNight, SKY.horDay, daylight).lerp(SKY.horDusk, duskness * 0.72);
+    skyUniforms.uHorizon.value.copy(_c1);
+    scene.fog.color.copy(_c1).multiplyScalar(0.82);
+
+    sunLight.position.copy(sunDir).multiplyScalar(220).add(camera.position);
+    sunLight.intensity = 2.3 * Math.pow(clamp(elev, 0, 1), 0.7) * (0.2 + 0.8 * daylight);
+    sunLight.color.copy(skyUniforms.uSunColor.value);
+    moonLight.position.copy(sunDir).multiplyScalar(-200).add(camera.position);
+    moonLight.intensity = 0.55 * nightness;
+    hemi.intensity = lerp(0.23, 0.8, daylight);
+    hemi.color.lerpColors(SKY.hemiNight, SKY.hemiDay, daylight);
+    renderer.toneMappingExposure = lerp(1.0, 1.08, daylight);
+
+    starMat.opacity = nightness * (0.78 + 0.22 * Math.sin(elapsed * 2.7));
+    for (const g of galaxies) {
+      g.material.opacity = nightness * 0.9;
+      g.material.rotation += dt * 0.004;
+    }
+    stars.rotation.y = cycleT * 0.6;
+    skyGroup.position.set(camera.position.x, 0, camera.position.z);
+
+    waterUniforms.uTime.value = elapsed;
+    waterUniforms.uDay.value = daylight;
+
+    ambAcc += dt;
+    if (ambAcc > 0.18 && hooks.onAmbience) {
+      ambAcc = 0;
+      const focus = playing ? player.pos : camera.position;
+      const rw = riverInfo(focus.x, focus.z);
+      hooks.onAmbience({
+        water: clamp(1 - (rw.d - 3) / 70, 0, 1),
+        day: daylight,
+        night: nightness,
+      });
+    }
+  }
+
   function frame() {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
@@ -566,6 +934,7 @@ export function createWorld(canvas, hooks = {}) {
     ring.scale.set(ringScale, ringScale, 1);
     updateDrones(dt, elapsed);
     updateFx(dt);
+    updateSky(dt);
     pushHud();
     renderer.render(scene, camera);
   }
