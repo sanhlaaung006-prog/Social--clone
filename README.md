@@ -67,18 +67,22 @@ In-game, `ESC` (or the COMMAND button) opens the pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
 title screen before deployment and to the pause menu once in the field.
 
-Terrain generation runs on a small **Rust → WebAssembly core**
-(`game/wasm/ironveil-core/`, dependency-free): the seeded integer hash,
-value-noise FBM and base/rim heights are ported bit-exactly from the JS
-implementation (verified max difference 0 across the test grids), and
-chunks request their 9,409 raw heights in one batch call (~1.5× faster
-than the JS loop in Node; 5.5 KB `.wasm`). The compiled asset is committed
-at `game/public/wasm/ironveil_core.wasm` and loaded locally — **fully
-offline at runtime, no CDN** — while the identical JS code remains as the
-instant fallback (the debug overlay shows `TERRAIN CORE: RUST WASM` when
-active). Rebuild it with the *Build Rust WASM terrain core* GitHub Action
-(or `cargo build --release --target wasm32-unknown-unknown` locally).
-River carving, movement and rendering stay in JS/Three.js.
+Terrain generation runs on a **Rust → WebAssembly ABI v3 core**
+(`game/wasm/ironveil-core/`, dependency-free). Rust now handles four batch
+systems: **(1)** full chunk-mesh buffers (positions, normals, colors,
+indices), **(2)** deterministic local grass/pebble scatter batches,
+**(3)** drone LOS/threat/tactical-waypoint batches with coarse A* paths,
+and **(4)** precomputed visual data — a 3-weather × 128-bin sky/cloud LUT
+plus per-vertex terrain splat (rock/dry/wet) and roughness. Terrain colors
+also include Rust-baked AO (eight-direction horizon slope + concavity,
+faded to 1.0 at chunk borders to avoid seams). The 106 KB compiled asset
+is committed at `game/public/wasm/ironveil_core.wasm` and loaded locally —
+**fully offline at runtime, no CDN** — while the JS implementations remain
+as the instant fallback (the debug overlay shows `TERRAIN CORE: RUST
+WASM` and a `RUST V3` row when active). Rebuild it with the *Build Rust
+WASM terrain core* GitHub Action (or `cargo build --release --target
+wasm32-unknown-unknown` locally). River carving/objective flattening,
+movement, dynamic lighting and rendering stay in JS/Three.js.
 
 **Developing:** edit [`game/src/ironveil.jsx`](game/src/ironveil.jsx) (UI) and
 [`game/src/world.js`](game/src/world.js) (3D world) — Vite serves with HMR on
@@ -104,6 +108,10 @@ at the +1000 m line, and midnight under the stars and galaxies.
 **Rust ABI v2 — baked terrain AO and refined rifle viewmodel:**
 
 ![IRONVEIL Rust lighting and rifle](screenshots/rust-v2-rifle.png)
+
+**Rust ABI v3 — mesh/scatter/AI batches and sky LUT active (`RUST V3` debug row):**
+
+![IRONVEIL Rust v3 systems](screenshots/rust-v3-systems.png)
 
 **Monsoon weather — screen-space rain, 80 m AI LOS, no drones engaged:**
 
