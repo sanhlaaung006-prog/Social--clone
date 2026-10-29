@@ -67,6 +67,19 @@ In-game, `ESC` (or the COMMAND button) opens the pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
 title screen before deployment and to the pause menu once in the field.
 
+Terrain generation runs on a small **Rust → WebAssembly core**
+(`game/wasm/ironveil-core/`, dependency-free): the seeded integer hash,
+value-noise FBM and base/rim heights are ported bit-exactly from the JS
+implementation (verified max difference 0 across the test grids), and
+chunks request their 9,409 raw heights in one batch call (~1.5× faster
+than the JS loop in Node; 5.5 KB `.wasm`). The compiled asset is committed
+at `game/public/wasm/ironveil_core.wasm` and loaded locally — **fully
+offline at runtime, no CDN** — while the identical JS code remains as the
+instant fallback (the debug overlay shows `TERRAIN CORE: RUST WASM` when
+active). Rebuild it with the *Build Rust WASM terrain core* GitHub Action
+(or `cargo build --release --target wasm32-unknown-unknown` locally).
+River carving, movement and rendering stay in JS/Three.js.
+
 **Developing:** edit [`game/src/ironveil.jsx`](game/src/ironveil.jsx) (UI) and
 [`game/src/world.js`](game/src/world.js) (3D world) — Vite serves with HMR on
 port 8000. `npm run build` produces `game/dist/`.
