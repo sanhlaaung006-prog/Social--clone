@@ -1,7 +1,7 @@
     import React, { useEffect, useState } from "react";
     import { createRoot } from "react-dom/client";
     import { create } from "zustand";
-    import { createWorld, inputState, debugStats } from "./world.js";
+    import { createWorld, inputState, debugStats, MAP_PRESETS } from "./world.js";
     import { sfx } from "./audio.js";
 
     // === [UI: ZUSTAND_STORE] ===
@@ -106,6 +106,14 @@
 
     let noticeSequence = 0;
 
+    const getInitialMapMode = () => {
+      try {
+        return new URLSearchParams(window.location.search).get("map") === "br" ? "br" : "survival";
+      } catch (e) {
+        return "survival";
+      }
+    };
+
     const gameStore = create((set, get) => ({
       // Core player state consumed by isolated HUD selectors.
       health: 74,
@@ -118,6 +126,8 @@
       objectiveBearing: 34,
       inventory: makeInventory(),
       isMenuOpen: true,
+      mapMode: getInitialMapMode(),
+      isOutOfBounds: false,
 
       // Session flow: the game boots to the title / start screen and only
       // enters the field when the operator hits START (see StartScreen).
@@ -136,6 +146,20 @@
         set({ notice: { id: noticeSequence, text, tone } });
       },
       clearNotice: (id) => set((state) => (state.notice && state.notice.id === id ? { notice: null } : {})),
+
+      setMapMode: (mapMode) => {
+        if (!MAP_PRESETS[mapMode]) return;
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("map", mapMode);
+          window.history.replaceState(null, "", url);
+        } catch (e) { /* URL sync is best-effort */ }
+        set({ mapMode, isOutOfBounds: false });
+        get().notify(mapMode === "br" ? "MAP PRESET // BATTLE ROYALE 2x2 KM" : "MAP PRESET // SURVIVAL 4x4 KM");
+      },
+      applyBoundaryDamage: (amount) => {
+        set((state) => ({ health: Math.max(0, state.health - amount) }));
+      },
 
       startGame: () => {
         set({ hasStarted: true, isMenuOpen: false, screen: "main" });
@@ -299,6 +323,9 @@
         ["GEOMETRIES", d.geometries],
         ["TEXTURES", d.textures],
         ["PROGRAMS", d.programs],
+        ["MAP", (MAP_PRESETS[d.mapMode]?.label || d.mapMode) + " " + d.mapSizeM + "M"],
+        ["CHUNKS", d.chunksVisible + " VIS / " + d.chunksLoaded + "/" + d.chunksTotal],
+        ["OUT OF BOUNDS", d.outOfBounds ? "YES -" + d.boundaryDamage + "/S" : "NO"],
         ["SHADOW MAPS", d.shadowMapsFrozen ? "FROZEN/OFF" : "LIVE"],
         ["CULL <=60M", d.cullNear],
         ["CULL <=150M", d.cullMid],
@@ -330,6 +357,7 @@
       const apiRef = React.useRef(null);
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const mapMode = useGameStore((state) => state.mapMode);
 
       useEffect(() => {
         const api = createWorld(canvasRef.current, {
@@ -342,17 +370,25 @@
           onStep: (inWater) => sfx.step(!!inWater),
           onSplash: () => sfx.splash(),
           onAmbience: (a) => sfx.setAmbience(a),
-        });
+          onOutOfBoundsChange: (active) => {
+            gameStore.setState({ isOutOfBounds: active });
+            gameStore.getState().notify(
+              active ? "RETURN TO THE COMBAT ZONE" : "COMBAT ZONE // IN BOUNDS",
+              active ? "danger" : "default"
+            );
+          },
+          onBoundaryDamage: (amount) => gameStore.getState().applyBoundaryDamage(amount),
+        }, { mapPreset: mapMode });
         apiRef.current = api;
         const unsubscribe = gameStore.subscribe((state, prev) => {
           if (state.shots > prev.shots) api.shoot();
         });
         return () => { unsubscribe(); api.dispose(); apiRef.current = null; };
-      }, []);
+      }, [mapMode]);
 
       useEffect(() => {
         if (apiRef.current) apiRef.current.setPlaying(hasStarted && !isMenuOpen);
-      }, [hasStarted, isMenuOpen]);
+      }, [hasStarted, isMenuOpen, mapMode]);
 
       return (
         <div className="world" aria-hidden="true">
@@ -1005,6 +1041,8 @@
     const StartScreen = React.memo(function StartScreen() {
       const startGame = useGameStore((state) => state.startGame);
       const openScreen = useGameStore((state) => state.openScreen);
+      const mapMode = useGameStore((state) => state.mapMode);
+      const setMapMode = useGameStore((state) => state.setMapMode);
       const [progress, setProgress] = useState(0);
       const [briefOpen, setBriefOpen] = useState(false);
       const playRef = React.useRef(null);
@@ -1079,6 +1117,33 @@
                     <div className="meta-cell"><span>OBJECTIVE</span><strong className="accent">RELAY 04-C</strong></div>
                     <div className="meta-cell"><span>FACTION</span><MenuFaction /></div>
                   </div>
+
+                  <section className="map-mode-select start-rise d3" aria-label="Map preset">
+                    <div className="map-mode-head">
+                      <span>MAP PRESET</span>
+                      <b>{MAP_PRESETS[mapMode].label} // {MAP_PRESETS[mapMode].size / 1000}x{MAP_PRESETS[mapMode].size / 1000} KM</b>
+                    </div>
+                    <div className="map-mode-options" role="group" aria-label="Choose map preset">
+                      <button
+                        type="button"
+                        className={`map-mode-btn ${mapMode === "br" ? "is-active" : ""}`}
+                        aria-pressed={mapMode === "br"}
+                        onClick={() => setMapMode("br")}
+                      >
+                        <strong>BATTLE ROYALE</strong>
+                        <small>2x2 KM // 4 CHUNKS // OOB DAMAGE</small>
+                      </button>
+                      <button
+                        type="button"
+                        className={`map-mode-btn ${mapMode === "survival" ? "is-active" : ""}`}
+                        aria-pressed={mapMode === "survival"}
+                        onClick={() => setMapMode("survival")}
+                      >
+                        <strong>SURVIVAL</strong>
+                        <small>4x4 KM // 16 CHUNKS // RIM CLAMP</small>
+                      </button>
+                    </div>
+                  </section>
 
                   <section className="start-loading start-rise d3" aria-label="Loading progress">
                     <div className="start-loading-head">
@@ -1877,6 +1942,20 @@
     });
 
     // ============ APP SHELL / EVENT BRIDGE ============
+    const BoundaryWarning = React.memo(function BoundaryWarning() {
+      const active = useGameStore((state) => state.isOutOfBounds);
+      const hasStarted = useGameStore((state) => state.hasStarted);
+      const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      if (!active || !hasStarted || isMenuOpen) return null;
+      return (
+        <div className="oob-warning" role="alert" aria-live="assertive">
+          <span>WARNING</span>
+          <strong>RETURN TO THE COMBAT ZONE</strong>
+          <span>-5 VITALS / SEC</span>
+        </div>
+      );
+    });
+
     const Toast = React.memo(function Toast() {
       const notice = useGameStore((state) => state.notice);
       const clearNotice = useGameStore((state) => state.clearNotice);
@@ -2142,6 +2221,7 @@
           <StageHitLayer />
           <TouchControls />
           <GameHUD />
+          <BoundaryWarning />
           <OverlayRoot />
           <Toast />
         </div>

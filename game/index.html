@@ -612,6 +612,18 @@
     .meta-cell span { display: block; color: var(--faint); font-size: 6.5px; letter-spacing: .13em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .meta-cell strong { display: block; margin-top: 3px; color: var(--ink-soft); font-family: var(--display); font-size: 15px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .meta-cell strong.accent { color: var(--accent); }
+    .map-mode-select { margin-top: clamp(12px, 1.8vw, 18px); max-width: 515px; border: 1px solid var(--line); background: rgba(12,17,13,.42); padding: 9px 10px 10px; }
+    .map-mode-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; color: var(--faint); font-size: 6.5px; letter-spacing: .14em; text-transform: uppercase; }
+    .map-mode-head b { color: var(--accent); font-weight: 500; white-space: nowrap; }
+    .map-mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+    .map-mode-btn { text-align: left; padding: 8px 10px; color: var(--ink-soft); background: rgba(15,21,16,.55); border: 1px solid var(--line); cursor: pointer; transition: border-color .18s, background .18s, color .18s; }
+    .map-mode-btn strong { display: block; font-family: var(--display); font-size: 15px; font-weight: 600; letter-spacing: .09em; line-height: 1; text-transform: uppercase; }
+    .map-mode-btn small { display: block; margin-top: 4px; color: var(--muted); font-size: 6px; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .map-mode-btn:hover { border-color: var(--line-strong); background: rgba(29,39,29,.68); }
+    .map-mode-btn.is-active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .map-mode-btn.is-active small { color: rgba(12,18,8,.65); }
+    .oob-warning { position: fixed; z-index: 65; top: calc(74px + var(--safe-top, 0px)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 9px 14px; color: #ffe9e2; background: rgba(58,16,10,.82); border: 1px solid rgba(255,98,71,.65); box-shadow: 0 0 24px rgba(255,98,71,.22); font-size: 8px; letter-spacing: .14em; text-transform: uppercase; pointer-events: none; animation: pulseDot 1s ease-in-out infinite; }
+    .oob-warning strong { font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: .1em; color: var(--danger); }
     .menu-actions { display: flex; flex-direction: column; gap: 5px; margin-top: clamp(15px, 2.2vw, 22px); max-width: 515px; }
     .menu-action {
       position: relative;

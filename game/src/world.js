@@ -30,7 +30,14 @@ export const debugStats = {
   cullNear: 0, cullMid: 0, cullFar: 0, dronesVisible: 0,
   shadowMapsFrozen: 1, shadowMapUpdates: 0,
   simSeconds: 0, travelM: 0,
+  mapMode: "survival", mapSizeM: 4000, worldSeed: 0,
+  chunksLoaded: 0, chunksVisible: 0, chunksTotal: 16,
+  outOfBounds: 0, boundaryDamage: 0, relayX: 0, relayZ: 0,
 };
+
+// External debug/test control. The render loop consumes a pending teleport
+// once; used by automated boundary/spawn verification.
+export const worldControl = { teleport: null };
 
 // ---------- deterministic rng / noise ----------
 function mulberry32(seed) {
@@ -42,9 +49,19 @@ function mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+let NOISE_SEED = 0x2e7a04c9;
+// Integer avalanche hash (JS stand-in for the future WASM/C++ noise core).
+// Unlike the old sin hash it stays precise for negative and large lattice
+// coordinates, which the +/-2000m presets require.
 function hash2(x, z) {
-  const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
-  return s - Math.floor(s);
+  let h = Math.imul(Math.floor(x) | 0, 0x27d4eb2d);
+  h ^= Math.imul(Math.floor(z) | 0, 0x165667b1);
+  h ^= NOISE_SEED | 0;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
 }
 function valueNoise(x, z) {
   const xi = Math.floor(x), zi = Math.floor(z);
@@ -69,33 +86,80 @@ const smoothstep = (a, b, x) => {
 };
 const lerp = (a, b, t) => a + (b - a) * t;
 
-// ---------- world layout ----------
-export const WORLD = {
-  size: 640,
-  playableRadius: 292,
-  spawn: { x: -70, z: 120 },
-  relay: { x: 70, z: -115 },
-};
+// ---------- map presets / deterministic layout ----------
+export const MAP_PRESETS = Object.freeze({
+  br: Object.freeze({
+    id: "br", label: "BATTLE ROYALE", size: 2000, half: 1000,
+    chunksPerAxis: 2, chunkCount: 4, rimStart: 850,
+    hardClamp: 1000, boundaryMode: "damage", boundaryDamagePerSecond: 5,
+  }),
+  survival: Object.freeze({
+    id: "survival", label: "SURVIVAL", size: 4000, half: 2000,
+    chunksPerAxis: 4, chunkCount: 16, rimStart: 1800,
+    hardClamp: 1950, boundaryMode: "clamp", boundaryDamagePerSecond: 0,
+  }),
+});
+export const CHUNK_SIZE_M = 1000;
+export const CHUNK_SEGMENTS = 96; // ~10.4m per terrain vertex
 
-function rawHeight(x, z) {
-  const d = Math.hypot(x, z);
+export function getMapPreset(id) {
+  return MAP_PRESETS[id] || MAP_PRESETS.survival;
+}
+function getSearchParam(name) {
+  try { return new URLSearchParams(window.location.search).get(name); }
+  catch (e) { return null; }
+}
+let sessionWorldSeed = (() => {
+  const raw = parseInt(getSearchParam("seed"), 10);
+  return Number.isFinite(raw)
+    ? raw >>> 0
+    : ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0);
+})();
+let activePreset = getMapPreset(getSearchParam("map") || "survival");
+
+// Mutable active layout. Only one world exists at a time; createWorld()
+// reconfigures this before building its scene (menu mode switch = rebuild).
+export const WORLD = {
+  size: activePreset.size,
+  half: activePreset.half,
+  presetId: activePreset.id,
+  chunksPerAxis: activePreset.chunksPerAxis,
+  chunkCount: activePreset.chunkCount,
+  playableRadius: activePreset.half, // legacy field; bounds are square now
+  spawn: { x: 0, z: 0 },
+  relay: { x: 0, z: 0 },
+};
+let relayBase = 0, spawnBase = 0;
+let RIVER = { samples: [], grid: new Map(), cellSize: 50, control: [] };
+
+function baseHeight(x, z) {
   let h = fbm(x * 0.011 + 13.7, z * 0.011 - 4.2, 5) * 30;
   h += Math.pow(fbm(x * 0.0038 - 7.1, z * 0.0038 + 9.3, 3), 2) * 46;
-  const rim = smoothstep(190, 315, d);
-  h += rim * (58 + 34 * fbm(x * 0.017 + 31, z * 0.017 - 17, 3));
   return h;
 }
-const relayBase = rawHeight(WORLD.relay.x, WORLD.relay.z);
-const spawnBase = rawHeight(WORLD.spawn.x, WORLD.spawn.z);
+// Procedural rim mountains: past rimStart (BR 850m / Survival 1800m, square
+// Chebyshev edge distance) height grows exponentially into an impassable
+// ring. With the 200m fog wall it is only discovered near the edge.
+function rimHeight(x, z) {
+  const edge = Math.max(Math.abs(x), Math.abs(z));
+  const start = activePreset.rimStart;
+  if (edge <= start) return 0;
+  const width = Math.max(1, activePreset.half - start);
+  const t = (edge - start) / width;
+  const shaped = (Math.exp(3.1 * Math.min(t, 1)) - 1) / (Math.exp(3.1) - 1);
+  const ridge = 0.72 + 0.55 * fbm(x * 0.009 + 41.3, z * 0.009 - 23.8, 3);
+  const beyond = t > 1 ? (t - 1) * width * 0.9 : 0;
+  return shaped * 165 * ridge + beyond;
+}
+function rawHeight(x, z) {
+  return baseHeight(x, z) + rimHeight(x, z);
+}
 
-// ---------- river: meandering channel carved across the sector ----------
-// A Catmull-Rom path is resampled; the terrain height function carves a
-// channel toward a smoothed, monotonically descending bed profile so the
-// water ribbon built on top always flows "downhill".
-const RIVER_CTRL = [
-  [-262, -218], [-185, -150], [-120, -95], [-58, -40], [0, 2],
-  [52, 36], [98, 86], [150, 140], [205, 205], [260, 264],
-];
+// ---------- river: seeded meander carved across the active map ----------
+// A Catmull-Rom path is resampled at ~8m; terrain carves toward a smoothed,
+// monotonically descending bed profile so the water ribbon flows downhill.
+// Samples are bucketed into a 50m grid so height queries stay O(1)-ish even
+// with ~700 samples on the 4km map.
 function catmull2(p0, p1, p2, p3, t) {
   const t2 = t * t, t3 = t2 * t;
   return [
@@ -103,39 +167,116 @@ function catmull2(p0, p1, p2, p3, t) {
     0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3),
   ];
 }
-const RIVER = (() => {
-  const pts = [];
-  for (let s = 0; s < RIVER_CTRL.length - 1; s++) {
-    const p0 = RIVER_CTRL[Math.max(0, s - 1)], p1 = RIVER_CTRL[s];
-    const p2 = RIVER_CTRL[s + 1], p3 = RIVER_CTRL[Math.min(RIVER_CTRL.length - 1, s + 2)];
-    for (let i = 0; i < 26; i++) pts.push(catmull2(p0, p1, p2, p3, i / 26));
+function riverCellKey(ix, iz) { return (ix + 128) * 512 + (iz + 128); }
+function buildRiver(seed, preset) {
+  const rand = mulberry32((seed ^ 0x713c51ab) >>> 0);
+  const span = preset.rimStart * 0.94;
+  const startZ = -(0.42 + rand() * 0.2) * span;
+  const endZ = (0.42 + rand() * 0.2) * span;
+  const phase = rand() * Math.PI * 2;
+  const ctrl = [];
+  const N = 11, mid = (N - 1) / 2;
+  for (let i = 0; i < N; i++) {
+    const u = i / (N - 1);
+    const x = lerp(-span, span, u);
+    const fade = Math.sin(u * Math.PI);
+    let z = lerp(startZ, endZ, u)
+      + Math.sin(u * Math.PI * 2.2 + phase) * span * 0.11 * fade
+      + (rand() - 0.5) * span * 0.045 * fade;
+    if (i === mid) z = (rand() < 0.5 ? -1 : 1) * (65 + rand() * 55); // keep spawn dry
+    ctrl.push([x, z]);
   }
-  pts.push(RIVER_CTRL[RIVER_CTRL.length - 1].slice());
+  const pts = [];
+  for (let s = 0; s < ctrl.length - 1; s++) {
+    const p0 = ctrl[Math.max(0, s - 1)], p1 = ctrl[s];
+    const p2 = ctrl[s + 1], p3 = ctrl[Math.min(ctrl.length - 1, s + 2)];
+    const segLen = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    const steps = Math.max(8, Math.ceil(segLen / 8));
+    for (let i = s === 0 ? 0 : 1; i <= steps; i++) pts.push(catmull2(p0, p1, p2, p3, i / steps));
+  }
   let prof = pts.map(([x, z]) => rawHeight(x, z));
   for (let pass = 0; pass < 2; pass++) {
-    prof = prof.map((v, i) => {
+    const src = prof, next = prof.slice();
+    for (let i = 0; i < src.length; i++) {
       let sum = 0, n = 0;
-      for (let k = -4; k <= 4; k++) {
-        const q = prof[Math.max(0, Math.min(prof.length - 1, i + k))];
-        sum += q; n++;
+      for (let k = -12; k <= 12; k++) {
+        sum += src[Math.max(0, Math.min(src.length - 1, i + k))]; n++;
       }
-      return sum / n;
-    });
+      next[i] = sum / n;
+    }
+    prof = next;
   }
-  for (let i = 1; i < prof.length; i++) prof[i] = Math.min(prof[i], prof[i - 1] - 0.022);
-  const samples = pts.map(([x, z], i) => ({ x, z, bed: prof[i] - 1.55, water: prof[i] - 0.62 }));
-  return { samples };
-})();
+  for (let i = 1; i < prof.length; i++) prof[i] = Math.min(prof[i], prof[i - 1] - 0.045);
+  const cellSize = 50;
+  const grid = new Map();
+  const samples = pts.map(([x, z], i) => {
+    const sample = { x, z, bed: prof[i] - 1.55, water: prof[i] - 0.62 };
+    const key = riverCellKey(Math.floor(x / cellSize), Math.floor(z / cellSize));
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(sample); else grid.set(key, [sample]);
+    return sample;
+  });
+  return { samples, grid, cellSize, control: ctrl };
+}
 export function riverInfo(x, z) {
+  if (!RIVER.samples.length) return { d: 9999, bed: 0, water: -9999, x, z };
+  const cell = RIVER.cellSize;
+  const cx = Math.floor(x / cell), cz = Math.floor(z / cell);
   let best = null, bestD2 = Infinity;
-  const arr = RIVER.samples;
-  for (let i = 0; i < arr.length; i++) {
-    const dx = x - arr[i].x, dz = z - arr[i].z;
-    const d2 = dx * dx + dz * dz;
-    if (d2 < bestD2) { bestD2 = d2; best = arr[i]; }
+  for (let ix = cx - 2; ix <= cx + 2; ix++) {
+    for (let iz = cz - 2; iz <= cz + 2; iz++) {
+      const bucket = RIVER.grid.get(riverCellKey(ix, iz));
+      if (!bucket) continue;
+      for (let i = 0; i < bucket.length; i++) {
+        const s = bucket[i];
+        const dx = x - s.x, dz = z - s.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = s; }
+      }
+    }
   }
+  if (!best) return { d: 9999, bed: 0, water: -9999, x, z };
   return { d: Math.sqrt(bestD2), bed: best.bed, water: best.water, x: best.x, z: best.z };
 }
+
+function chooseRelay(seed, preset) {
+  const rand = mulberry32((seed ^ 0x04c2e7a) >>> 0);
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const angle = rand() * Math.PI * 2;
+    const radius = preset.half * (0.38 + rand() * 0.24);
+    const x = Math.round(Math.cos(angle) * radius);
+    const z = Math.round(Math.sin(angle) * radius);
+    if (Math.max(Math.abs(x), Math.abs(z)) > preset.rimStart * 0.82) continue;
+    if (riverInfo(x, z).d < 28) continue; // not in the river
+    return { x, z };
+  }
+  return { x: Math.round(preset.half * 0.45), z: Math.round(-preset.half * 0.45) };
+}
+
+export function configureWorldLayout(presetId = activePreset.id, seed = sessionWorldSeed) {
+  activePreset = getMapPreset(presetId);
+  sessionWorldSeed = seed >>> 0;
+  NOISE_SEED = (sessionWorldSeed ^ 0x2e7a04c9) >>> 0;
+  WORLD.size = activePreset.size;
+  WORLD.half = activePreset.half;
+  WORLD.presetId = activePreset.id;
+  WORLD.chunksPerAxis = activePreset.chunksPerAxis;
+  WORLD.chunkCount = activePreset.chunkCount;
+  WORLD.playableRadius = activePreset.half;
+  WORLD.spawn.x = 0; WORLD.spawn.z = 0;
+  RIVER = buildRiver(sessionWorldSeed, activePreset);
+  WORLD.relay = chooseRelay(sessionWorldSeed, activePreset);
+  spawnBase = rawHeight(WORLD.spawn.x, WORLD.spawn.z);
+  relayBase = rawHeight(WORLD.relay.x, WORLD.relay.z);
+  debugStats.mapMode = activePreset.id;
+  debugStats.mapSizeM = activePreset.size;
+  debugStats.worldSeed = sessionWorldSeed;
+  debugStats.chunksTotal = activePreset.chunkCount;
+  debugStats.relayX = WORLD.relay.x;
+  debugStats.relayZ = WORLD.relay.z;
+  return activePreset;
+}
+configureWorldLayout(activePreset.id, sessionWorldSeed);
 
 export function terrainHeight(x, z) {
   let h = rawHeight(x, z);
@@ -150,10 +291,20 @@ export function terrainHeight(x, z) {
   }
   return h;
 }
+export const heightAt = terrainHeight;
 
 // ---------- world factory ----------
-export function createWorld(canvas, hooks = {}) {
-  const noop = { setPlaying() {}, shoot() {}, dispose() {} };
+export function createWorld(canvas, hooks = {}, options = {}) {
+  const mapPreset = configureWorldLayout(
+    options.mapPreset || options.mapMode || activePreset.id,
+    options.seed !== undefined ? options.seed : sessionWorldSeed
+  );
+  debugStats.travelM = 0;
+  debugStats.outOfBounds = 0;
+  debugStats.boundaryDamage = 0;
+  debugStats.chunksLoaded = 0;
+  debugStats.chunksVisible = 0;
+  const noop = { setPlaying() {}, shoot() {}, teleport() {}, dispose() {} };
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
@@ -175,7 +326,7 @@ export function createWorld(canvas, hooks = {}) {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0f0a); // behind the sky dome
-  scene.fog = new THREE.Fog(0x0a0f0a, 55, 430);
+  scene.fog = new THREE.Fog(0x0a0f0a, 120, 200); // 200m fog wall
 
   const camera = new THREE.PerspectiveCamera(71, window.innerWidth / window.innerHeight, 0.1, 900);
   camera.rotation.order = "YXZ";
@@ -191,6 +342,11 @@ export function createWorld(canvas, hooks = {}) {
   moonLight.position.set(-60, 120, -30);
   moonLight.castShadow = false;
   scene.add(moonLight);
+  // Light targets ride on the camera (updated in updateSky). Without this,
+  // Three.js aims both lights at the world origin and sun direction skews
+  // badly at 2-4km map distances.
+  scene.add(sunLight.target);
+  scene.add(moonLight.target);
 
   // ----- sky: gradient dome + sun/moon discs, star field, galaxies -----
   const skyGroup = new THREE.Group();
@@ -309,37 +465,105 @@ export function createWorld(canvas, hooks = {}) {
     }
   }
 
-  const rand = mulberry32(90210);
+  const rand = mulberry32((sessionWorldSeed ^ 0x90210) >>> 0);
 
-  // ----- terrain -----
-  const terrGeo = new THREE.PlaneGeometry(WORLD.size, WORLD.size, 160, 160);
-  terrGeo.rotateX(-Math.PI / 2);
-  {
-    const pos = terrGeo.attributes.position;
+  // ----- terrain: 1km chunk manager (96x96 segments per chunk) -----
+  // Center four chunks are built at boot; the rest stream in around the
+  // camera (immediately when inside render range, otherwise one prefetched
+  // chunk per streaming tick). Only chunks whose bounds come within 230m
+  // are visible — beyond the 200m fog wall nothing else can be seen.
+  const terrainMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 1, metalness: 0, flatShading: true,
+  });
+  const terrainGroup = new THREE.Group();
+  terrainGroup.name = "terrain-chunks";
+  scene.add(terrainGroup);
+  const terrainChunks = new Map();
+  const terrainMeshes = [];
+  let chunkStreamAcc = Infinity;
+  function chunkBounds(ix, iz) {
+    const minX = -mapPreset.half + ix * CHUNK_SIZE_M;
+    const minZ = -mapPreset.half + iz * CHUNK_SIZE_M;
+    return { minX, maxX: minX + CHUNK_SIZE_M, minZ, maxZ: minZ + CHUNK_SIZE_M, cx: minX + CHUNK_SIZE_M / 2, cz: minZ + CHUNK_SIZE_M / 2 };
+  }
+  function buildTerrainChunk(ix, iz) {
+    const key = ix + "," + iz;
+    const existing = terrainChunks.get(key);
+    if (existing) return existing;
+    const b = chunkBounds(ix, iz);
+    const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, CHUNK_SEGMENTS, CHUNK_SEGMENTS);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+      pos.setY(i, terrainHeight(pos.getX(i) + b.cx, pos.getZ(i) + b.cz));
     }
-    terrGeo.computeVertexNormals();
-    const norm = terrGeo.attributes.normal;
+    geo.computeVertexNormals();
+    const norm = geo.attributes.normal;
     const colors = new Float32Array(pos.count * 3);
     const cLow = new THREE.Color(0x232b1e), cMid = new THREE.Color(0x3d4a32);
     const cRock = new THREE.Color(0x5d6157), cPeak = new THREE.Color(0x878e80);
     const tmp = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
+      const wx = pos.getX(i) + b.cx, wz = pos.getZ(i) + b.cz;
       const h = pos.getY(i), slope = 1 - norm.getY(i);
       tmp.copy(cLow).lerp(cMid, smoothstep(2, 26, h));
       tmp.lerp(cPeak, smoothstep(38, 78, h) * 0.8);
       tmp.lerp(cRock, smoothstep(0.18, 0.5, slope));
-      const shade = 0.82 + 0.18 * hash2(pos.getX(i) * 3.1, pos.getZ(i) * 3.1);
+      const shade = 0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1);
       colors[i * 3] = tmp.r * shade; colors[i * 3 + 1] = tmp.g * shade; colors[i * 3 + 2] = tmp.b * shade;
     }
-    terrGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, terrainMaterial);
+    mesh.position.set(b.cx, 0, b.cz);
+    mesh.userData.isTerrainChunk = true;
+    mesh.userData.chunkKey = key;
+    terrainGroup.add(mesh);
+    terrainChunks.set(key, mesh);
+    terrainMeshes.push(mesh);
+    return mesh;
   }
-  const terrain = new THREE.Mesh(
-    terrGeo,
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, flatShading: true })
-  );
-  scene.add(terrain);
+  function distanceToChunk(x, z, b) {
+    const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0;
+    const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0;
+    return Math.hypot(dx, dz);
+  }
+  function updateChunkStreaming() {
+    const fx = camera.position.x, fz = camera.position.z;
+    let visible = 0;
+    const candidates = [];
+    for (let ix = 0; ix < mapPreset.chunksPerAxis; ix++) {
+      for (let iz = 0; iz < mapPreset.chunksPerAxis; iz++) {
+        const b = chunkBounds(ix, iz);
+        const d = distanceToChunk(fx, fz, b);
+        let mesh = terrainChunks.get(ix + "," + iz);
+        if (!mesh && d <= 245) mesh = buildTerrainChunk(ix, iz);
+        if (!mesh && d <= 1100) candidates.push({ ix, iz, d });
+        if (mesh) {
+          mesh.visible = d <= 230;
+          if (mesh.visible) visible++;
+        }
+      }
+    }
+    if (candidates.length) {
+      candidates.sort((a, b2) => a.d - b2.d);
+      const c = candidates[0];
+      const mesh = buildTerrainChunk(c.ix, c.iz);
+      mesh.visible = c.d <= 230;
+      if (mesh.visible) visible++;
+    }
+    debugStats.chunksLoaded = terrainChunks.size;
+    debugStats.chunksVisible = visible;
+    debugStats.chunksTotal = mapPreset.chunkCount;
+  }
+  // Boot: the four chunks meeting at the center spawn.
+  for (let ix = 0; ix < mapPreset.chunksPerAxis; ix++) {
+    for (let iz = 0; iz < mapPreset.chunksPerAxis; iz++) {
+      const b = chunkBounds(ix, iz);
+      if (b.minX <= 0 && b.maxX >= 0 && b.minZ <= 0 && b.maxZ >= 0) buildTerrainChunk(ix, iz);
+    }
+  }
+  updateChunkStreaming();
 
   // ----- river water ribbon + plank bridge on the spawn->relay line -----
   const waterUniforms = THREE.UniformsUtils.merge([
@@ -414,11 +638,14 @@ export function createWorld(canvas, hooks = {}) {
     scene.add(water);
   }
   const bridge = (() => {
-    const midX = (WORLD.spawn.x + WORLD.relay.x) / 2;
-    const midZ = (WORLD.spawn.z + WORLD.relay.z) / 2;
+    // Plank bridge where the river passes closest to the spawn->relay line.
+    const ax0 = WORLD.spawn.x, az0 = WORLD.spawn.z;
+    const abx = WORLD.relay.x - ax0, abz = WORLD.relay.z - az0;
+    const abLen2 = Math.max(1, abx * abx + abz * abz);
     let bi = 0, bd = Infinity;
     RIVER.samples.forEach((p, i) => {
-      const d = Math.hypot(p.x - midX, p.z - midZ);
+      const t = clamp(((p.x - ax0) * abx + (p.z - az0) * abz) / abLen2, 0, 1);
+      const d = Math.hypot(p.x - (ax0 + abx * t), p.z - (az0 + abz * t));
       if (d < bd) { bd = d; bi = i; }
     });
     const c = RIVER.samples[bi];
@@ -449,17 +676,26 @@ export function createWorld(canvas, hooks = {}) {
   const clearOf = (x, z, r) =>
     Math.hypot(x - WORLD.relay.x, z - WORLD.relay.z) > r &&
     Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) > r;
+  const scatterLimit = mapPreset.rimStart - 12;
   function scatter(count, placer) {
     let placed = 0, guard = 0;
     while (placed < count && guard++ < count * 30) {
-      const a = rand() * Math.PI * 2, r = Math.sqrt(rand()) * 285;
-      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      const x = (rand() * 2 - 1) * scatterLimit;
+      const z = (rand() * 2 - 1) * scatterLimit;
       if (!clearOf(x, z, 15)) continue;
+      if (riverInfo(x, z).d < 5.5) continue; // not in the water
       placer(x, terrainHeight(x, z), z, placed);
       placed++;
     }
     return placed;
   }
+  // Same density per m^2 as the original 640m sector (280 trees / 150 rocks
+  // inside r<=285m). Instancing + the 60/150m compaction keeps frame cost
+  // flat even at ~14k trees on Survival.
+  const REFERENCE_AREA = Math.PI * 285 * 285;
+  const scatterArea = (scatterLimit * 2) * (scatterLimit * 2);
+  const ROCK_N = Math.max(150, Math.round(150 * scatterArea / REFERENCE_AREA));
+  const TREE_N = Math.max(280, Math.round(280 * scatterArea / REFERENCE_AREA));
   // Placement transforms are retained once at startup so the culler can
   // compact the same preallocated InstancedMesh buffers without allocating
   // replacement meshes or matrices in the frame loop.
@@ -468,9 +704,9 @@ export function createWorld(canvas, hooks = {}) {
   const rocks = new THREE.InstancedMesh(
     new THREE.IcosahedronGeometry(1, 0),
     new THREE.MeshStandardMaterial({ color: 0x555a50, roughness: 1, flatShading: true }),
-    150
+    ROCK_N
   );
-  scatter(150, (x, y, z, i) => {
+  scatter(ROCK_N, (x, y, z, i) => {
     const s = 0.6 + rand() * 2.6;
     dummy.position.set(x, y + s * 0.25, z);
     dummy.rotation.set(rand() * 3, rand() * 3, rand() * 3);
@@ -485,7 +721,6 @@ export function createWorld(canvas, hooks = {}) {
   });
   scene.add(rocks);
 
-  const TREE_N = 280;
   const trunks = new THREE.InstancedMesh(
     new THREE.CylinderGeometry(0.13, 0.22, 1.7, 5),
     new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 1 }),
@@ -723,6 +958,24 @@ export function createWorld(canvas, hooks = {}) {
   };
   let playing = false;
   let transition = null; // { t, fromPos, fromQuat }
+  let outOfBounds = false;
+  let boundaryDamageAcc = 0;
+  function setOutOfBounds(next) {
+    if (next === outOfBounds) return;
+    outOfBounds = next;
+    debugStats.outOfBounds = next ? 1 : 0;
+    if (!next) { boundaryDamageAcc = 0; debugStats.boundaryDamage = 0; }
+    if (hooks.onOutOfBoundsChange) hooks.onOutOfBoundsChange(next);
+  }
+  function teleport(x, z, headingDeg = 0) {
+    const limit = mapPreset.hardClamp;
+    player.pos.set(clamp(x, -limit, limit), 0, clamp(z, -limit, limit));
+    player.pos.y = terrainHeight(player.pos.x, player.pos.z) + 1.7;
+    player.yaw = -(headingDeg * Math.PI) / 180; // heading = -yaw in this engine
+    player.pitch = -0.03;
+    transition = null;
+    if (playing) camera.position.copy(player.pos);
+  }
   const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q1 = new THREE.Quaternion();
 
   function playerPose(outPos, outQuat) {
@@ -752,14 +1005,16 @@ export function createWorld(canvas, hooks = {}) {
     flash.material.opacity = 0.95;
     flash.scale.setScalar(0.8 + rand() * 0.7);
     raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-    const targets = [terrain];
+    const targets = [];
+    for (const mesh of terrainMeshes) if (mesh.visible) targets.push(mesh);
     for (const d of drones) if (d.alive && d.group.visible) targets.push(d.body);
     const hits = raycaster.intersectObjects(targets, false);
     muzzle.getWorldPosition(_muzzleWorld);
     if (hits.length) {
       const hit = hits[0];
       tracer(_muzzleWorld, hit.point);
-      burst(hit.point, hit.object === terrain ? 12 : 22, hit.object === terrain ? 2.6 : 4.2);
+      const hitTerrain = !!hit.object.userData.isTerrainChunk;
+      burst(hit.point, hitTerrain ? 12 : 22, hitTerrain ? 2.6 : 4.2);
       const drone = drones.find((d) => d.body === hit.object);
       if (drone && drone.alive) {
         drone.alive = false;
@@ -836,10 +1091,28 @@ export function createWorld(canvas, hooks = {}) {
     // forward = (-sin, -cos), right = (cos, -sin)
     player.pos.x += (-sin * mz + cos * mx) * speed * dt;
     player.pos.z += (-cos * mz - sin * mx) * speed * dt;
-    const r = Math.hypot(player.pos.x, player.pos.z);
-    if (r > WORLD.playableRadius) {
-      player.pos.x *= WORLD.playableRadius / r;
-      player.pos.z *= WORLD.playableRadius / r;
+    // Mode-specific square boundary.
+    // Survival: hard clamp at +/-1950m (inside the rim ring).
+    // BR: terrain ends at +/-1000m; pressing on that line is out of bounds
+    // and drains 5 HP/s until the player returns inside.
+    const clampLimit = mapPreset.hardClamp;
+    player.pos.x = clamp(player.pos.x, -clampLimit, clampLimit);
+    player.pos.z = clamp(player.pos.z, -clampLimit, clampLimit);
+    if (mapPreset.boundaryMode === "damage") {
+      const edge = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
+      const isOob = edge >= mapPreset.half - 0.01;
+      setOutOfBounds(isOob);
+      if (isOob) {
+        debugStats.boundaryDamage = mapPreset.boundaryDamagePerSecond;
+        boundaryDamageAcc += dt * mapPreset.boundaryDamagePerSecond;
+        const whole = Math.floor(boundaryDamageAcc);
+        if (whole > 0) {
+          boundaryDamageAcc -= whole;
+          if (hooks.onBoundaryDamage) hooks.onBoundaryDamage(whole);
+        }
+      }
+    } else {
+      setOutOfBounds(false);
     }
     debugStats.travelM += Math.hypot(player.pos.x - prevX, player.pos.z - prevZ);
     let ground = terrainHeight(player.pos.x, player.pos.z) + 1.7;
@@ -884,14 +1157,15 @@ export function createWorld(canvas, hooks = {}) {
   }
 
   function updateCinematic(t) {
-    const cx = (WORLD.spawn.x + WORLD.relay.x) / 2, cz = (WORLD.spawn.z + WORLD.relay.z) / 2;
+    // Menu camera orbits the center spawn (relay is far beyond the fog wall).
+    const cx = WORLD.spawn.x, cz = WORLD.spawn.z;
     const a = t * 0.045;
     camera.position.set(
-      cx + Math.sin(a) * 105,
-      terrainHeight(cx, cz) + 36 + Math.sin(t * 0.1) * 5,
-      cz + Math.cos(a) * 105
+      cx + Math.sin(a) * 85,
+      terrainHeight(cx, cz) + 30 + Math.sin(t * 0.1) * 5,
+      cz + Math.cos(a) * 85
     );
-    camera.lookAt(WORLD.relay.x, relayY + 13, WORLD.relay.z);
+    camera.lookAt(cx, terrainHeight(cx, cz) + 8, cz);
     gun.visible = false;
   }
 
@@ -1007,9 +1281,11 @@ export function createWorld(canvas, hooks = {}) {
     scene.fog.color.copy(_c1).multiplyScalar(0.82);
 
     sunLight.position.copy(sunDir).multiplyScalar(220).add(camera.position);
+    sunLight.target.position.copy(camera.position);
     sunLight.intensity = 2.3 * Math.pow(clamp(elev, 0, 1), 0.7) * (0.2 + 0.8 * daylight);
     sunLight.color.copy(skyUniforms.uSunColor.value);
     moonLight.position.copy(sunDir).multiplyScalar(-200).add(camera.position);
+    moonLight.target.position.copy(camera.position);
     moonLight.intensity = 0.55 * nightness;
     hemi.intensity = lerp(0.23, 0.8, daylight);
     hemi.color.lerpColors(SKY.hemiNight, SKY.hemiDay, daylight);
@@ -1044,6 +1320,11 @@ export function createWorld(canvas, hooks = {}) {
     frameSerial++;
     const dt = Math.min(clock.getDelta(), 0.05);
     elapsed += dt;
+    if (worldControl.teleport) {
+      const tp = worldControl.teleport;
+      worldControl.teleport = null;
+      teleport(tp.x || 0, tp.z || 0, tp.heading || 0);
+    }
     if (playing) {
       gun.visible = true;
       updatePlayer(dt);
@@ -1065,6 +1346,11 @@ export function createWorld(canvas, hooks = {}) {
     if (scatterCullAcc >= 0.2) {
       scatterCullAcc = 0;
       refreshScatterCulling();
+    }
+    chunkStreamAcc += dt;
+    if (chunkStreamAcc >= 0.25) {
+      chunkStreamAcc = 0;
+      updateChunkStreaming();
     }
     renderer.render(scene, camera);
     { // debug counters (renderer.info is valid right after render)
@@ -1092,6 +1378,7 @@ export function createWorld(canvas, hooks = {}) {
   frame();
 
   function dispose() {
+    if (outOfBounds && hooks.onOutOfBoundsChange) hooks.onOutOfBoundsChange(false);
     cancelAnimationFrame(raf);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
@@ -1104,5 +1391,5 @@ export function createWorld(canvas, hooks = {}) {
     renderer.dispose();
   }
 
-  return { setPlaying, shoot, dispose };
+  return { setPlaying, shoot, teleport, dispose };
 }

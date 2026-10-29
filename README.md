@@ -14,6 +14,15 @@ starts at midnight) plays over a river-carved valley with a plank bridge,
 and everything is sonified with synthesized WebAudio SFX: gunshots, UI
 clicks, grass/water footsteps, river, birdsong, crickets, wind (`M` mutes).
 
+Two map presets are selectable on the start screen (or via `?map=br` /
+`?map=survival`): **Battle Royale — 2×2 km** (4 chunks) and **Survival —
+4×4 km** (16 chunks). Terrain streams in 1 km chunks around a center spawn
+at `(0, heightAt(0,0), 0)`; the relay and river are seeded per session
+(`?seed=` reproduces a layout). Combat rendering keeps the 60 m / 150 m
+distance culling behind a 120 m → 200 m fog wall. Procedural rim mountains
+ring both maps: Survival hard-clamps at ±1950 m, while pressing the BR
+±1000 m line triggers **RETURN TO THE COMBAT ZONE** at −5 vitals/sec.
+
 It boots straight to a **Start / Title screen** and **▶ START is playable
 instantly** — the systems check (uplink, field feed, armory, squad link,
 weapons) is a ~0.4s cosmetic flourish that never blocks input. INVENTORY,
@@ -30,16 +39,25 @@ port 8000. `npm run build` produces `game/dist/`.
 
 Captured from the running game in headless Chromium. The terrain is rendered
 live by WebGL (no backdrop photo anymore); only Google Fonts was stubbed
-locally during capture because the sandbox can't reach it. Desktop shots: morning deployment at spawn (river on the left) and
-midnight under the stars and galaxies.
+locally during capture because the sandbox can't reach it. Desktop shots:
+the Survival center spawn, the BR rim wall at +850 m, its out-of-bounds
+warning at the +1000 m line, and midnight under the stars and galaxies.
 
 **Start menu (desktop):**
 
 ![IRONVEIL start menu](screenshots/ironveil-start-menu.png)
 
-**Gameplay HUD — after pressing START:**
+**Survival (4×4 km) — center spawn at (0, 0):**
 
-![IRONVEIL gameplay HUD](screenshots/ironveil-gameplay-hud.png)
+![IRONVEIL Survival spawn](screenshots/ironveil-survival-spawn.png)
+
+**Battle Royale — rim mountains rising from +850 m:**
+
+![IRONVEIL BR rim mountains](screenshots/ironveil-br-rim.png)
+
+**Battle Royale — out-of-bounds warning at the +1000 m line:**
+
+![IRONVEIL BR out of bounds](screenshots/ironveil-br-oob.png)
 
 **Midnight — stars, a spiral galaxy and moonlit ridges:**
 
