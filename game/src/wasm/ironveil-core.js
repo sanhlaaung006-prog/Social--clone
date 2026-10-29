@@ -4,7 +4,7 @@
 // time. Loading is async and non-blocking; world.js keeps its identical
 // JS implementation as the fallback until (or unless) this is ready.
 
-export const rustCore = { ready: false, exports: null };
+export const rustCore = { ready: false, exports: null, version: 0 };
 let loadPromise = null;
 
 export function loadRustCore() {
@@ -18,7 +18,9 @@ export function loadRustCore() {
       const { instance } = await WebAssembly.instantiate(bytes, {});
       const ex = instance.exports;
       if (!ex.memory || typeof ex.ironveil_abi_version !== "function") return false;
-      if (ex.ironveil_abi_version() !== 1) return false;
+      const version = ex.ironveil_abi_version();
+      if (version < 1 || version > 2) return false;
+      rustCore.version = version;
       if (typeof ex.ironveil_raw_height !== "function") return false;
       if (typeof ex.ironveil_chunk_raw_heights !== "function") return false;
       if (typeof ex.ironveil_heights_ptr !== "function") return false;
@@ -40,14 +42,34 @@ export function rustRawHeight(seed, x, z, half, rimStart) {
 
 // Returns a copied Float64Array of (segments+1)^2 raw heights in
 // row-major order (row = +Z, col = +X), or null when Rust is absent.
-export function rustChunkRawHeights(seed, minX, minZ, sizeM, segments, half, rimStart) {
-  if (!rustCore.ready) return null;
-  const ex = rustCore.exports;
+function runChunkBatch(seed, minX, minZ, sizeM, segments, half, rimStart) {
+  if (!rustCore.ready) return 0;
   const expected = (segments + 1) * (segments + 1);
-  const count = ex.ironveil_chunk_raw_heights(seed >>> 0, minX, minZ, sizeM, segments, half, rimStart);
-  if (count !== expected) return null;
-  const ptr = ex.ironveil_heights_ptr();
-  return new Float64Array(ex.memory.buffer, ptr, count).slice();
+  const count = rustCore.exports.ironveil_chunk_raw_heights(
+    seed >>> 0, minX, minZ, sizeM, segments, half, rimStart
+  );
+  return count === expected ? count : 0;
+}
+
+export function rustChunkRawHeights(seed, minX, minZ, sizeM, segments, half, rimStart) {
+  const count = runChunkBatch(seed, minX, minZ, sizeM, segments, half, rimStart);
+  if (!count) return null;
+  const ex = rustCore.exports;
+  return new Float64Array(ex.memory.buffer, ex.ironveil_heights_ptr(), count).slice();
+}
+
+// Combined getter: copied raw heights plus (ABI v2) baked per-vertex
+// lighting/AO factors, or null when Rust is absent.
+export function rustChunkTerrain(seed, minX, minZ, sizeM, segments, half, rimStart) {
+  const count = runChunkBatch(seed, minX, minZ, sizeM, segments, half, rimStart);
+  if (!count) return null;
+  const ex = rustCore.exports;
+  const heights = new Float64Array(ex.memory.buffer, ex.ironveil_heights_ptr(), count).slice();
+  let light = null;
+  if (typeof ex.ironveil_lighting_ptr === "function") {
+    light = new Float32Array(ex.memory.buffer, ex.ironveil_lighting_ptr(), count).slice();
+  }
+  return { heights, light };
 }
 
 loadRustCore();

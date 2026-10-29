@@ -12,7 +12,7 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { rustCore, rustRawHeight, rustChunkRawHeights } from "./wasm/ironveil-core.js";
+import { rustCore, rustRawHeight, rustChunkTerrain } from "./wasm/ironveil-core.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -549,7 +549,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const b = chunkBounds(ix, iz);
     const geo = new THREE.PlaneGeometry(CHUNK_SIZE_M, CHUNK_SIZE_M, seg, seg);
     geo.rotateX(-Math.PI / 2);
-    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, score: 1e9 };
+    const job = { key, ix, iz, seg, b, geo, pos: geo.attributes.position, stage: "heights", i: 0, colors: null, norm: null, raw: undefined, light: null, score: 1e9 };
     chunkJobs.set(key, job);
     chunkQueue.push(key);
     return job;
@@ -591,10 +591,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const pos = job.pos, b = job.b;
     if (job.stage === "heights") {
       if (job.raw === undefined) {
-        job.raw = rustChunkRawHeights(
+        const rust = rustChunkTerrain(
           NOISE_SEED, b.minX, b.minZ, CHUNK_SIZE_M, job.seg,
           mapPreset.half, mapPreset.rimStart
         );
+        job.raw = rust ? rust.heights : null;
+        job.light = rust ? rust.light : null;
         if (job.raw) debugStats.rustChunks++;
       }
       const rawRowW = job.seg + 1;
@@ -632,7 +634,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       _ctmp.copy(_cLow).lerp(_cMid, smoothstep(2, 26, h));
       _ctmp.lerp(_cPeak, smoothstep(38, 78, h) * 0.8);
       _ctmp.lerp(_cRock, smoothstep(0.18, 0.5, slope));
-      const shade = 0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1);
+      // Rust-baked AO (when present) grounds valleys/ridges with no
+      // shadow-map pass; JS-built chunks keep the plain hash shade.
+      const shade = (0.82 + 0.18 * hash2(wx * 3.1, wz * 3.1)) * (job.light ? job.light[i] : 1);
       colors[i * 3] = _ctmp.r * shade; colors[i * 3 + 1] = _ctmp.g * shade; colors[i * 3 + 2] = _ctmp.b * shade;
       job.i++;
       if ((job.i & 127) === 0 && performance.now() > deadline) return false;
@@ -1181,70 +1185,154 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // ----- weapon viewmodel -----
   const gun = new THREE.Group();
   {
-    // Stylized low-poly tactical rifle, merged by material into four
-    // viewmodel meshes: detailed silhouette, minimal draw calls, no
-    // external model fetch during boot.
-    const gm = new THREE.MeshStandardMaterial({ color: 0x252c25, roughness: 0.42, metalness: 0.58, emissive: 0x090d08, flatShading: true });
-    const gm2 = new THREE.MeshStandardMaterial({ color: 0x46523a, roughness: 0.72, metalness: 0.18, emissive: 0x10150d, flatShading: true });
-    const gm3 = new THREE.MeshStandardMaterial({ color: 0x7a6a4d, roughness: 0.62, metalness: 0.28, emissive: 0x171207, flatShading: true });
-    const dark = [], polymer = [], accent = [];
+    // Refined stylized low-poly tactical rifle: tapered receiver and
+    // handguard prisms, segmented Picatinny rail, detailed optic,
+    // three-segment curved magazine, skeletal stock and small controls.
+    // Everything is merged by material (4 meshes + lens/dot), so the
+    // detail costs no meaningful draw calls and loads no external model.
+    const gm = new THREE.MeshStandardMaterial({ color: 0x2a302b, roughness: 0.38, metalness: 0.62, emissive: 0x050705, flatShading: true });
+    const gm2 = new THREE.MeshStandardMaterial({ color: 0x4b5a3c, roughness: 0.78, metalness: 0.12, emissive: 0x0d120a, flatShading: true });
+    const gm3 = new THREE.MeshStandardMaterial({ color: 0x8a7350, roughness: 0.6, metalness: 0.3, emissive: 0x171207, flatShading: true });
+    const gm4 = new THREE.MeshStandardMaterial({ color: 0x11150f, roughness: 0.95, metalness: 0.02, emissive: 0x030403, flatShading: true });
+    const dark = [], polymer = [], accent = [], rubber = [];
+    const finish = (list, g) => list.push(g.index ? g.toNonIndexed() : g);
     const box = (list, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const g = new THREE.BoxGeometry(w, h, d);
       if (rx) g.rotateX(rx); if (ry) g.rotateY(ry); if (rz) g.rotateZ(rz);
-      g.translate(x, y, z); list.push(g);
+      g.translate(x, y, z); finish(list, g);
     };
-    const cyl = (list, r, len, x, y, z, seg = 10) => {
+    // Cylinder along Z: rBack sits toward the shooter (+Z), rFront to muzzle.
+    const cyl = (list, rBack, rFront, len, x, y, z, seg = 12) => {
+      const g = new THREE.CylinderGeometry(rBack, rFront, len, seg);
+      g.rotateX(Math.PI / 2); g.translate(x, y, z); finish(list, g);
+    };
+    const cylY = (list, r, len, x, y, z, seg = 12) => {
       const g = new THREE.CylinderGeometry(r, r, len, seg);
-      g.rotateX(Math.PI / 2); g.translate(x, y, z); list.push(g);
+      g.translate(x, y, z); finish(list, g);
     };
-    // Receiver, rail, barrel group and optic.
-    box(dark, 0.075, 0.115, 0.56, 0, 0.02, -0.04);
-    box(dark, 0.07, 0.09, 0.34, 0, -0.055, 0.05);
-    box(dark, 0.082, 0.095, 0.36, 0, 0.005, -0.36);
-    box(dark, 0.046, 0.022, 0.64, 0, 0.095, -0.16);
-    cyl(dark, 0.016, 0.37, 0, 0.025, -0.58, 10);
-    cyl(dark, 0.028, 0.11, 0, 0.025, -0.76, 8);
-    box(dark, 0.055, 0.08, 0.07, 0, 0.045, -0.52);
-    box(dark, 0.056, 0.025, 0.07, 0, 0.055, 0.29);
-    box(dark, 0.014, 0.036, 0.11, 0.043, 0.025, -0.02);
-    box(dark, 0.035, 0.05, 0.065, 0, 0.108, -0.12);
-    cyl(dark, 0.035, 0.16, 0, 0.148, -0.12, 14);
-    cyl(dark, 0.041, 0.025, 0, 0.148, -0.19, 14);
-    box(dark, 0.012, 0.055, 0.018, 0, 0.118, -0.5);
-    box(dark, 0.012, 0.045, 0.018, 0, 0.112, 0.18);
-    // Polymer furniture: stock, grips, curved magazine, handguard panels.
-    box(polymer, 0.045, 0.05, 0.22, 0, 0.0, 0.34);
-    box(polymer, 0.07, 0.145, 0.18, 0, -0.035, 0.47);
-    box(polymer, 0.062, 0.035, 0.13, 0, 0.047, 0.46);
-    box(polymer, 0.055, 0.165, 0.075, 0, -0.14, 0.14, 0.35);
-    box(polymer, 0.045, 0.135, 0.055, 0, -0.105, -0.38, 0.12);
-    box(polymer, 0.056, 0.16, 0.09, 0, -0.145, -0.08, 0.18);
-    box(polymer, 0.052, 0.15, 0.086, 0, -0.255, -0.045, 0.38);
-    box(polymer, 0.014, 0.055, 0.26, -0.049, -0.005, -0.36);
-    box(polymer, 0.014, 0.055, 0.26, 0.049, -0.005, -0.36);
-    box(polymer, 0.05, 0.018, 0.22, 0, -0.062, -0.36);
-    // Desert accent panels/details match the HUD's tactical palette.
-    box(accent, 0.058, 0.028, 0.095, 0, -0.315, -0.02, 0.38);
+    const cylX = (list, r, len, x, y, z, seg = 10) => {
+      const g = new THREE.CylinderGeometry(r, r, len, seg);
+      g.rotateZ(Math.PI / 2); g.translate(x, y, z); finish(list, g);
+    };
+    // Tapered rectangular prism along Z (back face at +len/2).
+    const prism = (list, wB, hB, wF, hF, len, x, y, z, rx = 0, ry = 0, rz = 0) => {
+      const bw = wB / 2, bh = hB / 2, fw = wF / 2, fh = hF / 2, zb = len / 2, zf = -len / 2;
+      const v = [
+        [-bw, -bh, zb], [bw, -bh, zb], [bw, bh, zb], [-bw, bh, zb],
+        [-fw, -fh, zf], [fw, -fh, zf], [fw, fh, zf], [-fw, fh, zf],
+      ];
+      const idx = [
+        0, 1, 2, 0, 2, 3, 5, 4, 7, 5, 7, 6,
+        0, 4, 5, 0, 5, 1, 3, 2, 6, 3, 6, 7,
+        0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2,
+      ];
+      const posArr = [], uvArr = [];
+      for (const i of idx) { posArr.push(v[i][0], v[i][1], v[i][2]); uvArr.push(0, 0); }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(posArr, 3));
+      g.setAttribute("uv", new THREE.Float32BufferAttribute(uvArr, 2));
+      g.computeVertexNormals();
+      if (rx) g.rotateX(rx); if (ry) g.rotateY(ry); if (rz) g.rotateZ(rz);
+      g.translate(x, y, z); finish(list, g);
+    };
+
+    // --- receiver / handguard (tapered toward the muzzle) ---
+    prism(dark, 0.072, 0.105, 0.064, 0.092, 0.58, 0, 0.025, -0.03);
+    prism(dark, 0.066, 0.082, 0.06, 0.07, 0.34, 0, -0.045, 0.08);
+    prism(dark, 0.078, 0.09, 0.062, 0.074, 0.40, 0, 0.01, -0.39);
+    box(dark, 0.062, 0.09, 0.025, 0, 0.01, 0.285); // end plate
+    box(dark, 0.064, 0.018, 0.055, 0, 0.055, 0.30); // charging handle
+    box(accent, 0.018, 0.014, 0.04, -0.036, 0.055, 0.30);
+    box(accent, 0.018, 0.014, 0.04, 0.036, 0.055, 0.30);
+    // Segmented top rail teeth.
+    for (let i = 0; i < 7; i++) box(dark, 0.038, 0.016, 0.055, 0, 0.096, -0.52 + i * 0.105);
+    // Side details: ejection port, bolt lines, selector, mag release.
+    box(rubber, 0.008, 0.032, 0.105, 0.038, 0.03, -0.02);
+    box(accent, 0.006, 0.012, 0.09, 0.039, 0.052, -0.13);
+    box(accent, 0.006, 0.012, 0.09, -0.039, 0.052, -0.13);
+    cylX(accent, 0.012, 0.02, 0.042, -0.025, 0.11);
+    box(accent, 0.008, 0.014, 0.05, 0.052, -0.035, 0.13, 0.5);
+    cylX(dark, 0.011, 0.018, 0.041, -0.045, 0.02);
+    // Trigger + guard.
+    box(dark, 0.012, 0.055, 0.018, 0, -0.105, 0.055, 0.25);
+    {
+      const tg = new THREE.TorusGeometry(0.048, 0.007, 6, 14, Math.PI);
+      tg.rotateZ(Math.PI); tg.rotateY(Math.PI / 2); tg.translate(0, -0.085, 0.055);
+      finish(dark, tg);
+    }
+
+    // --- barrel group ---
+    cyl(dark, 0.015, 0.015, 0.36, 0, 0.032, -0.66, 10);
+    cyl(dark, 0.008, 0.008, 0.28, 0, 0.066, -0.48, 8); // gas tube
+    prism(dark, 0.05, 0.07, 0.042, 0.06, 0.07, 0, 0.038, -0.55);
+    cyl(dark, 0.027, 0.031, 0.15, 0, 0.032, -0.83, 14); // suppressor body
+    cyl(accent, 0.033, 0.033, 0.012, 0, 0.032, -0.775, 14);
+    cyl(accent, 0.033, 0.033, 0.012, 0, 0.032, -0.835, 14);
+    cyl(accent, 0.033, 0.033, 0.012, 0, 0.032, -0.89, 14);
+    cyl(rubber, 0.019, 0.016, 0.018, 0, 0.032, -0.912, 10);
+
+    // --- optic + backup sights ---
+    prism(dark, 0.034, 0.045, 0.03, 0.04, 0.09, 0, 0.108, -0.08);
+    cyl(dark, 0.03, 0.034, 0.19, 0, 0.148, -0.08, 18);
+    cyl(dark, 0.034, 0.041, 0.055, 0, 0.148, -0.198, 18); // objective bell
+    cyl(rubber, 0.033, 0.031, 0.028, 0, 0.148, 0.022, 18); // ocular ring
+    cylY(dark, 0.016, 0.03, 0, 0.19, -0.08, 12); // elevation turret
+    cylX(dark, 0.015, 0.028, 0.04, 0.148, -0.08, 12); // windage turret
+    for (const sz of [-0.52, 0.18]) {
+      box(dark, 0.009, 0.05, 0.014, -0.016, 0.112, sz);
+      box(dark, 0.009, 0.05, 0.014, 0.016, 0.112, sz);
+      box(dark, 0.04, 0.008, 0.008, 0, 0.132, sz);
+    }
+
+    // --- polymer furniture ---
+    prism(polymer, 0.042, 0.055, 0.036, 0.045, 0.20, 0, -0.005, 0.37); // stock adapter
+    prism(polymer, 0.066, 0.15, 0.058, 0.125, 0.18, 0, -0.04, 0.47); // buttstock
+    prism(polymer, 0.06, 0.032, 0.052, 0.026, 0.15, 0, 0.045, 0.46); // cheek riser
+    prism(rubber, 0.07, 0.16, 0.066, 0.15, 0.03, 0, -0.04, 0.565); // buttpad
+    box(polymer, 0.055, 0.165, 0.075, 0, -0.145, 0.135, 0.35); // pistol grip
+    box(rubber, 0.057, 0.02, 0.082, 0, -0.22, 0.162, 0.35); // grip base
+    box(polymer, 0.045, 0.135, 0.055, 0, -0.105, -0.39, -0.18); // angled foregrip
+    box(rubber, 0.047, 0.018, 0.057, 0, -0.168, -0.378, -0.18);
+    // Three-segment curved magazine + ribs + baseplate.
+    box(polymer, 0.054, 0.15, 0.09, 0, -0.145, -0.07, 0.16);
+    box(polymer, 0.051, 0.14, 0.086, 0, -0.235, -0.045, 0.33);
+    box(polymer, 0.048, 0.125, 0.082, 0, -0.31, -0.01, 0.5);
+    box(accent, 0.056, 0.013, 0.02, 0, -0.18, -0.118, 0.2);
+    box(accent, 0.053, 0.013, 0.02, 0, -0.255, -0.095, 0.35);
+    box(accent, 0.05, 0.013, 0.02, 0, -0.322, -0.062, 0.5);
+    box(accent, 0.056, 0.026, 0.092, 0, -0.362, 0.012, 0.5);
+    // Handguard side panels + M-LOK style slots.
+    prism(polymer, 0.012, 0.052, 0.012, 0.042, 0.28, -0.041, -0.005, -0.39);
+    prism(polymer, 0.012, 0.052, 0.012, 0.042, 0.28, 0.041, -0.005, -0.39);
+    for (const sx of [-0.049, 0.049]) {
+      for (let i = 0; i < 4; i++) box(rubber, 0.006, 0.014, 0.055, sx, -0.006, -0.26 - i * 0.085);
+    }
     box(accent, 0.016, 0.045, 0.18, -0.045, 0.055, -0.36);
     box(accent, 0.016, 0.045, 0.18, 0.045, 0.055, -0.36);
-    box(accent, 0.02, 0.02, 0.055, 0.052, -0.035, 0.08);
-    box(accent, 0.05, 0.018, 0.1, 0, 0.075, 0.43);
+    // QD sling loop on the stock.
+    {
+      const qd = new THREE.TorusGeometry(0.019, 0.004, 6, 14);
+      qd.rotateY(Math.PI / 2); qd.translate(-0.04, -0.01, 0.43);
+      finish(dark, qd);
+    }
+
     gun.add(new THREE.Mesh(mergeGeometries(dark, false), gm));
     gun.add(new THREE.Mesh(mergeGeometries(polymer, false), gm2));
     gun.add(new THREE.Mesh(mergeGeometries(accent, false), gm3));
+    gun.add(new THREE.Mesh(mergeGeometries(rubber, false), gm4));
     const lens = new THREE.Mesh(
-      new THREE.CircleGeometry(0.026, 16),
-      new THREE.MeshBasicMaterial({ color: 0x9feaff })
+      new THREE.CircleGeometry(0.023, 18),
+      new THREE.MeshBasicMaterial({ color: 0x86d9e8 })
     );
-    lens.position.set(0, 0.148, -0.039); gun.add(lens);
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 6, 5), new THREE.MeshBasicMaterial({ color: 0xc8f45c }));
-    dot.position.set(0, 0.148, -0.035); gun.add(dot);
+    lens.position.set(0, 0.148, 0.037); gun.add(lens);
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.0045, 6, 5), new THREE.MeshBasicMaterial({ color: 0xc8f45c }));
+    dot.position.set(0, 0.148, 0.04); gun.add(dot);
   }
   gun.position.set(0.22, -0.24, -0.62);
-  gun.scale.setScalar(0.85);
+  gun.scale.setScalar(0.82);
   camera.add(gun);
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.025, -0.83); gun.add(muzzle);
+  muzzle.position.set(0, 0.032, -0.93); gun.add(muzzle);
   const flash = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0 }));
   flash.position.copy(muzzle.position); gun.add(flash);
 

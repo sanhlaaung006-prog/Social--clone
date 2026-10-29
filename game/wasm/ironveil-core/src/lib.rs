@@ -16,6 +16,7 @@ const MAX_VERTICES: usize = (MAX_SEGMENTS + 1) * (MAX_SEGMENTS + 1);
 // Float64Array view before the next batch call, so reusing one buffer
 // keeps the ABI free of allocator ownership rules.
 static mut OUT: [f64; MAX_VERTICES] = [0.0; MAX_VERTICES];
+static mut LIGHT: [f32; MAX_VERTICES] = [1.0; MAX_VERTICES];
 
 #[inline]
 fn hash2(seed: u32, x: f64, z: f64) -> f64 {
@@ -89,7 +90,7 @@ fn raw_height(seed: u32, x: f64, z: f64, half: f64, rim_start: f64) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn ironveil_abi_version() -> u32 {
-    1
+    2
 }
 
 /// Raw terrain height before JS-side river carving / objective flattening.
@@ -101,6 +102,56 @@ pub extern "C" fn ironveil_raw_height(seed: u32, x: f64, z: f64, half: f64, rim_
 #[no_mangle]
 pub extern "C" fn ironveil_heights_ptr() -> *const f64 {
     core::ptr::addr_of!(OUT) as *const f64
+}
+
+#[no_mangle]
+pub extern "C" fn ironveil_lighting_ptr() -> *const f32 {
+    core::ptr::addr_of!(LIGHT) as *const f32
+}
+
+/// Baked per-vertex ambient occlusion from the raw height grid in OUT:
+/// horizon slope over 8 directions at 1/2/4 cells plus a concavity
+/// term, faded to exactly 1.0 at chunk borders so tiles never seam.
+/// JS multiplies its terrain vertex colors by these factors (0.62..1.03).
+unsafe fn compute_lighting(seg: usize, step: f64) {
+    let n = seg + 1;
+    let heights = core::ptr::addr_of!(OUT) as *const f64;
+    let light = core::ptr::addr_of_mut!(LIGHT) as *mut f32;
+    let at = |row: isize, col: isize| -> f64 {
+        let r = row.clamp(0, seg as isize) as usize;
+        let c = col.clamp(0, seg as isize) as usize;
+        *heights.add(r * n + c)
+    };
+    const DIRS: [(isize, isize); 8] = [
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1),
+    ];
+    for row in 0..n {
+        for col in 0..n {
+            let ri = row as isize;
+            let ci = col as isize;
+            let h = at(ri, ci);
+            let avg4 = (at(ri - 1, ci) + at(ri + 1, ci) + at(ri, ci - 1) + at(ri, ci + 1)) * 0.25;
+            let pit = ((avg4 - h).max(0.0) * 0.018).clamp(0.0, 0.18);
+            let mut max_slope = 0.0_f64;
+            for (dr, dc) in DIRS {
+                let diag = if dr != 0 && dc != 0 { 1.41421356 } else { 1.0 };
+                for d in [1_isize, 2, 4] {
+                    let nh = at(ri + dr * d, ci + dc * d);
+                    let slope = (nh - h) / (d as f64 * step * diag);
+                    if slope > max_slope {
+                        max_slope = slope;
+                    }
+                }
+            }
+            let occ = (max_slope * 0.55).clamp(0.0, 0.34);
+            let edge = row.min(col).min(seg - row).min(seg - col) as f64;
+            let ef = (edge / 3.0).clamp(0.0, 1.0);
+            let fade = ef * ef * (3.0 - 2.0 * ef);
+            let f = (1.03 - occ - pit).clamp(0.62, 1.03);
+            *light.add(row * n + col) = (1.0 + (f - 1.0) * fade) as f32;
+        }
+    }
 }
 
 /// Fills the scratch buffer row-major: index = row * (segments + 1) + col,
@@ -131,6 +182,7 @@ pub extern "C" fn ironveil_chunk_raw_heights(
                 *out.add(row * n + col) = raw_height(seed, x, z, half, rim_start);
             }
         }
+        compute_lighting(seg, step);
     }
     (n * n) as u32
 }
