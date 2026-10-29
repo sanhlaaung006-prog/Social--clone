@@ -358,3 +358,83 @@ Real gameplay captures from this round:
 - ![Warthog cockpit and reusable aircraft HUD](screenshots/warthog-cockpit-hud.png)
 - ![Warthog airborne with sway-stick HUD](screenshots/warthog-airborne.png)
 - ![Warthog mobile touch flight controls](screenshots/warthog-mobile-touch.png)
+
+## Aircraft damage/weapons, anti-PS2 triangles and resource-management round
+
+- **Flight controls were refined, not replaced.** The seated console keeps the
+  user-selected W/S triangles on the left and A/D triangles on the right, with
+  independent W/S and A/D reversal in Settings. They are clean clipped
+  triangular military pads — **anti-PS2 style**, with no circular emulator
+  face-button/glyph layer. Thrust is still manual: entering the canopy does not
+  start or launch the jet. On the ground A/D car-steer, S brakes then gives a
+  slow pushback/reverse, and W only rotates the aircraft once speed and pitch
+  authority are sufficient. In the air W/S and A/D retain free continuous
+  pitch/roll, BRK is the airbrake, and damage now feeds the same solver. A
+  soft alpha limiter fades pitch authority near the stall (without locking
+  out aerobatics), gentler pitch/roll rates make the jet easier to hold, and
+  a developed stall pitches the nose down to recover the wing.
+- **Reusable aircraft damage core.** `game/src/aircraft/aircraft-core.js` is
+  Three.js-independent and owns ten component IDs (fuselage, cockpit, both
+  wings, both engines, tail, forward gun, stores/launchers and gear), armor,
+  health, derived lift/thrust/control/drag/asymmetry, fire logic, kinetic
+  collision damage and tactical advisories. The supplied Warthog pack supplies
+  matching part groups, fan spool, emissive damage visuals and reset; its
+  reversed authored port/starboard signs were corrected so shooting, lamps,
+  detachment and the diagram all refer to the same physical side.
+- **Every major piece can be damaged and lost.** The on-foot rifle uses a
+  12 m aircraft broadphase and then the cached runtime hit meshes, so shots
+  damage the actual wing/engine/tail/gun/stores/gear they strike. Generic
+  `worldControl.aircraftDamage` and `worldControl.explodeAt` events let
+  explosives, missiles, launchers, artillery or future systems use the same
+  door. Obstacle and terrain impacts scale from aircraft kinetic energy
+  (`½mv²`), remove inward velocity, and can tear off the authored part group as
+  falling debris. Retracted gear and detached parts are no longer collision
+  samples, and the parked aircraft cannot collide with its own on-foot
+  obstacle discs.
+- **Fire, explosion, ejection and death are one chain.** Engine/fuselage fire
+  starts a finite 14-second cook-off window with escalating advisories and
+  burn damage. Exploding while seated kills the operator and opens the
+  `OPERATOR DOWN` respawn overlay; ejecting first launches the pilot clear,
+  deploys the parachute after 0.78 s, caps descent and returns control on
+  landing. A stopped wreck no longer offers DRIVE, and DRIVE is also suppressed
+  while descending under canopy.
+- **Weapons exist only where the model installs them.** The reusable solver
+  reads model configuration. This A-10 config installs the pack's GAU-8/A
+  forward gun (1,174 rounds) and two AIM-9-class missiles; destroying `gun`
+  or `stores` disables only that capability. Cannon shells (42) and missiles
+  (8 objects) are pooled, and the projectile update is skipped entirely when
+  both pools are idle.
+- **Cameras and damage readouts.** The top-right aircraft button toggles
+  COCKPIT and third-person CHASE (the old pointerdown+click double-toggle was
+  fixed). Chase framing now keeps the whole rear airframe above the bottom
+  console. The bottom-left 2D airframe diagram turns each of the ten parts
+  green/yellow/orange/red/black by remaining health.
+- **Engines feel alive without new persistent objects.** Intake fans and
+  exhaust glow follow spool; one persistent WebAudio turbofan loop is
+  wave-modulated by spool, load, distance and engine damage; cannon, missile,
+  explosion, hit, warning and ejection one-shots are bounded stopped voices.
+- **Whole-game resource pass.** The full ownership/budget map is
+  [`docs/RESOURCE_MAP.md`](docs/RESOURCE_MAP.md). Headline measured results:
+  Warthog runtime meshes **306 → 72** (40 safe merged groups, same 21,658
+  triangles), renderer geometries **367 → 129**, scatter tree visits about
+  **110–160 instead of 14,032** per refresh through 50 m spatial grids,
+  adaptive 1.4/2.6/4.5 ms chunk budgets, deferred live BVH builds, no
+  pebble/grass generation above 30 m AGL, hidden-HUD DOM gating, raycast
+  broadphasing, removal of hot full-subtree matrix updates, hardened
+  geometry/material/texture disposal and removal of the render-blocking
+  external webfont. In the same headless DPR-2 profile, main-thread CPU total
+  p50/p95 improved **10.0/96.6 ms → 2.7/29.5 ms**; SwiftShader FPS is not used
+  as a phone claim. No application crash/stack was reproduced in the sandbox;
+  Vercel remains **paused/unpublished**.
+
+Real gameplay captures from this round:
+
+- ![Aircraft systems — supplied Warthog external](screenshots/aircraft-systems-external.png)
+- ![Aircraft systems — destroyed port wing detached](screenshots/aircraft-systems-wing-detached.png)
+- ![Aircraft systems — cockpit, anti-PS2 triangles and damage diagram](screenshots/aircraft-systems-cockpit.png)
+- ![Aircraft systems — third-person chase camera](screenshots/aircraft-systems-chase.png)
+- ![Aircraft systems — cockpit airborne](screenshots/aircraft-systems-airborne.png)
+- ![Aircraft systems — cannon and missile airborne](screenshots/aircraft-systems-weapons.png)
+- ![Aircraft systems — engine fire advisory](screenshots/aircraft-systems-engine-fire.png)
+- ![Aircraft systems — ejection and parachute descent](screenshots/aircraft-systems-parachute.png)
+- ![Aircraft systems — death and respawn overlay](screenshots/aircraft-systems-death.png)

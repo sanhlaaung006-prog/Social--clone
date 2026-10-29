@@ -253,8 +253,15 @@ interface PartRecord {
   spec: PartSpec;
   group: THREE.Group;
   base: THREE.Vector3;
+  baseQuaternion: THREE.Quaternion;
+  baseScale: THREE.Vector3;
   explode: THREE.Vector3;
   materials: Set<THREE.Material>;
+}
+
+export interface WarthogAssemblyOptions {
+  /** Blueprint edge overlays are useful in a viewer, pure overhead in-game. */
+  edges?: boolean;
 }
 
 export interface WarthogAssembly {
@@ -272,6 +279,13 @@ export interface WarthogAssembly {
   /** Hide only the canopy glass for an unobstructed first-person cockpit. */
   setCockpitView: (enabled: boolean) => void;
   setGearDown: (down: boolean) => void;
+  /** Intake fan groups, exposed so any flight model can spin them with spool. */
+  fans: THREE.Group[];
+  setEngineSpool: (amount: number, deltaSeconds: number) => void;
+  /** Component health percentages (0..1) keyed by the stable part IDs. */
+  setDamageVisuals: (healthByPart: Record<string, number>) => void;
+  /** Restore detached/hidden part groups to their authored transforms. */
+  resetParts: () => void;
   getStats: () => { parts: number; meshes: number; triangles: number; materials: number };
   dispose: () => void;
 }
@@ -490,8 +504,10 @@ function makeDecalTexture(title: string, subtitle: string): THREE.CanvasTexture 
 
 export function createWarthogAssembly(
   initialLivery: LiveryId = "sage",
-  initialLoadout: LoadoutId = "standard"
+  initialLoadout: LoadoutId = "standard",
+  options: WarthogAssemblyOptions = {}
 ): WarthogAssembly {
+  const buildEdges = options.edges !== false;
   const root = new THREE.Group();
   root.name = "A-10C_Thunderbolt_II";
   const parts = new Map<string, PartRecord>();
@@ -515,6 +531,7 @@ export function createWarthogAssembly(
   let canopyPivot: THREE.Group | null = null;
   let canopyGlass: THREE.Mesh | null = null;
   let canopyOpenAmount = 0;
+  const fans: THREE.Group[] = [];
   const specMap = new Map(PART_SPECS.map((spec) => [spec.id, spec]));
 
   const makeMaterials = (): Mats => {
@@ -601,7 +618,7 @@ export function createWarthogAssembly(
         mats.forEach((mat) => materials.add(mat));
         allMeshes.push(object);
         const isDecal = matIsTransparentMap(object);
-        if (!isDecal && !object.userData.skipEdges) {
+        if (buildEdges && !isDecal && !object.userData.skipEdges) {
           const edges = new THREE.LineSegments(
             new THREE.EdgesGeometry(object.geometry, 32),
             edgeMaterial
@@ -620,6 +637,8 @@ export function createWarthogAssembly(
         spec,
         group,
         base: base.clone(),
+        baseQuaternion: group.quaternion.clone(),
+        baseScale: group.scale.clone(),
         explode: new THREE.Vector3(...explode),
         materials,
       });
@@ -799,36 +818,59 @@ export function createWarthogAssembly(
     addBox(group, mats.dark, [0.24, 0.2, 1.25], [-0.43, 1.13, 3.28]).userData.skipEdges = true;
     addBox(group, mats.dark, [0.24, 0.2, 1.25], [0.43, 1.13, 3.28]).userData.skipEdges = true;
     addBox(group, mats.dark, [0.24, 0.28, 0.72], [0, 1.0, 3.9]).userData.skipEdges = true;
+    // Low-poly console detail: switch rows catch the light without textures.
+    [-0.43, 0.43].forEach((cx) => {
+      for (let i = 0; i < 5; i += 1) {
+        addBox(group, i % 2 ? mats.metal : mats.accent, [0.028, 0.018, 0.055], [cx - 0.055, 1.245, 2.86 + i * 0.19]).userData.skipEdges = true;
+        addBox(group, i % 2 ? mats.screen : mats.dark, [0.028, 0.018, 0.055], [cx + 0.055, 1.245, 2.86 + i * 0.19]).userData.skipEdges = true;
+      }
+    });
+    // Rudder pedals under the panel.
+    addBox(group, mats.metal, [0.13, 0.16, 0.035], [-0.16, 1.12, 4.02], [-0.35, 0, 0]).userData.skipEdges = true;
+    addBox(group, mats.metal, [0.13, 0.16, 0.035], [0.16, 1.12, 4.02], [-0.35, 0, 0]).userData.skipEdges = true;
 
     const seat = addBox(group, mats.panel, [0.52, 0.16, 0.55], [0, 1.2, 3.05]);
     seat.rotation.x = -0.05;
     const back = addBox(group, mats.panel, [0.54, 0.66, 0.16], [0, 1.34, 2.84]);
     back.rotation.x = -0.16;
     addBox(group, mats.dark, [0.3, 0.16, 0.1], [0, 1.58, 2.8]);
+    addBox(group, mats.accent, [0.07, 0.5, 0.02], [-0.13, 1.34, 2.94], [-0.16, 0, 0]).userData.skipEdges = true;
+    addBox(group, mats.accent, [0.07, 0.5, 0.02], [0.13, 1.34, 2.94], [-0.16, 0, 0]).userData.skipEdges = true;
 
     // Control stick and a left-console throttle quadrant.
+    addBox(group, mats.dark, [0.17, 0.09, 0.22], [0, 1.05, 3.87]).userData.skipEdges = true;
     const stick = addBox(group, mats.dark, [0.07, 0.34, 0.09], [0, 1.16, 3.84], [0.18, 0, 0]);
     stick.userData.skipEdges = true;
     const grip = addBox(group, mats.dark, [0.09, 0.17, 0.13], [0, 1.35, 3.81], [0.18, 0, 0]);
     grip.userData.skipEdges = true;
     addBox(group, mats.dark, [0.09, 0.07, 0.38], [-0.43, 1.27, 3.36]).userData.skipEdges = true;
     addBox(group, mats.accent, [0.05, 0.09, 0.08], [-0.43, 1.34, 3.48]).userData.skipEdges = true;
+    addBox(group, mats.dark, [0.07, 0.05, 0.16], [-0.43, 1.4, 3.5], [-0.2, 0, 0]).userData.skipEdges = true;
 
     // Main instrument panel, turned toward the pilot (aft face, lower z).
     const panel = addBox(group, mats.dark, [0.94, 0.42, 0.14], [0, 1.16, 4.18], [-0.24, 0, 0]);
     panel.userData.skipEdges = true;
-    addBox(group, mats.screen, [0.21, 0.14, 0.018], [-0.28, 1.23, 4.095], [-0.24, 0, 0]).userData.skipEdges = true;
-    addBox(group, mats.screen, [0.21, 0.14, 0.018], [0, 1.23, 4.095], [-0.24, 0, 0]).userData.skipEdges = true;
-    addBox(group, mats.screen, [0.21, 0.14, 0.018], [0.28, 1.23, 4.095], [-0.24, 0, 0]).userData.skipEdges = true;
     [-0.28, 0, 0.28].forEach((x) => {
-      addBox(group, mats.dark, [0.15, 0.018, 0.006], [x, 1.27, 4.083], [-0.24, 0, 0]).userData.skipEdges = true;
-      addBox(group, mats.accent, [0.11, 0.014, 0.006], [x, 1.19, 4.086], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, mats.panel, [0.25, 0.18, 0.012], [x, 1.23, 4.1], [-0.24, 0, 0]).userData.skipEdges = true;
+    });
+    addBox(group, mats.screen, [0.21, 0.14, 0.018], [-0.28, 1.23, 4.088], [-0.24, 0, 0]).userData.skipEdges = true;
+    addBox(group, mats.screen, [0.21, 0.14, 0.018], [0, 1.23, 4.088], [-0.24, 0, 0]).userData.skipEdges = true;
+    addBox(group, mats.screen, [0.21, 0.14, 0.018], [0.28, 1.23, 4.088], [-0.24, 0, 0]).userData.skipEdges = true;
+    [-0.28, 0, 0.28].forEach((x, screenIndex) => {
+      addBox(group, mats.dark, [0.15, 0.018, 0.006], [x, 1.27, 4.075], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, mats.accent, [0.11, 0.014, 0.006], [x, 1.19, 4.078], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, mats.dark, [0.014, 0.09, 0.006], [x - 0.06, 1.23, 4.075], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, screenIndex === 1 ? mats.accent : mats.metal, [0.035, 0.035, 0.006], [x + 0.055, 1.245, 4.075], [-0.24, 0, 0]).userData.skipEdges = true;
     });
     [-0.36, -0.18, 0.18, 0.36].forEach((x, index) => {
       addBox(group, index % 2 ? mats.metal : mats.accent, [0.11, 0.09, 0.015], [x, 1.02, 4.115], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, mats.dark, [0.07, 0.055, 0.006], [x, 1.02, 4.104], [-0.24, 0, 0]).userData.skipEdges = true;
+      addBox(group, mats.accent, [0.045, 0.008, 0.006], [x, 1.025, 4.1], [-0.24, 0, index * 0.5]).userData.skipEdges = true;
     });
     const glareshield = addBox(group, mats.dark, [0.98, 0.055, 0.2], [0, 1.39, 4.17], [-0.12, 0, 0]);
     glareshield.userData.skipEdges = true;
+    addBox(group, mats.dark, [0.22, 0.07, 0.18], [0, 1.44, 4.2]).userData.skipEdges = true;
+    addBox(group, mats.screen, [0.12, 0.014, 0.08], [0, 1.482, 4.2]).userData.skipEdges = true;
 
     // HUD combiner in the 3D cockpit; the game's flight symbology is the
     // DOM Aircraft HUD layered over this glass.
@@ -888,6 +930,13 @@ export function createWarthogAssembly(
     const frontBow = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.014, 6, 20, Math.PI), mats.dark);
     frontBow.position.set(0, -0.05, 2.15);
     canopyPivot.add(frontBow);
+    // Rear-view mirrors and sill handles ride with the opening canopy.
+    addBox(canopyPivot, mats.dark, [0.16, 0.055, 0.02], [0, 0.46, 2.08]).userData.skipEdges = true;
+    addBox(canopyPivot, mats.metal, [0.12, 0.035, 0.008], [0, 0.46, 2.066]).userData.skipEdges = true;
+    addBox(canopyPivot, mats.dark, [0.12, 0.05, 0.02], [-0.32, 0.4, 2.04]).userData.skipEdges = true;
+    addBox(canopyPivot, mats.dark, [0.12, 0.05, 0.02], [0.32, 0.4, 2.04]).userData.skipEdges = true;
+    addBox(canopyPivot, mats.accent, [0.035, 0.035, 0.22], [-0.47, 0.07, 0.72]).userData.skipEdges = true;
+    addBox(canopyPivot, mats.accent, [0.035, 0.035, 0.22], [0.47, 0.07, 0.72]).userData.skipEdges = true;
 
     const post = addBox(canopyPivot, mats.dark, [0.018, 0.36, 0.035], [0, 0.2, 2.0], [-0.45, 0, 0]);
     post.userData.skipEdges = true;
@@ -925,15 +974,19 @@ export function createWarthogAssembly(
     const group = new THREE.Group();
     const mats = makeMaterials();
     const materials = new Set<THREE.Material>();
+    // Authored nose is +Z in a right-handed frame, so pilot-port is +X
+    // and pilot-starboard is -X. The supplied signs were reversed; fixing
+    // them here keeps raycast damage, lamps, detach and the HUD diagram on
+    // the same physical side after the game rotates the pack to -Z flight.
     const rightGeometry = makeWingGeometry();
-    const geometry = side === "port" ? mirrorGeometryX(rightGeometry) : rightGeometry;
+    const geometry = side === "starboard" ? mirrorGeometryX(rightGeometry) : rightGeometry;
     rightGeometry.dispose();
 
     const wing = new THREE.Mesh(geometry, mats.body);
     group.add(wing);
 
     // trailing-edge flaps in a darker shade
-    const flapX = side === "port" ? -1 : 1;
+    const flapX = side === "port" ? 1 : -1;
     const flap = addBox(
       group,
       mats.panel,
@@ -1016,7 +1069,7 @@ export function createWarthogAssembly(
     const group = new THREE.Group();
     const mats = makeMaterials();
     const materials = new Set<THREE.Material>();
-    const sign = side === "port" ? -1 : 1;
+    const sign = side === "port" ? 1 : -1;
 
     const nacelle = new THREE.Mesh(
       loft(
@@ -1054,6 +1107,8 @@ export function createWarthogAssembly(
     group.add(duct);
 
     const fan = new THREE.Group();
+    fan.name = `engine-fan-${side}`;
+    fans.push(fan);
     const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.35, 16), mats.metal);
     spinner.rotation.x = -Math.PI / 2;
     spinner.position.z = 0.36;
@@ -1559,6 +1614,7 @@ export function createWarthogAssembly(
   };
 
   const rebuildEdgesForStores = (): void => {
+    if (!buildEdges) return;
     storesGroup.traverse((object) => {
       if (object instanceof THREE.Mesh && !matIsTransparentMap(object) && !object.userData.skipEdges) {
         const already = object.children.some((child) => child instanceof THREE.LineSegments);
@@ -1688,6 +1744,42 @@ export function createWarthogAssembly(
     });
   };
 
+  const setEngineSpool = (amount: number, deltaSeconds: number) => {
+    const rate = THREE.MathUtils.clamp(amount, 0, 1.25) * Math.max(0, deltaSeconds) * 42;
+    fans.forEach((fan, index) => {
+      fan.rotation.z -= rate * (index === 0 ? 1 : 0.985);
+    });
+  };
+
+  const setDamageVisuals = (healthByPart: Record<string, number>) => {
+    parts.forEach((part, id) => {
+      const pct = THREE.MathUtils.clamp(healthByPart[id] ?? 1, 0, 1);
+      const emissive = pct <= 0 ? 0x5f0800 : pct < 0.2 ? 0x7a1800 : pct < 0.45 ? 0x3d1600 : pct < 0.75 ? 0x140b00 : 0x000000;
+      const intensity = pct <= 0 ? 1.15 : pct < 0.2 ? 0.82 : pct < 0.45 ? 0.5 : pct < 0.75 ? 0.22 : 0;
+      part.materials.forEach((material) => {
+        if (highlightable(material)) {
+          material.emissive.set(emissive);
+          material.emissiveIntensity = intensity;
+        }
+      });
+    });
+  };
+
+  const resetParts = () => {
+    exploded = 0;
+    parts.forEach((part) => {
+      root.add(part.group);
+      part.group.position.copy(part.base);
+      part.group.quaternion.copy(part.baseQuaternion);
+      part.group.scale.copy(part.baseScale);
+      part.group.visible = true;
+    });
+    setDamageVisuals({});
+    setCanopyOpen(0);
+    setCockpitView(false);
+    setGearDown(true);
+  };
+
   const getStats = () => {
     let meshes = 0;
     let triangles = 0;
@@ -1739,6 +1831,10 @@ export function createWarthogAssembly(
     setCanopyOpen,
     setCockpitView,
     setGearDown,
+    fans,
+    setEngineSpool,
+    setDamageVisuals,
+    resetParts,
     getStats,
     dispose,
   };

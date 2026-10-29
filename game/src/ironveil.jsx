@@ -1,7 +1,8 @@
     import React, { useEffect, useState } from "react";
     import { createRoot } from "react-dom/client";
     import { create } from "zustand";
-    import { createWorld, inputState, debugStats, MAP_PRESETS } from "./world.js";
+    import { createWorld, inputState, debugStats, MAP_PRESETS, worldControl } from "./world.js";
+    import { AIRCRAFT_COMPONENTS, aircraftComponentColor } from "./aircraft/aircraft-core.js";
     import { sfx } from "./audio.js";
 
     // === [UI: ZUSTAND_STORE] ===
@@ -188,6 +189,8 @@
       // Session flow: the game boots to the title / start screen and only
       // enters the field when the operator hits START (see StartScreen).
       hasStarted: false,
+      isDead: false,
+      deathReason: "",
 
       // Interface / loadout state.
       screen: "title",
@@ -216,12 +219,37 @@
       applyBoundaryDamage: (amount) => {
         set((state) => ({ health: Math.max(0, state.health - amount) }));
       },
+      applyDamage: (amount, reason = "DAMAGE") => {
+        const state = get();
+        if (state.isDead || !(amount > 0)) return;
+        const health = Math.max(0, state.health - amount);
+        set({ health, ...(health <= 0 ? { isDead: true, deathReason: reason } : {}) });
+        if (health <= 0) get().notify(`OPERATOR DOWN // ${reason}`, "danger");
+      },
+      killPlayer: (reason = "OPERATOR DOWN") => {
+        if (get().isDead) return;
+        set({ health: 0, isDead: true, deathReason: reason });
+        get().notify(`OPERATOR DOWN // ${reason}`, "danger");
+      },
+      respawnPlayer: () => {
+        debugStats.playerDead = 0;
+        debugStats.deathReason = "";
+        inputState.jetAction = null;
+        inputState.aircraftGunHeld = false;
+        inputState.aircraftMissileLaunch = false;
+        inputState.firing = false;
+        worldControl.resetAircraft = true;
+        worldControl.teleport = { x: 0, z: 0, heading: 0 };
+        set({ health: 74, isDead: false, deathReason: "", isMenuOpen: false, screen: "main", hasStarted: true });
+        get().notify("REDEPLOYED // WARTHOG REPAIRED AT X18 Z0");
+      },
 
       startGame: () => {
-        set({ hasStarted: true, isMenuOpen: false, screen: "main" });
+        debugStats.playerDead = 0;
+        set({ hasStarted: true, isMenuOpen: false, screen: "main", isDead: false, deathReason: "" });
         get().notify("DEPLOYED // SECURE THE RELAY STATION");
       },
-      quitToTitle: () => set({ hasStarted: false, isMenuOpen: true, screen: "title" }),
+      quitToTitle: () => set({ hasStarted: false, isMenuOpen: true, screen: "title", isDead: false, deathReason: "" }),
       // "Home" is the pause menu in the field, the title screen before deployment.
       goHome: () => set((state) => ({ isMenuOpen: true, screen: state.hasStarted ? "main" : "title" })),
 
@@ -328,6 +356,7 @@
       },
       heal: (amount = 18) => {
         const state = get();
+        if (state.isDead) return;
         if (state.health >= state.maxHealth) {
           get().boostStamina("medicine");
           return;
@@ -540,6 +569,7 @@
       const apiRef = React.useRef(null);
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const isDead = useGameStore((state) => state.isDead);
       const mapMode = useGameStore((state) => state.mapMode);
 
       useEffect(() => {
@@ -562,6 +592,31 @@
             );
           },
           onBoundaryDamage: (amount) => gameStore.getState().applyBoundaryDamage(amount),
+          onPlayerDamage: (amount, reason) => gameStore.getState().applyDamage(amount, reason),
+          onPlayerKilled: (reason) => gameStore.getState().killPlayer(reason),
+          onEngine: (engine) => sfx.setEngine(engine),
+          onExplosion: (size) => sfx.explosion(size || 1),
+          onAircraftCannon: () => sfx.aircraftCannon(),
+          onMissileLaunch: (message) => {
+            sfx.missileLaunch();
+            gameStore.getState().notify(message || "MISSILE AWAY");
+          },
+          onAircraftHit: (result, source) => {
+            sfx.aircraftHit();
+            if (result && result.destroyedNow) {
+              gameStore.getState().notify(`${result.label} DESTROYED // ${String(source || "damage").toUpperCase()}`, "danger");
+            }
+          },
+          onAircraftAdvisory: (advisory) => {
+            if (!advisory) return;
+            sfx.warning(advisory.level === "warning");
+            if (advisory.level === "warning") gameStore.getState().notify(advisory.text, "danger");
+          },
+          onEject: () => {
+            sfx.eject();
+            gameStore.getState().notify("EJECTED // SEAT CLEAR OF THE AIRFRAME", "danger");
+          },
+          onParachute: () => gameStore.getState().notify("PARACHUTE DEPLOYED // STEER WITH DRAG"),
         }, { mapPreset: mapMode });
         apiRef.current = api;
         const unsubscribe = gameStore.subscribe((state, prev) => {
@@ -575,8 +630,8 @@
       }, [mapMode]);
 
       useEffect(() => {
-        if (apiRef.current) apiRef.current.setPlaying(hasStarted && !isMenuOpen);
-      }, [hasStarted, isMenuOpen, mapMode]);
+        if (apiRef.current) apiRef.current.setPlaying(hasStarted && !isMenuOpen && !isDead);
+      }, [hasStarted, isMenuOpen, isDead, mapMode]);
 
       return (
         <div className="world" aria-hidden="true">
@@ -944,9 +999,46 @@
     // the first consumer; future airframes only need to publish the same
     // debugStats.aircraft* telemetry and flight input fields. Visibility
     // and all fast-moving values are direct-DOM writes, never React state.
+    // Bottom-left 2D airframe status: the same stable component IDs used
+    // by the world damage solver, so a future aircraft can reuse this
+    // diagram by publishing identical component percentages.
+    const AircraftDamageDiagram = React.memo(function AircraftDamageDiagram({ damage }) {
+      const fill = (id) => aircraftComponentColor(damage?.[id] ?? 1);
+      const pct = (id) => Math.round((damage?.[id] ?? 1) * 100);
+      const worst = AIRCRAFT_COMPONENTS.reduce((current, component) => (
+        (damage?.[component.id] ?? 1) < (damage?.[current.id] ?? 1) ? component : current
+      ), AIRCRAFT_COMPONENTS[0]);
+      return (
+        <section className="aircraft-damage-diagram" aria-label="Aircraft component damage diagram">
+          <header><span>AIRFRAME</span><b>{pct(worst.id)}%</b></header>
+          <svg viewBox="0 0 120 132" role="img" aria-label={`Worst component ${worst.label} at ${pct(worst.id)} percent`}>
+            <rect x="56.5" y="1" width="7" height="17" rx="2" fill={fill("gun")}><title>{`Forward gun ${pct("gun")}%`}</title></rect>
+            <polygon points="60,54 7,79 7,90 60,72" fill={fill("wing-port")}><title>{`Port wing ${pct("wing-port")}%`}</title></polygon>
+            <polygon points="60,54 113,79 113,90 60,72" fill={fill("wing-starboard")}><title>{`Starboard wing ${pct("wing-starboard")}%`}</title></polygon>
+            <path d="M60 8 C67 17 68.5 35 68 61 L67 103 C66.5 114 53.5 114 53 103 L52 61 C51.5 35 53 17 60 8 Z" fill={fill("fuselage")}><title>{`Fuselage ${pct("fuselage")}%`}</title></path>
+            <ellipse cx="60" cy="31" rx="8" ry="14" fill={fill("canopy")}><title>{`Cockpit ${pct("canopy")}%`}</title></ellipse>
+            <rect x="42" y="66" width="10" height="30" rx="4" fill={fill("engine-port")}><title>{`Port engine ${pct("engine-port")}%`}</title></rect>
+            <rect x="68" y="66" width="10" height="30" rx="4" fill={fill("engine-starboard")}><title>{`Starboard engine ${pct("engine-starboard")}%`}</title></rect>
+            <polygon points="54,103 24,120 24,128 57,115" fill={fill("empennage")}><title>{`Tail ${pct("empennage")}%`}</title></polygon>
+            <polygon points="66,103 96,120 96,128 63,115" fill={fill("empennage")}><title>{`Tail ${pct("empennage")}%`}</title></polygon>
+            <rect x="48" y="104" width="6" height="18" rx="2" fill={fill("empennage")} />
+            <rect x="66" y="104" width="6" height="18" rx="2" fill={fill("empennage")} />
+            {[25, 39, 81, 95].map((x) => <circle key={x} cx={x} cy="83" r="3.4" fill={fill("stores")}><title>{`Stores and launchers ${pct("stores")}%`}</title></circle>)}
+            {[47, 73].map((x) => <rect key={x} x={x - 3} y="76" width="6" height="6" rx="1.5" fill={fill("gear")}><title>{`Landing gear ${pct("gear")}%`}</title></rect>)}
+            <rect x="57" y="45" width="6" height="6" rx="1.5" fill={fill("gear")} />
+          </svg>
+          <footer><span>{worst.short}</span><b>{pct(worst.id) <= 0 ? "DESTROYED" : pct(worst.id) < 100 ? "DAMAGED" : "ALL INTACT"}</b></footer>
+        </section>
+      );
+    });
+
     const AircraftInterface = React.memo(function AircraftInterface() {
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const [damageSnapshot, setDamageSnapshot] = useState(() => Object.fromEntries(AIRCRAFT_COMPONENTS.map((component) => [component.id, 1])));
+      const [cameraMode, setCameraMode] = useState(inputState.aircraftCameraMode || "cockpit");
+      const damageSeqRef = React.useRef(-1);
+      const cameraModeRef = React.useRef(inputState.aircraftCameraMode || "cockpit");
       const driveRef = React.useRef(null);
       const driveLabelRef = React.useRef(null);
       const driveSubRef = React.useRef(null);
@@ -962,22 +1054,60 @@
       const altRef = React.useRef(null);
       const vsiGearRef = React.useRef(null);
       const throttleFillRef = React.useRef(null);
-      const stickNubRef = React.useRef(null);
-      const stickValueRef = React.useRef(null);
-      const pointerRef = React.useRef({ stickId: null, throttleId: null });
+      const throttleValueRef = React.useRef(null);
+      const modeRef = React.useRef(null);
+      const spoolRef = React.useRef(null);
+      const pitchRollRef = React.useRef(null);
+      const controlValueRef = React.useRef(null);
+      const triWRef = React.useRef(null);
+      const triSRef = React.useRef(null);
+      const triARef = React.useRef(null);
+      const triDRef = React.useRef(null);
+      const advisoryRef = React.useRef(null);
+      const gunButtonRef = React.useRef(null);
+      const gunValueRef = React.useRef(null);
+      const missileButtonRef = React.useRef(null);
+      const missileValueRef = React.useRef(null);
+      const pointerRef = React.useRef({ throttleId: null });
       useEffect(() => {
         let raf = 0;
+        let idleFrame = 0;
+        const writeText = (ref, text) => {
+          const node = ref.current;
+          if (node && node.textContent !== text) node.textContent = text;
+        };
         const paint = () => {
           const d = debugStats;
           const occupied = !!d.jetOccupied;
+          // The aircraft console is hidden for most of the game. Poll its
+          // DRIVE visibility/damage state at ~10Hz on foot and reserve
+          // per-frame DOM work for the seated pilot who can see it.
+          if (!occupied && (idleFrame++ % 6) !== 0) {
+            raf = window.requestAnimationFrame(paint);
+            return;
+          }
+          if (occupied) idleFrame = 0;
+          if (d.aircraftDamageSeq !== damageSeqRef.current && d.aircraftComponents) {
+            damageSeqRef.current = d.aircraftDamageSeq;
+            setDamageSnapshot({ ...d.aircraftComponents });
+          }
+          const worldCameraMode = d.aircraftCameraMode || inputState.aircraftCameraMode || "cockpit";
+          if (worldCameraMode !== cameraModeRef.current) {
+            cameraModeRef.current = worldCameraMode;
+            setCameraMode(worldCameraMode);
+          }
           document.body.classList.toggle("aircraft-seated", occupied);
           if (driveRef.current) driveRef.current.style.display = d.jetNear ? "flex" : "none";
-          if (driveLabelRef.current) driveLabelRef.current.textContent = d.jetEntryPhase === "opening" ? "OPENING" : "DRIVE";
-          if (driveSubRef.current) driveSubRef.current.textContent = d.jetEntryPhase === "opening" ? `CANOPY ${d.jetCanopyPct || 0}%` : "WARTHOG · X 18 · Z 0";
+          writeText(driveLabelRef, d.jetEntryPhase === "opening" ? "OPENING" : "DRIVE");
+          writeText(driveSubRef, d.jetEntryPhase === "opening" ? `CANOPY ${d.jetCanopyPct || 0}%` : "WARTHOG · X 18 · Z 0");
           if (flightRef.current) {
             flightRef.current.style.display = occupied ? "flex" : "none";
             flightRef.current.classList.toggle("is-stall", !!d.jetStall);
             flightRef.current.classList.toggle("is-crashed", !!d.jetCrashed);
+          }
+          if (!occupied) {
+            raf = window.requestAnimationFrame(paint);
+            return;
           }
           const telemetry = {
             name: d.aircraftName || "AIRCRAFT",
@@ -992,31 +1122,59 @@
             loadG: d.jetLoadG || 0,
             canopy: d.jetCanopyPct || 0,
           };
-          if (aircraftNameRef.current) aircraftNameRef.current.textContent = telemetry.name;
-          if (headingRef.current) headingRef.current.textContent = `HDG ${String(Math.round(telemetry.heading)).padStart(3, "0")}°`;
-          if (canopyRef.current) canopyRef.current.textContent = telemetry.canopy > 1 ? `CANOPY ${Math.round(telemetry.canopy)}%` : "CANOPY LATCHED";
+          writeText(aircraftNameRef, telemetry.name);
+          writeText(headingRef, `HDG ${String(Math.round(telemetry.heading)).padStart(3, "0")}°`);
+          writeText(canopyRef, telemetry.canopy > 1 ? `CANOPY ${Math.round(telemetry.canopy)}%` : "CANOPY LATCHED");
           if (horizonRef.current) {
-            const pitchPx = Math.max(-58, Math.min(58, telemetry.pitch * 2.35));
-            horizonRef.current.style.transform = `translate(-50%, -50%) translateY(${pitchPx}px) rotate(${-telemetry.roll}deg)`;
+            const pitchRad = telemetry.pitch * Math.PI / 180;
+            const pitchPx = Math.sin(pitchRad) * 58;
+            const flip = Math.cos(pitchRad) < 0 ? 180 : 0; // attitude ball past vertical/inverted
+            horizonRef.current.style.transform = `translate(-50%, -50%) translateY(${pitchPx}px) rotate(${-telemetry.roll + flip}deg)`;
           }
-          if (speedRef.current) speedRef.current.textContent = `${Math.round(telemetry.speed)} KM/H`;
-          if (aoaGRef.current) aoaGRef.current.textContent = `AOA ${Number(telemetry.aoa).toFixed(1)}° · ${Number(telemetry.loadG).toFixed(2)} G`;
-          if (altRef.current) altRef.current.textContent = `${Number(telemetry.altitude).toFixed(1)} M`;
-          if (vsiGearRef.current) vsiGearRef.current.textContent = `VS ${telemetry.vertical >= 0 ? "+" : ""}${Number(telemetry.vertical).toFixed(1)} M/S · GEAR ${d.jetGearDown ? "DOWN" : "UP"}`;
+          writeText(speedRef, `${Math.round(telemetry.speed)} KM/H`);
+          writeText(aoaGRef, `AOA ${Number(telemetry.aoa).toFixed(1)}° · ${Number(telemetry.loadG).toFixed(2)} G`);
+          writeText(altRef, `${Number(telemetry.altitude).toFixed(1)} M`);
+          writeText(vsiGearRef, `VS ${telemetry.vertical >= 0 ? "+" : ""}${Number(telemetry.vertical).toFixed(1)} M/S · GEAR ${d.jetGearDown ? "DOWN" : "UP"}`);
           if (throttleFillRef.current) throttleFillRef.current.style.height = `${Math.max(0, Math.min(100, telemetry.throttle))}%`;
+          writeText(throttleValueRef, `${Math.round(telemetry.throttle)}%`);
+          writeText(modeRef, `MODE ${d.aircraftMode || d.jetGroundMode || (d.jetAirborne ? "AIR" : "TAXI")}`);
+          writeText(spoolRef, `THR ${Math.round(telemetry.throttle)}% · SPOOL ${Math.round(d.jetSpoolPct || 0)}% · STEER ${Math.round(d.jetSteerDeg || 0)}°`);
+          writeText(pitchRollRef, `PITCH ${telemetry.pitch >= 0 ? "+" : ""}${Number(telemetry.pitch).toFixed(0)}° · ROLL ${telemetry.roll >= 0 ? "+" : ""}${Number(telemetry.roll).toFixed(0)}°`);
           const controlPitch = d.aircraftControlPitch ?? inputState.flightPitchInput ?? 0;
           const controlRoll = d.aircraftControlRoll ?? inputState.flightRollInput ?? 0;
-          if (stickNubRef.current) {
-            stickNubRef.current.style.transform = `translate(calc(-50% + ${controlRoll * 34}px), calc(-50% + ${-controlPitch * 34}px))`;
-          }
-          if (stickValueRef.current) {
+          if (controlValueRef.current) {
             const signed = (v) => `${v >= 0 ? "+" : "−"}${String(Math.abs(Math.round(v * 100))).padStart(2, "0")}`;
-            stickValueRef.current.textContent = `P ${signed(controlPitch)} · R ${signed(controlRoll)}`;
+            writeText(controlValueRef, `P ${signed(controlPitch)} · R ${signed(controlRoll)}${d.flightInvertPitch || d.flightInvertRoll ? " · INV" : ""}`);
           }
-          if (telemetryRef.current) {
-            telemetryRef.current.textContent = `${d.jetMessage || telemetry.name} · ${telemetry.speed} KM/H · ALT ${telemetry.altitude} M · THR ${telemetry.throttle}% · AOA ${telemetry.aoa}°`;
+          const keySet = inputState.keys;
+          const wHeld = (inputState.flightPitchInput || 0) > 0.5 || keySet.has("KeyW") || keySet.has("ArrowUp");
+          const sHeld = (inputState.flightPitchInput || 0) < -0.5 || keySet.has("KeyS") || keySet.has("ArrowDown");
+          const aHeld = (inputState.flightRollInput || 0) < -0.5 || keySet.has("KeyA") || keySet.has("ArrowLeft");
+          const dHeld = (inputState.flightRollInput || 0) > 0.5 || keySet.has("KeyD") || keySet.has("ArrowRight");
+          if (triWRef.current) triWRef.current.classList.toggle("is-active", wHeld);
+          if (triSRef.current) triSRef.current.classList.toggle("is-active", sHeld);
+          if (triARef.current) triARef.current.classList.toggle("is-active", aHeld);
+          if (triDRef.current) triDRef.current.classList.toggle("is-active", dHeld);
+          if (advisoryRef.current) {
+            writeText(advisoryRef, d.aircraftAdvisory || "SYSTEMS NOMINAL");
+            const advisoryClass = `aircraft-advisory is-${d.aircraftAdvisoryLevel || "info"}`;
+            if (advisoryRef.current.className !== advisoryClass) advisoryRef.current.className = advisoryClass;
           }
-          if (exitRef.current) exitRef.current.textContent = d.jetCanExit ? "EXIT" : "EXIT · STOP FIRST";
+          if (gunButtonRef.current) {
+            const showGun = !!d.aircraftHasGun;
+            gunButtonRef.current.style.display = showGun ? "flex" : "none";
+            gunButtonRef.current.classList.toggle("is-offline", !d.aircraftGunOperational || !(d.aircraftGunAmmo > 0));
+            gunButtonRef.current.classList.toggle("is-firing", !!d.aircraftGunFiring);
+          }
+          writeText(gunValueRef, !d.aircraftGunOperational ? "OFFLINE" : `${d.aircraftGunAmmo || 0} RDS`);
+          if (missileButtonRef.current) {
+            const showMissiles = !!d.aircraftHasMissiles;
+            missileButtonRef.current.style.display = showMissiles ? "flex" : "none";
+            missileButtonRef.current.classList.toggle("is-offline", !d.aircraftMissilesOperational || !(d.aircraftMissiles > 0));
+          }
+          writeText(missileValueRef, !d.aircraftMissilesOperational ? "OFFLINE" : `${d.aircraftMissiles || 0} READY`);
+          writeText(telemetryRef, `${d.jetMessage || telemetry.name} · ${telemetry.speed} KM/H · ALT ${telemetry.altitude} M · THR ${telemetry.throttle}% · AOA ${telemetry.aoa}°`);
+          writeText(exitRef, d.jetCanExit ? "EXIT" : "EXIT · STOP FIRST");
           raf = window.requestAnimationFrame(paint);
         };
         paint();
@@ -1026,44 +1184,39 @@
           inputState.flightPitchInput = 0;
           inputState.flightRollInput = 0;
           inputState.flightThrottleTarget = null;
+          inputState.aircraftGunHeld = false;
+          inputState.aircraftMissileLaunch = false;
         };
       }, []);
       if (!hasStarted || isMenuOpen) return null;
       const queue = (action) => (event) => { event.preventDefault(); inputState.jetAction = action; };
+      const toggleCamera = (event) => {
+        event.preventDefault();
+        const next = (inputState.aircraftCameraMode || "cockpit") === "chase" ? "cockpit" : "chase";
+        inputState.aircraftCameraMode = next;
+        cameraModeRef.current = next;
+        setCameraMode(next);
+      };
+      const launchMissile = (event) => {
+        event.preventDefault();
+        inputState.aircraftMissileLaunch = true;
+      };
       const hold = (set, clear) => ({
         onPointerDown: (event) => { event.preventDefault(); set(); },
         onPointerUp: clear, onPointerLeave: clear, onPointerCancel: clear,
         onContextMenu: (event) => event.preventDefault(),
       });
-      const setStickFromEvent = (event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        const radius = Math.max(24, Math.min(rect.width, rect.height) * 0.38);
-        let dx = (event.clientX - (rect.left + rect.width / 2)) / radius;
-        let dy = (event.clientY - (rect.top + rect.height / 2)) / radius;
-        const len = Math.hypot(dx, dy);
-        if (len > 1) { dx /= len; dy /= len; }
-        inputState.flightRollInput = dx;
-        inputState.flightPitchInput = -dy; // thumb up climbs, thumb down descends
-      };
-      const endStick = (event) => {
-        if (pointerRef.current.stickId !== event.pointerId) return;
-        pointerRef.current.stickId = null;
-        inputState.flightPitchInput = 0;
-        inputState.flightRollInput = 0;
-      };
-      const flightStickHandlers = {
+      const axisHold = (field, value) => ({
         onPointerDown: (event) => {
           event.preventDefault();
-          pointerRef.current.stickId = event.pointerId;
           try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
-          setStickFromEvent(event);
+          inputState[field] = value;
         },
-        onPointerMove: (event) => { if (pointerRef.current.stickId === event.pointerId) setStickFromEvent(event); },
-        onPointerUp: endStick,
-        onPointerCancel: endStick,
-        onLostPointerCapture: endStick,
+        onPointerUp: (event) => { event.preventDefault(); if (inputState[field] === value) inputState[field] = 0; },
+        onPointerCancel: () => { if (inputState[field] === value) inputState[field] = 0; },
+        onLostPointerCapture: () => { if (inputState[field] === value) inputState[field] = 0; },
         onContextMenu: (event) => event.preventDefault(),
-      };
+      });
       const setThrottleFromEvent = (event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         inputState.flightThrottleTarget = Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height));
@@ -1090,42 +1243,75 @@
             <strong ref={driveLabelRef}>DRIVE</strong><small ref={driveSubRef}>WARTHOG · X 18 · Z 0</small>
           </button>
           <div ref={flightRef} className="jet-flight aircraft-console" style={{ display: "none" }}>
+            <button type="button" className={`aircraft-camera-toggle is-${cameraMode}`} onPointerDown={toggleCamera} aria-label={`Aircraft camera ${cameraMode}. Tap to switch camera mode`}>
+              <small>CAMERA</small><strong>{cameraMode === "chase" ? "3RD PERSON" : "COCKPIT"}</strong><span>{cameraMode === "chase" ? "CHASE VIEW" : "FIRST PERSON"}</span>
+            </button>
+            <AircraftDamageDiagram damage={damageSnapshot} />
             <div className="aircraft-hud" aria-hidden="true">
-              <div className="aircraft-hud-top"><span ref={aircraftNameRef}>A-10C WARTHOG</span><b ref={headingRef}>HDG 000°</b><span ref={canopyRef}>CANOPY LATCHED</span></div>
+              <div className="aircraft-hud-top"><span ref={aircraftNameRef}>A-10C WARTHOG</span><div className="aircraft-hud-centre"><b ref={headingRef}>HDG 000°</b><small ref={modeRef}>MODE TAXI</small></div><span ref={canopyRef}>CANOPY LATCHED</span></div>
+              <div ref={advisoryRef} className="aircraft-advisory is-info">SYSTEMS NOMINAL</div>
               <div className="aircraft-attitude">
                 <div ref={horizonRef} className="aircraft-horizon">
                   <i className="aircraft-horizon-sky" /><i className="aircraft-horizon-ground" />
-                  <span className="aircraft-pitch-line is-plus-10" /><span className="aircraft-pitch-line is-zero" /><span className="aircraft-pitch-line is-minus-10" />
+                  <span className="aircraft-pitch-line is-plus-20" /><span className="aircraft-pitch-line is-plus-10" /><span className="aircraft-pitch-line is-zero" /><span className="aircraft-pitch-line is-minus-10" /><span className="aircraft-pitch-line is-minus-20" />
+                  <span className="aircraft-pitch-label is-plus-20">+20</span><span className="aircraft-pitch-label is-minus-20">−20</span>
                 </div>
+                <span className="aircraft-bank-tick is-b60" /><span className="aircraft-bank-tick is-b30" /><span className="aircraft-bank-tick is-b0" /><span className="aircraft-bank-tick is-a30" /><span className="aircraft-bank-tick is-a60" />
                 <div className="aircraft-fixed-symbol"><i /><b /><i /></div>
                 <div className="aircraft-roll-pointer" />
               </div>
-              <div className="aircraft-readout is-left"><small>SPEED</small><b ref={speedRef}>0 KM/H</b><span ref={aoaGRef}>AOA 0.0° · 0.00 G</span></div>
-              <div className="aircraft-readout is-right"><small>ALTITUDE AGL</small><b ref={altRef}>0.0 M</b><span ref={vsiGearRef}>VS +0.0 M/S · GEAR DOWN</span></div>
+              <div className="aircraft-readout is-left"><small>SPEED</small><b ref={speedRef}>0 KM/H</b><span ref={aoaGRef}>AOA 0.0° · 0.00 G</span><span ref={spoolRef}>THR 0% · SPOOL 0% · STEER 0°</span></div>
+              <div className="aircraft-readout is-right"><small>ALTITUDE AGL</small><b ref={altRef}>0.0 M</b><span ref={vsiGearRef}>VS +0.0 M/S · GEAR DOWN</span><span ref={pitchRollRef}>PITCH +0° · ROLL +0°</span></div>
             </div>
             <div className="aircraft-touch-controls">
-              <div className="flight-stick" {...flightStickHandlers} role="slider" aria-label="Flight sway stick: drag up or down for pitch and sideways to bank" aria-valuemin="-100" aria-valuemax="100">
-                <span className="flight-stick-axis is-x" /><span className="flight-stick-axis is-y" />
-                <span ref={stickNubRef} className="flight-stick-nub" />
-                <label>SWAY STICK</label><small ref={stickValueRef}>P +00 · R +00</small>
+              <div className="flight-tri-pad is-pitch" aria-label="W and S pitch triangles">
+                <button ref={triWRef} type="button" className="flight-tri is-w" {...axisHold("flightPitchInput", 1)} aria-label="W: pitch up on the ground to take off; pitch up in the air"><span>W</span></button>
+                <div className="flight-tri-centre"><small ref={controlValueRef}>P +00 · R +00</small><label>PITCH</label></div>
+                <button ref={triSRef} type="button" className="flight-tri is-s" {...axisHold("flightPitchInput", -1)} aria-label="S: brake then slow reverse on the ground; nose down in the air"><span>S</span></button>
               </div>
               <div className="aircraft-bottom-console">
                 <div ref={telemetryRef} className="jet-telemetry" role="status">ENGINE READY</div>
                 <div className="jet-flight-buttons">
-                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease throttle">THR −</button>
-                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase throttle">THR +</button>
-                  <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold wheel brakes">BRK</button>
+                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease thrust">THR −</button>
+                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase thrust">THR +</button>
+                  <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold brakes on the ground or airbrake in flight">BRK</button>
                   <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the aircraft">EXIT</button>
                 </div>
-                <div className="jet-flight-hint">SWAY STICK: PUSH UP = CLIMB · SIDEWAYS = BANK · SLIDE THR · WASD + SHIFT/CTRL ALSO WORK</div>
+                <div className="jet-weapon-buttons">
+                  <button ref={gunButtonRef} type="button" {...hold(() => { inputState.aircraftGunHeld = true; }, () => { inputState.aircraftGunHeld = false; })} aria-label="Hold to fire the installed forward gun"><strong>GUN</strong><small ref={gunValueRef}>1174 RDS</small></button>
+                  <button ref={missileButtonRef} type="button" onPointerDown={launchMissile} onClick={launchMissile} aria-label="Launch a guided missile"><strong>MISSILE</strong><small ref={missileValueRef}>2 READY</small></button>
+                  <button type="button" className="is-eject" onPointerDown={queue("eject")} onClick={queue("eject")} aria-label="Eject from the aircraft"><strong>EJECT</strong><small>ESCAPE</small></button>
+                </div>
+                <div className="jet-flight-hint">GROUND: SET THRUST · A/D STEER · S BRAKE→PUSHBACK · HOLD W AT SPEED TO TAKE OFF — AIR: W/S PITCH · A/D ROLL · BRK AIRBRAKE · GUN/MSL · EJECT BEFORE EXPLOSION</div>
               </div>
-              <div className="flight-throttle" {...flightThrottleHandlers} role="slider" aria-label="Throttle slider" aria-valuemin="0" aria-valuemax="100">
+              <div className="flight-tri-pad is-roll" aria-label="A and D steering and roll triangles">
+                <button ref={triARef} type="button" className="flight-tri is-a" {...axisHold("flightRollInput", -1)} aria-label="A: steer left on the ground; roll left in the air"><span>A</span></button>
+                <div className="flight-tri-centre"><label>STEER · ROLL</label></div>
+                <button ref={triDRef} type="button" className="flight-tri is-d" {...axisHold("flightRollInput", 1)} aria-label="D: steer right on the ground; roll right in the air"><span>D</span></button>
+              </div>
+              <div className="flight-throttle" {...flightThrottleHandlers} role="slider" aria-label="Manual thrust slider: set the power level and leave it there" aria-valuemin="0" aria-valuemax="100">
                 <span className="flight-throttle-track"><i ref={throttleFillRef} /></span>
-                <label>THR</label><small>SLIDE</small>
+                <label>THRUST</label><b ref={throttleValueRef}>0%</b><small>SET + LEAVE</small>
               </div>
             </div>
           </div>
         </div>
+      );
+    });
+
+    const DeathOverlay = React.memo(function DeathOverlay() {
+      const isDead = useGameStore((state) => state.isDead);
+      const deathReason = useGameStore((state) => state.deathReason);
+      const respawnPlayer = useGameStore((state) => state.respawnPlayer);
+      if (!isDead) return null;
+      return (
+        <section className="death-overlay" role="alertdialog" aria-labelledby="death-title" aria-describedby="death-reason">
+          <small>SIGNAL LOST // BLACK MERIDIAN</small>
+          <h2 id="death-title">OPERATOR DOWN</h2>
+          <p id="death-reason">{deathReason || "FATAL DAMAGE"}</p>
+          <button type="button" onClick={respawnPlayer}>RESPAWN // REPAIR WARTHOG</button>
+          <span>NEXT TIME: EJECT BEFORE THE FIRE REACHES FUEL OR STORES</span>
+        </section>
       );
     });
 
@@ -2085,8 +2271,20 @@
       inputState.fov = fovSetting;
     };
     applyFov(fovSetting);
+    let flightInvertPitchSetting = false; // aircraft W/S triangles + keys
+    const applyFlightInvertPitch = (value) => {
+      flightInvertPitchSetting = !!value;
+      inputState.flightInvertPitch = flightInvertPitchSetting;
+    };
+    applyFlightInvertPitch(flightInvertPitchSetting);
+    let flightInvertRollSetting = false; // aircraft A/D triangles + keys
+    const applyFlightInvertRoll = (value) => {
+      flightInvertRollSetting = !!value;
+      inputState.flightInvertRoll = flightInvertRollSetting;
+    };
+    applyFlightInvertRoll(flightInvertRollSetting);
     const SETTINGS_DEFAULTS = {
-      sensitivity: 30, adsSensitivity: 26, fov: 71, invertY: false, vibration: true,
+      sensitivity: 30, adsSensitivity: 26, fov: 71, invertY: false, flightInvertPitch: false, flightInvertRoll: false, vibration: true,
       master: 78, effects: 64, comms: 55, music: 22, voiceActivation: false, muteOnFocus: true,
       quality: "MED", brightness: 58, filmGrain: true, motionBlur: false,
       hudOpacity: 86, compassTicks: true, reduceShake: true, uiMotion: true
@@ -2191,13 +2389,15 @@
       const showDebug = useGameStore((state) => state.showDebug);
       const setShowDebug = useGameStore((state) => state.setShowDebug);
       const [tab, setTab] = useState("controls");
-      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, adsSensitivity: adsSensitivitySetting, quality: renderQualitySetting, fov: fovSetting }));
+      const [settings, setSettings] = useState(() => ({ ...SETTINGS_DEFAULTS, sensitivity: lookSensitivitySetting, adsSensitivity: adsSensitivitySetting, quality: renderQualitySetting, fov: fovSetting, flightInvertPitch: flightInvertPitchSetting, flightInvertRoll: flightInvertRollSetting }));
 
       const update = (key, value) => {
         if (key === "sensitivity") applyLookSensitivity(value);
         if (key === "adsSensitivity") applyAdsSensitivity(value);
         if (key === "quality") applyRenderQuality(value);
         if (key === "fov") applyFov(value);
+        if (key === "flightInvertPitch") applyFlightInvertPitch(value);
+        if (key === "flightInvertRoll") applyFlightInvertRoll(value);
         setSettings((current) => ({ ...current, [key]: value }));
       };
       const reset = () => {
@@ -2205,6 +2405,8 @@
         applyAdsSensitivity(SETTINGS_DEFAULTS.adsSensitivity);
         applyRenderQuality(SETTINGS_DEFAULTS.quality);
         applyFov(SETTINGS_DEFAULTS.fov);
+        applyFlightInvertPitch(SETTINGS_DEFAULTS.flightInvertPitch);
+        applyFlightInvertRoll(SETTINGS_DEFAULTS.flightInvertRoll);
         setShowDebug(false);
         setSettings({ ...SETTINGS_DEFAULTS });
         notify("DEFAULT PROFILE RESTORED // UNSAVED CHANGES CLEARED");
@@ -2286,6 +2488,11 @@
                       <div className="keybind-row"><span>RELOAD</span><span><kbd>RLD</kbd></span></div>
                       <div className="keybind-row"><span>CROUCH</span><span><kbd>CRCH</kbd></span></div>
                       <div className="keybind-row"><span>JUMP</span><span><kbd>JUMP</kbd></span></div>
+                      <SettingToggle label="REVERSE AIRCRAFT W/S" hint="Swap the left W/S triangles and keys: W pitches down (ground: brake/reverse), S pitches up and takes off." value={settings.flightInvertPitch} onChange={(value) => update("flightInvertPitch", value)} />
+                      <SettingToggle label="REVERSE AIRCRAFT A/D" hint="Swap the right A/D triangles and keys for ground steering and airborne roll." value={settings.flightInvertRoll} onChange={(value) => update("flightInvertRoll", value)} />
+                      <div className="keybind-row"><span>AIRCRAFT PITCH / TAKE OFF</span><span><kbd>W ▲</kbd><kbd>S ▼</kbd></span></div>
+                      <div className="keybind-row"><span>AIRCRAFT STEER / ROLL</span><span><kbd>A ◀</kbd><kbd>D ▶</kbd></span></div>
+                      <div className="keybind-row"><span>AIRCRAFT THRUST</span><span><kbd>THRUST SLIDER</kbd></span></div>
                       <div className="keybind-row"><span>F3 DEBUG OVERLAY</span><span><kbd>F3 CHIP</kbd></span></div>
                       <div className="keybind-row"><span>COMMAND MENU</span><span><kbd>❚❚</kbd></span></div>
                     </div>
@@ -2815,6 +3022,7 @@
           <TouchControls />
           <AircraftInterface />
           <GameHUD />
+          <DeathOverlay />
           <BoundaryWarning />
           <OverlayRoot />
           <Toast />

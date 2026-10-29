@@ -16,6 +16,18 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep, rustSafetyReport } from "./wasm/ironveil-core.js";
 import { stepPhysicsBuffer } from "./physics.js";
 import { createWarthogAssembly, WARTHOG_SPECS } from "./aircraft/warthog.ts";
+import {
+  AIRCRAFT_COMPONENTS,
+  aircraftAdvisoryFor,
+  aircraftComponentPct,
+  aircraftKineticEnergyMJ,
+  collisionDamageFromEnergy,
+  createAircraftComponents,
+  damageAircraftComponent,
+  deriveAircraftPerformance,
+  normalizeAircraftPartId,
+  worstAircraftComponent,
+} from "./aircraft/aircraft-core.js";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -50,9 +62,14 @@ export const inputState = {
   jetAction: null, // queued "enter" / "exit" from the Warthog DRIVE / EXIT buttons
   jetThrottleDelta: 0, // -1..1 held throttle input from the flight buttons
   jetBrake: false, // held wheel-brake input while seated in the Warthog
-  flightPitchInput: 0, // dedicated touch sway-stick elevator (-1..1, + climbs)
-  flightRollInput: 0, // dedicated touch sway-stick aileron (-1..1, + banks right)
-  flightThrottleTarget: null, // absolute 0..1 target from the touch throttle slider
+  flightPitchInput: 0, // W/S triangle elevator (-1..1, default W/+ pitches up)
+  flightRollInput: 0, // A/D triangle steering/aileron (-1..1, default D/+ is right)
+  flightInvertPitch: false, // Settings > Controls: reverse W/S
+  flightInvertRoll: false, // Settings > Controls: reverse A/D
+  flightThrottleTarget: null, // absolute 0..1 target from the manual thrust slider
+  aircraftCameraMode: "cockpit", // "cockpit" first-person or "chase" third-person
+  aircraftGunHeld: false, // held forward-gun trigger for aircraft that have one
+  aircraftMissileLaunch: false, // one-shot missile launch queue
   staminaBoost: null, // queued {amount,duration,regen,powerFloor} from soda/drugs/medicine
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
@@ -90,7 +107,12 @@ export const debugStats = {
 
 // External debug/test control. The render loop consumes a pending teleport
 // once; used by automated boundary/spawn verification.
-export const worldControl = { teleport: null, weather: null, season: null, rollWeather: false, safetyReports: [] };
+export const worldControl = {
+  teleport: null, weather: null, season: null, rollWeather: false, safetyReports: [],
+  // Generic external combat/test events. Explosives, artillery, launchers
+  // and future aircraft can all write these without Warthog-specific code.
+  aircraftDamage: null, explodeAt: null, resetAircraft: false,
+};
 
 // The opening orbit cinematic is a once-per-app-open flourish. It must not
 // come back when Settings/pause closes and the player resumes.
@@ -970,6 +992,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const chunkJobs = new Map(); // key -> build job
   const chunkQueue = []; // job keys, best score first
   const bvhQueue = []; // finished meshes awaiting an idle-frame BVH build
+  let bvhPumpFlip = false;
   const _vFwd = new THREE.Vector3();
   const _chunkIndex = { ix: 0, iz: 0 };
   function chunkIndexAt(x, z) {
@@ -1198,6 +1221,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function pumpBvh() {
     debugStats.bvhPending = bvhQueue.length;
     if (chunkQueue.length || !bvhQueue.length) return;
+    // BVH construction is atomic. During live play it is admitted only
+    // on alternate, healthy frames; menus/title can use the spare time.
+    bvhPumpFlip = !bvhPumpFlip;
+    if (playing && (bvhPumpFlip || debugStats.frameMs > 22)) {
+      debugStats.bvhDeferred = (debugStats.bvhDeferred || 0) + 1;
+      return;
+    }
     const mesh = bvhQueue.shift();
     if (mesh.geometry && !mesh.geometry.boundsTree && terrainChunks.get(mesh.userData.chunkKey) === mesh) {
       mesh.geometry.computeBoundsTree();
@@ -1623,6 +1653,36 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     treePlacements.push({ x, y: seatY, z, s, rot, type });
   });
   scene.add(treeBlobShadows, grassTufts);
+  // One-time 50m spatial indices. The 5Hz culler used to scan every rock
+  // and tree placement on the whole 2x2/4x4 km map; now it visits only
+  // buckets intersecting the 35m/150m combat bands around the camera.
+  const PLACEMENT_CELL_M = 50;
+  const placementCellKey = (ix, iz) => (ix + 128) * 256 + (iz + 128);
+  function buildPlacementGrid(list) {
+    const grid = new Map();
+    for (const placement of list) {
+      const key = placementCellKey(Math.floor(placement.x / PLACEMENT_CELL_M), Math.floor(placement.z / PLACEMENT_CELL_M));
+      const bucket = grid.get(key);
+      if (bucket) bucket.push(placement); else grid.set(key, [placement]);
+    }
+    return grid;
+  }
+  const rockPlacementGrid = buildPlacementGrid(rockPlacements);
+  const treePlacementGrid = buildPlacementGrid(treePlacements);
+  function forPlacementsNear(grid, cx, cz, radius, visit) {
+    const ix0 = Math.floor((cx - radius) / PLACEMENT_CELL_M), ix1 = Math.floor((cx + radius) / PLACEMENT_CELL_M);
+    const iz0 = Math.floor((cz - radius) / PLACEMENT_CELL_M), iz1 = Math.floor((cz + radius) / PLACEMENT_CELL_M);
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const bucket = grid.get(placementCellKey(ix, iz));
+        if (bucket) for (let i = 0; i < bucket.length; i++) visit(bucket[i]);
+      }
+    }
+  }
+  debugStats.rockPlacements = rockPlacements.length;
+  debugStats.treePlacements = treePlacements.length;
+  debugStats.rockGridCells = rockPlacementGrid.size;
+  debugStats.treeGridCells = treePlacementGrid.size;
   for (const mesh of [rocks, treeBlobShadows, grassTufts, ...treeLodMeshes.flat()]) {
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false; // contents are per-instance distance-compacted below
@@ -1638,6 +1698,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const CULL_NEAR2 = CULL_NEAR_M * CULL_NEAR_M;
   const CULL_MID2 = CULL_MID_M * CULL_MID_M;
   let scatterCullAcc = Infinity;
+  let lastScatterX = Infinity, lastScatterZ = Infinity, lastScatterAt = -Infinity;
+  let scatterForce = true;
   // Cheap local solid-object collision: the scatter refresh (5Hz) copies
   // nearby tree trunks / boulders into a preallocated ring. The player
   // resolver below then costs only a few hundred XZ checks per frame and
@@ -1645,6 +1707,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const MAX_LOCAL_OBSTACLES = 640;
   const localObstacles = new Float32Array(MAX_LOCAL_OBSTACLES * 4); // x,z,radius,topY
   let localObstacleCount = 0;
+  let aircraftSelfObstacleCount = 0;
   let warthog = null; // assigned below once the airframe is built
   function addLocalObstacle(x, z, radius, topY) {
     if (localObstacleCount >= MAX_LOCAL_OBSTACLES) return;
@@ -1654,7 +1717,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   }
   function refreshScatterCulling() {
     localObstacleCount = 0;
+    aircraftSelfObstacleCount = 0;
     const cx = camera.position.x, cz = camera.position.z;
+    lastScatterX = cx; lastScatterZ = cz;
+    debugStats.scatterRefreshes = (debugStats.scatterRefreshes || 0) + 1;
+    const cameraAgl = camera.position.y - terrainSurfaceHeight(cx, cz);
+    const showGroundDetail = cameraAgl <= 30;
+    debugStats.scatterCameraAgl = Math.round(cameraAgl * 10) / 10;
+    debugStats.scatterGroundDetail = showGroundDetail ? 1 : 0;
     if (warthog && !warthog.occupied) {
       const p = warthog.group.position;
       const fx = -Math.sin(warthog.yaw), fz = -Math.cos(warthog.yaw);
@@ -1662,24 +1732,27 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         addLocalObstacle(p.x, p.z, 2.1, p.y + 3.2);
         addLocalObstacle(p.x + fx * 4.6, p.z + fz * 4.6, 1.55, p.y + 2.7);
         addLocalObstacle(p.x - fx * 4.6, p.z - fz * 4.6, 1.7, p.y + 3.4);
+        // These three discs stop the on-foot player walking through the
+        // parked jet; the aircraft's own kinetic solver must skip them.
+        aircraftSelfObstacleCount = localObstacleCount;
       }
     }
     let rockN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
-    let treeFullN = 0, treeMidN = 0, treeFarN = 0;
+    let treeFullN = 0, treeMidN = 0, treeFarN = 0, treeVisited = 0;
     for (let ti = 0; ti < treeLodCounts.length; ti++) treeLodCounts[ti].fill(0);
 
-    for (const p of rockPlacements) {
+    forPlacementsNear(rockPlacementGrid, cx, cz, CULL_NEAR_M, (p) => {
       const dx = p.x - cx, dz = p.z - cz;
-      if (dx * dx + dz * dz > CULL_NEAR2) continue;
+      if (dx * dx + dz * dz > CULL_NEAR2) return;
       dummy.position.set(p.x, p.y, p.z);
       dummy.rotation.set(p.rx, p.ry, p.rz);
       dummy.scale.set(p.sx, p.sy, p.sz);
       dummy.updateMatrix();
       rocks.setMatrixAt(rockN++, dummy.matrix);
       addLocalObstacle(p.x, p.z, Math.max(0.28, Math.max(p.sx, p.sz) * 0.62), p.y + p.sy * 0.9);
-    }
+    });
 
-    const rustPebbles = getWorkerScatter(0, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M);
+    const rustPebbles = showGroundDetail ? (getWorkerScatter(0, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 0, cx, cz, CULL_NEAR_M)) : [];
     if (rustPebbles) {
       debugStats.rustScatterBatches++;
       for (let ri = 0; ri < rustPebbles.length && rockN < ROCK_N; ri += 10) {
@@ -1723,7 +1796,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     }
 
-    const rustGrass = getWorkerScatter(1, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 1, cx, cz, CULL_NEAR_M);
+    const rustGrass = showGroundDetail ? (getWorkerScatter(1, cx, cz, CULL_NEAR_M) || rustLocalScatter(NOISE_SEED, 1, cx, cz, CULL_NEAR_M)) : [];
     if (rustGrass) {
       debugStats.rustScatterBatches++;
       for (let ri = 0; ri < rustGrass.length && grassN < 900; ri += 10) {
@@ -1760,10 +1833,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     }
 
-    for (const p of treePlacements) {
+    forPlacementsNear(treePlacementGrid, cx, cz, CULL_MID_M, (p) => {
+      treeVisited++;
       const dx = p.x - cx, dz = p.z - cz;
       const d2 = dx * dx + dz * dz;
-      if (d2 > CULL_MID2) { farTrees++; continue; }
+      if (d2 > CULL_MID2) { farTrees++; return; }
       const band = d2 <= 2025 ? 0 : (d2 <= 9025 ? 1 : 2); // 45m / 95m squared
       const type = p.type || 0;
       const slot = treeLodCounts[type][band];
@@ -1797,7 +1871,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         dummy.updateMatrix();
         treeBlobShadows.setMatrixAt(blobN++, dummy.matrix);
       }
-    }
+    });
+    farTrees += Math.max(0, treePlacements.length - treeVisited);
+    debugStats.treeVisited = treeVisited;
 
     rocks.count = rockN;
     treeBlobShadows.count = blobN;
@@ -1935,10 +2011,80 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // forward -Z with the tyre contact patch at local Y=0, so only the
     // inner model gets the 180-degree yaw and the measured +2.36 m offset
     // (main torus tyres: centre Y -1.78, outer radius 0.43 + 0.15).
-    const warthogAssembly = createWarthogAssembly("ghost", "standard");
+    const warthogAssembly = createWarthogAssembly("ghost", "standard", { edges: false });
     const warthogModel = warthogAssembly.root;
     warthogModel.rotation.y = Math.PI;
     warthogModel.position.y = 2.36;
+    // Resource consolidation for the supplied model: merge only opaque,
+    // static direct-child meshes that already share one material and one
+    // immediate parent. Part groups, canopy pivot, fan groups, glass,
+    // decals and every authored transform remain intact, so component
+    // damage/detach still works while external/chase views issue far
+    // fewer draw calls than the 306 authored meshes.
+    const warthogMergeStats = (() => {
+      let authored = 0;
+      warthogModel.traverse((object) => { if (object.isMesh) authored++; });
+      const parents = [];
+      warthogModel.traverse((object) => {
+        if (object.children && object.children.some((child) => child.isMesh)) parents.push(object);
+      });
+      let mergedGroups = 0;
+      for (const parent of parents) {
+        const byMaterial = new Map();
+        for (const child of [...parent.children]) {
+          if (!child.isMesh || child.children.length || !child.visible || Array.isArray(child.material)) continue;
+          const material = child.material;
+          if (!material || material.transparent || material.map || material.isMeshPhysicalMaterial) continue;
+          if (!byMaterial.has(material)) byMaterial.set(material, []);
+          byMaterial.get(material).push(child);
+        }
+        for (const [material, meshes] of byMaterial) {
+          if (meshes.length < 2) continue;
+          const geometries = [];
+          let merged = null;
+          try {
+            for (const mesh of meshes) {
+              mesh.updateMatrix();
+              let geometry = mesh.geometry.clone();
+              if (geometry.index) geometry = geometry.toNonIndexed();
+              for (const name of Object.keys(geometry.attributes)) {
+                if (name !== "position" && name !== "normal" && name !== "uv") geometry.deleteAttribute(name);
+              }
+              if (!geometry.attributes.normal) geometry.computeVertexNormals();
+              if (!geometry.attributes.uv) {
+                geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(geometry.attributes.position.count * 2), 2));
+              }
+              geometry.applyMatrix4(mesh.matrix);
+              geometries.push(geometry);
+            }
+            merged = mergeGeometries(geometries, false);
+          } catch (err) {
+            merged = null;
+          } finally {
+            for (const geometry of geometries) geometry.dispose();
+          }
+          if (!merged) continue;
+          const mergedMesh = new THREE.Mesh(merged, material);
+          mergedMesh.name = `merged-${meshes[0].userData.partId || "warthog"}`;
+          mergedMesh.castShadow = meshes.some((mesh) => mesh.castShadow);
+          mergedMesh.receiveShadow = meshes.some((mesh) => mesh.receiveShadow);
+          mergedMesh.userData = { ...meshes[0].userData, mergedStatic: true };
+          parent.add(mergedMesh);
+          for (const mesh of meshes) parent.remove(mesh);
+          mergedGroups++;
+        }
+      }
+      let runtime = 0;
+      warthogModel.updateMatrixWorld(true);
+      warthogModel.traverse((object) => {
+        if (!object.isMesh) return;
+        runtime++;
+        // Authored mesh-local transforms never change after build; all
+        // articulation lives on Groups (canopy/fans/part groups).
+        object.matrixAutoUpdate = false;
+      });
+      return { authored, runtime, mergedGroups };
+    })();
     // The supplied viewer's realistic PBR read came from RoomEnvironment.
     // Give only the airframe's standard/physical materials that environment
     // so importing the model does not relight the whole game world.
@@ -1966,6 +2112,67 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.warthogModelParts = warthogModelStats.parts;
     debugStats.warthogModelMeshes = warthogModelStats.meshes;
     debugStats.warthogModelTriangles = warthogModelStats.triangles;
+    debugStats.warthogAuthoredMeshes = warthogMergeStats.authored;
+    debugStats.warthogRuntimeMeshes = warthogMergeStats.runtime;
+    debugStats.warthogMergedGroups = warthogMergeStats.mergedGroups;
+
+    const aircraftHitMeshes = [];
+    warthogModel.traverse((object) => {
+      if (!object.isMesh) return;
+      object.userData.aircraftPartId = aircraftPartIdForObject(object);
+      aircraftHitMeshes.push(object);
+    });
+    const aircraftHitMeshSet = new Set(aircraftHitMeshes);
+    const engineGlows = [-1, 1].map((sign) => {
+      const glow = new THREE.Mesh(
+        new THREE.SphereGeometry(0.42, 10, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff8b35, transparent: true, opacity: 0, depthWrite: false })
+      );
+      glow.position.set(sign * 1.76, 3.54, 4.5);
+      glow.scale.set(0.72, 0.72, 1.9);
+      glow.visible = false;
+      jetGroup.add(glow);
+      return glow;
+    });
+    const aircraftFireMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.82, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff6a18, transparent: true, opacity: 0, depthWrite: false })
+    );
+    aircraftFireMesh.position.set(0, 3.65, 2.4);
+    aircraftFireMesh.scale.set(1.15, 0.75, 2.2);
+    aircraftFireMesh.visible = false;
+    jetGroup.add(aircraftFireMesh);
+    // Model-specific capability lives in config, never in the reusable
+    // flight/damage solver: an unarmed future aircraft simply omits gun
+    // and/or missiles and the HUD/world will not invent weapons for it.
+    const aircraftConfig = {
+      id: "a10c",
+      name: "A-10C WARTHOG",
+      massKg: 12000,
+      wingAreaM2: WARTHOG_SPECS.wingAreaM2,
+      maxThrustN: WARTHOG_SPECS.thrustKN * 1000,
+      weapons: {
+        gun: WARTHOG_SPECS.gun ? {
+          installed: true,
+          name: WARTHOG_SPECS.gun,
+          partId: "gun",
+          ammo: WARTHOG_SPECS.rounds,
+          roundsPerSecond: WARTHOG_SPECS.gunRate / 60,
+          projectileSpeedMps: 990,
+          damage: 16,
+        } : null,
+        missiles: {
+          installed: true,
+          name: "AIM-9 GUIDED MISSILES",
+          partId: "stores",
+          count: 2,
+          damage: 190,
+          radiusM: 18,
+        },
+      },
+    };
+    const initialComponents = createAircraftComponents();
+    const initialPerformance = deriveAircraftPerformance(initialComponents);
 
     const parkY = groundSupportHeight(WORLD.warthog.x, WORLD.warthog.z, 4.2, "max") + 0.05;
     jetGroup.position.set(WORLD.warthog.x, parkY, WORLD.warthog.z);
@@ -1976,12 +2183,26 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       yaw: 0, pitch: 0, roll: 0, throttle: 0, spool: 0,
       velocity: new THREE.Vector3(), airborne: false, occupied: false,
       gearDown: true, crashed: false, stall: false, aoaDeg: 0,
-      speed: 0, verticalSpeed: 0, altitudeAgl: 0, nearDistance: 999,
+      speed: 0, signedSpeed: 0, verticalSpeed: 0, altitudeAgl: 0, nearDistance: 999,
       canopyOpen: 0, canopyTarget: 0, entryPhase: "parked",
-      controlPitch: 0, controlRoll: 0,
+      controlPitch: 0, controlRoll: 0, groundSteerDeg: 0,
       // Light ferry load above the pack's 11,321 kg empty mass, in SI units.
-      massKg: 12000, wingAreaM2: WARTHOG_SPECS.wingAreaM2,
-      maxThrustN: WARTHOG_SPECS.thrustKN * 1000,
+      config: aircraftConfig,
+      massKg: aircraftConfig.massKg, wingAreaM2: aircraftConfig.wingAreaM2,
+      maxThrustN: aircraftConfig.maxThrustN,
+      components: initialComponents,
+      performance: initialPerformance,
+      detached: new Set(), debris: [], hitMeshes: aircraftHitMeshes, hitMeshSet: aircraftHitMeshSet,
+      engineGlows, fireMesh: aircraftFireMesh,
+      pitchRateVel: 0, rollRateVel: 0,
+      gunAmmo: aircraftConfig.weapons.gun ? aircraftConfig.weapons.gun.ammo : 0,
+      missilesLeft: aircraftConfig.weapons.missiles ? aircraftConfig.weapons.missiles.count : 0,
+      gunAccumulator: 0, gunSoundAcc: 0, missileCooldown: 0, missileSide: 1,
+      cannonShots: 0, missilesFired: 0,
+      exploded: false, pendingExplosion: "", explosionTimer: -1, fireAcc: 0,
+      damageSeq: 0, lastDamagePart: "", lastCollisionAt: -99, lastCollisionPart: "",
+      advisory: "", advisoryLevel: "info", cameraKeyWasDown: false,
+      interactKeyWasDown: false, missileKeyWasDown: false,
     };
     debugStats.warthogVisible = 1;
   }
@@ -2371,6 +2592,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.yaw = -(headingDeg * Math.PI) / 180; // heading = -yaw in this engine
     player.pitch = -0.03;
     transition = null;
+    scatterForce = true;
+    scatterCullAcc = Infinity;
     // A teleport is a cut: build the destination neighbourhood
     // synchronously so arrival never shows a hole in the ground.
     const t = chunkIndexAt(player.pos.x, player.pos.z);
@@ -2396,6 +2619,618 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     outQuat.copy(camera.quaternion);
   }
 
+  // ----- reusable aircraft damage / weapons / debris / ejection -----
+  // The solver below is deliberately model-agnostic: it consumes stable
+  // component IDs plus warthog.config (mass, wing area, thrust and only
+  // the weapons actually installed on that model). Another airframe can
+  // reuse it by publishing the same part IDs and a different config.
+  const AIRCRAFT_PART_CENTERS = {
+    fuselage: new THREE.Vector3(0, 3.35, 0.2),
+    canopy: new THREE.Vector3(0, 4.05, -3.0),
+    "wing-port": new THREE.Vector3(-5.2, 2.95, 0.1),
+    "wing-starboard": new THREE.Vector3(5.2, 2.95, 0.1),
+    "engine-port": new THREE.Vector3(-1.8, 3.55, 3.2),
+    "engine-starboard": new THREE.Vector3(1.8, 3.55, 3.2),
+    empennage: new THREE.Vector3(0, 3.9, 6.9),
+    gun: new THREE.Vector3(0, 2.55, -6.3),
+    stores: new THREE.Vector3(0, 2.15, 0.25),
+    gear: new THREE.Vector3(0, 0.65, -0.4),
+  };
+  const _aircraftPoint = new THREE.Vector3();
+  const _aircraftPoint2 = new THREE.Vector3();
+  const _aircraftDir = new THREE.Vector3();
+  const _chasePos = new THREE.Vector3();
+  let chaseCameraReady = false;
+  const ejection = { active: false, chute: false, t: 0, vel: new THREE.Vector3() };
+  const AIRCRAFT_DEBUG_KEYS = {};
+  for (const component of AIRCRAFT_COMPONENTS) {
+    AIRCRAFT_DEBUG_KEYS[component.id] = "aircraftHealth" + component.id.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+  }
+  let aircraftProjectilesActive = false;
+  const _collisionWorld = new THREE.Vector3();
+  const AIRCRAFT_COLLISION_SAMPLES = [
+    { part: "gun", x: 0, y: 2.45, z: -8.2, share: 0.42 },
+    { part: "fuselage", x: 0, y: 3.1, z: -3.6, share: 0.62 },
+    { part: "wing-port", x: -8.55, y: 2.9, z: 0.1, share: 0.16 },
+    { part: "wing-starboard", x: 8.55, y: 2.9, z: 0.1, share: 0.16 },
+    { part: "gear", x: 0, y: 0.45, z: -0.6, share: 0.3 },
+    { part: "empennage", x: 0, y: 3.7, z: 7.4, share: 0.28 },
+  ];
+
+  function aircraftPartWorld(partId, out) {
+    const id = normalizeAircraftPartId(partId);
+    out.copy(AIRCRAFT_PART_CENTERS[id] || AIRCRAFT_PART_CENTERS.fuselage);
+    return warthog.group.localToWorld(out);
+  }
+  function aircraftPartIdForObject(object) {
+    let node = object;
+    while (node) {
+      if (node.userData && node.userData.partId) return normalizeAircraftPartId(node.userData.partId);
+      node = node.parent;
+    }
+    return "fuselage";
+  }
+  function publishAircraftDamage() {
+    if (!warthog) return;
+    const j = warthog;
+    j.performance = deriveAircraftPerformance(j.components);
+    j.damageSeq += 1;
+    if (j.assembly.setDamageVisuals) j.assembly.setDamageVisuals(j.performance.percentages);
+    const worst = worstAircraftComponent(j.components);
+    debugStats.aircraftComponents = { ...j.performance.percentages };
+    debugStats.aircraftDamageSeq = j.damageSeq;
+    debugStats.aircraftWorstPart = worst.id;
+    debugStats.aircraftWorstLabel = worst.label;
+    debugStats.aircraftWorstPct = Math.round(worst.pct * 100);
+    debugStats.aircraftExploded = j.exploded ? 1 : 0;
+    debugStats.aircraftDetached = [...j.detached].join(",");
+    for (const component of AIRCRAFT_COMPONENTS) {
+      debugStats[AIRCRAFT_DEBUG_KEYS[component.id]] = Math.round(j.performance.percentages[component.id] * 100);
+    }
+  }
+  function killDrone(drone) {
+    if (!drone || !drone.alive) return;
+    drone.alive = false;
+    drone.landed = false;
+    drone.vy = 0;
+    drone.respawnAt = performance.now() / 1000 + 9;
+    drone.eye.material.color.set(0x3a1512);
+    if (hooks.onDroneDown) hooks.onDroneDown();
+  }
+  function killPlayerNow(reason) {
+    if (debugStats.playerDead) return;
+    debugStats.playerDead = 1;
+    debugStats.deathReason = reason || "OPERATOR DOWN";
+    if (hooks.onPlayerKilled) hooks.onPlayerKilled(debugStats.deathReason);
+  }
+  function damagePlayerNow(amount, reason) {
+    const value = Math.max(0, Math.round(amount || 0));
+    if (!value || debugStats.playerDead) return;
+    debugStats.lastPlayerDamage = value;
+    if (hooks.onPlayerDamage) hooks.onPlayerDamage(value, reason || "DAMAGE");
+  }
+  function detachAircraftPart(partId, power = 1) {
+    if (!warthog) return false;
+    const j = warthog;
+    const id = normalizeAircraftPartId(partId);
+    if (id === "fuselage" || id === "canopy" || j.detached.has(id)) return false;
+    const record = j.assembly.parts.get(id);
+    if (!record) return false;
+    scene.attach(record.group);
+    _aircraftDir.copy(record.explode || _aircraftDir.set(0, 1, 0));
+    if (_aircraftDir.lengthSq() < 0.01) _aircraftDir.set(0, 1, 0);
+    _aircraftDir.normalize().applyQuaternion(j.group.quaternion);
+    const vel = j.velocity.clone().addScaledVector(_aircraftDir, 2.5 + power * 4);
+    vel.y += 1.2 + rand() * 1.5;
+    j.debris.push({
+      group: record.group,
+      vel,
+      angVel: new THREE.Vector3((rand() - 0.5) * 2.4, (rand() - 0.5) * 2.4, (rand() - 0.5) * 2.4),
+      landed: false,
+    });
+    j.detached.add(id);
+    debugStats.aircraftDetached = [...j.detached].join(",");
+    debugStats.aircraftLastDetached = id;
+    return true;
+  }
+  function updateAircraftDebris(dt) {
+    if (!warthog || !warthog.debris.length) return;
+    for (const item of warthog.debris) {
+      if (item.landed) continue;
+      item.vel.y -= 9.81 * dt;
+      item.vel.multiplyScalar(Math.exp(-dt * 0.1));
+      item.group.position.addScaledVector(item.vel, dt);
+      item.group.rotation.x += item.angVel.x * dt;
+      item.group.rotation.y += item.angVel.y * dt;
+      item.group.rotation.z += item.angVel.z * dt;
+      const restY = terrainSurfaceHeight(item.group.position.x, item.group.position.z) + 0.35;
+      if (item.group.position.y <= restY) {
+        item.group.position.y = restY;
+        item.landed = true;
+      }
+    }
+  }
+
+  // Pooled cannon shells and guided missiles. Only a tracer subset of
+  // the cannon stream is simulated as meshes; each visible shell carries
+  // the damage of the burst slice it represents, which keeps a 3,900 rpm
+  // gun playable on a phone without spawning 65 objects per second.
+  const aircraftShells = [];
+  {
+    const shellGeo = new THREE.BoxGeometry(0.075, 0.075, 1.25);
+    const shellMat = new THREE.MeshBasicMaterial({ color: 0xffd98c, transparent: true, opacity: 0.92 });
+    for (let i = 0; i < 42; i++) {
+      const mesh = new THREE.Mesh(shellGeo, shellMat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      aircraftShells.push({ mesh, active: false, vel: new THREE.Vector3(), life: 0, damage: 16 });
+    }
+  }
+  const aircraftMissiles = [];
+  {
+    const bodyGeo = new THREE.CylinderGeometry(0.14, 0.14, 2.3, 10);
+    bodyGeo.rotateX(Math.PI / 2);
+    const noseGeo = new THREE.ConeGeometry(0.14, 0.55, 10);
+    noseGeo.rotateX(Math.PI / 2);
+    const finGeo = new THREE.BoxGeometry(0.62, 0.035, 0.42);
+    const finGeoV = new THREE.BoxGeometry(0.035, 0.62, 0.42);
+    const missileMat = new THREE.MeshStandardMaterial({ color: 0xb9beb2, roughness: 0.42, metalness: 0.45, flatShading: true });
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xff8b35, transparent: true, opacity: 0.9, depthWrite: false });
+    for (let i = 0; i < 8; i++) {
+      const group = new THREE.Group();
+      const body = new THREE.Mesh(bodyGeo, missileMat);
+      const nose = new THREE.Mesh(noseGeo, missileMat); nose.position.z = 1.4;
+      const finH = new THREE.Mesh(finGeo, missileMat); finH.position.z = -0.95;
+      const finV = new THREE.Mesh(finGeoV, missileMat); finV.position.z = -0.95;
+      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), flameMat);
+      flame.position.z = -1.3; flame.scale.set(0.7, 0.7, 2.2);
+      group.add(body, nose, finH, finV, flame);
+      group.visible = false;
+      scene.add(group);
+      aircraftMissiles.push({ group, active: false, vel: new THREE.Vector3(), life: 0, target: null, trailAcc: 0, armedT: 0 });
+    }
+  }
+  function spawnAircraftShell(origin, direction, inheritedVelocity, damage) {
+    const shell = aircraftShells.find((item) => !item.active);
+    if (!shell) return;
+    shell.active = true;
+    aircraftProjectilesActive = true;
+    shell.life = 2.6;
+    shell.damage = damage;
+    shell.mesh.visible = true;
+    shell.mesh.position.copy(origin);
+    shell.vel.copy(direction).multiplyScalar(warthog.config.weapons.gun.projectileSpeedMps).add(inheritedVelocity);
+    _aircraftPoint.copy(origin).add(direction);
+    shell.mesh.lookAt(_aircraftPoint);
+  }
+  function explodeAt(point, radiusM = 16, power = 160, source = "explosive", options = {}) {
+    const radius = Math.max(2, radiusM || 16);
+    burst(point, 52, 10);
+    burst(point, 28, 15);
+    debugStats.lastExplosionX = Math.round(point.x * 10) / 10;
+    debugStats.lastExplosionY = Math.round(point.y * 10) / 10;
+    debugStats.lastExplosionZ = Math.round(point.z * 10) / 10;
+    debugStats.lastExplosionSource = source;
+    debugStats.explosions = (debugStats.explosions || 0) + 1;
+    if (hooks.onExplosion) hooks.onExplosion(clamp(radius / 16, 0.45, 1.5), point);
+    for (const drone of drones) {
+      if (drone.alive && drone.group.position.distanceTo(point) <= radius + 1.5) killDrone(drone);
+    }
+    if (warthog && !options.ignoreAircraft && !warthog.exploded) {
+      for (const component of AIRCRAFT_COMPONENTS) {
+        aircraftPartWorld(component.id, _aircraftPoint);
+        const distance = _aircraftPoint.distanceTo(point);
+        const falloff = clamp(1 - distance / (radius + 7), 0, 1);
+        if (falloff > 0.03) {
+          damageAircraft(component.id, power * falloff, source, _aircraftPoint.clone(), { area: true });
+          if (warthog.exploded) break;
+        }
+      }
+    }
+    if (!options.ignorePlayer && !(warthog && warthog.occupied)) {
+      const distance = player.pos.distanceTo(point);
+      if (distance < radius + 2) {
+        const falloff = clamp(1 - distance / (radius + 2), 0, 1);
+        damagePlayerNow(92 * falloff, source === "aircraft-explosion" ? "AIRCRAFT EXPLOSION" : "EXPLOSION");
+      }
+    }
+  }
+  function explodeAircraft(reason = "AIRCRAFT EXPLOSION") {
+    if (!warthog || warthog.exploded) return;
+    const j = warthog;
+    const wasOccupied = j.occupied;
+    j.exploded = true;
+    j.crashed = true;
+    j.pendingExplosion = "";
+    j.explosionTimer = -1;
+    j.throttle = 0;
+    j.spool = 0;
+    j.components.fuselage = 0;
+    _aircraftPoint.copy(j.group.position).add(_aircraftPoint2.set(0, 3.2, 0));
+    burst(_aircraftPoint, 110, 15);
+    burst(_aircraftPoint, 70, 22);
+    if (hooks.onExplosion) hooks.onExplosion(1.55, _aircraftPoint.clone());
+    for (const partId of ["wing-port", "wing-starboard", "engine-port", "engine-starboard", "empennage", "stores", "gun"]) {
+      detachAircraftPart(partId, 1.15);
+    }
+    j.occupied = false;
+    j.entryPhase = "destroyed";
+    j.assembly.setCockpitView(false);
+    publishAircraftDamage();
+    debugStats.aircraftExploded = 1;
+    debugStats.jetMessage = reason;
+    for (const drone of drones) {
+      if (drone.alive && drone.group.position.distanceTo(_aircraftPoint) <= 24) killDrone(drone);
+    }
+    if (wasOccupied) {
+      killPlayerNow(reason);
+    } else if (!ejection.active) {
+      const distance = player.pos.distanceTo(_aircraftPoint);
+      if (distance < 26) damagePlayerNow(96 * clamp(1 - distance / 26, 0, 1), "AIRCRAFT EXPLOSION");
+    }
+  }
+  function damageAircraft(partId, amount, source = "gun", point = null, options = {}) {
+    if (!warthog || !(amount > 0)) return null;
+    const j = warthog;
+    const result = damageAircraftComponent(j.components, partId, amount, source);
+    j.lastDamagePart = result.id;
+    debugStats.aircraftLastDamagePart = result.id;
+    debugStats.aircraftLastDamage = Math.round(result.applied * 10) / 10;
+    debugStats.aircraftLastDamageSource = source;
+    debugStats.aircraftDamageEvents = (debugStats.aircraftDamageEvents || 0) + 1;
+    publishAircraftDamage();
+    if (point) burst(point, result.destroyedNow ? 30 : 10, result.destroyedNow ? 6 : 3.5);
+    if (hooks.onAircraftHit) hooks.onAircraftHit(result, source);
+    if (result.destroyedNow) {
+      detachAircraftPart(result.id, source === "collision" ? 1.2 : 0.75);
+      if (result.id === "canopy" && j.occupied) {
+        j.occupied = false;
+        j.entryPhase = "uncontrolled";
+        j.assembly.setCockpitView(false);
+        killPlayerNow("COCKPIT DESTROYED");
+      }
+      if (result.id === "fuselage") explodeAircraft("FUSELAGE BREAK-UP // AIRCRAFT EXPLODED");
+      else if (result.id === "stores" && j.missilesLeft > 0 && source !== "gun" && source !== "bullet") {
+        explodeAircraft("STORES COOK-OFF // AIRCRAFT EXPLODED");
+      }
+    }
+    const perf = j.performance;
+    if (!j.exploded && (perf.engineFire || perf.fuselageFire) && j.explosionTimer < 0) {
+      // Fire is dangerous, not an instant lottery: the pilot gets a real
+      // window to land, stop, or punch out before it reaches fuel/stores.
+      j.explosionTimer = 14;
+    }
+    if (!j.exploded && perf.catastrophic && !options.area) {
+      j.pendingExplosion = "STRUCTURAL FAILURE // AIRCRAFT EXPLODED";
+    }
+    return result;
+  }
+  function resetAircraftToSpawn() {
+    if (!warthog) return;
+    const j = warthog;
+    if (j.assembly.resetParts) j.assembly.resetParts();
+    j.detached.clear();
+    j.debris.length = 0;
+    j.components = createAircraftComponents();
+    j.exploded = false;
+    j.crashed = false;
+    j.airborne = false;
+    j.occupied = false;
+    j.entryPhase = "parked";
+    j.canopyOpen = 0;
+    j.canopyTarget = 0;
+    j.yaw = 0; j.pitch = 0; j.roll = 0;
+    j.pitchRateVel = 0; j.rollRateVel = 0;
+    j.throttle = 0; j.spool = 0;
+    j.velocity.set(0, 0, 0);
+    j.speed = 0; j.signedSpeed = 0; j.verticalSpeed = 0; j.altitudeAgl = 0;
+    j.gearDown = true;
+    j.gunAmmo = j.config.weapons.gun ? j.config.weapons.gun.ammo : 0;
+    j.missilesLeft = j.config.weapons.missiles ? j.config.weapons.missiles.count : 0;
+    j.gunAccumulator = 0; j.missileCooldown = 0;
+    j.pendingExplosion = ""; j.explosionTimer = -1; j.fireAcc = 0;
+    j.group.position.set(WORLD.warthog.x, groundSupportHeight(WORLD.warthog.x, WORLD.warthog.z, 4.2, "max") + 0.05, WORLD.warthog.z);
+    j.group.rotation.set(0, 0, 0);
+    for (const shell of aircraftShells) { shell.active = false; shell.mesh.visible = false; }
+    for (const missile of aircraftMissiles) { missile.active = false; missile.group.visible = false; }
+    aircraftProjectilesActive = false;
+    ejection.active = false;
+    ejection.chute = false;
+    publishAircraftDamage();
+    debugStats.jetMessage = "WARTHOG REPAIRED // PARKED X18 Z0";
+  }
+  function launchAircraftMissile() {
+    if (!warthog || !warthog.occupied || warthog.exploded) return false;
+    const j = warthog;
+    const cfg = j.config.weapons.missiles;
+    if (!cfg || !cfg.installed || !j.performance.storesOperational || j.missilesLeft <= 0 || j.missileCooldown > 0) return false;
+    const missile = aircraftMissiles.find((item) => !item.active);
+    if (!missile) return false;
+    _aircraftDir.set(0, 0, -1).applyQuaternion(j.group.quaternion).normalize();
+    let target = null;
+    let bestScore = Infinity;
+    for (const drone of drones) {
+      if (!drone.alive) continue;
+      _aircraftPoint.copy(drone.group.position).sub(j.group.position);
+      const distance = _aircraftPoint.length();
+      if (distance > 750 || distance < 8) continue;
+      _aircraftPoint.normalize();
+      const angle = Math.acos(clamp(_aircraftPoint.dot(_aircraftDir), -1, 1));
+      const score = angle * 500 + distance * 0.08;
+      if (angle < 0.9 && score < bestScore) { bestScore = score; target = drone; }
+    }
+    j.missileSide = -j.missileSide;
+    _aircraftPoint.set(j.missileSide * 8.35, 2.2, 0.15);
+    j.group.localToWorld(_aircraftPoint);
+    missile.active = true;
+    aircraftProjectilesActive = true;
+    missile.life = 9;
+    missile.armedT = 0;
+    missile.trailAcc = 0;
+    missile.target = target;
+    missile.group.visible = true;
+    missile.group.position.copy(_aircraftPoint);
+    missile.vel.copy(j.velocity).addScaledVector(_aircraftDir, 24);
+    _aircraftPoint2.copy(missile.group.position).add(_aircraftDir);
+    missile.group.lookAt(_aircraftPoint2);
+    j.missilesLeft -= 1;
+    j.missilesFired += 1;
+    j.missileCooldown = 0.55;
+    debugStats.aircraftMissilesFired = j.missilesFired;
+    debugStats.aircraftMissileTarget = target ? 1 : 0;
+    if (hooks.onMissileLaunch) hooks.onMissileLaunch(target ? "FOX TWO — MISSILE AWAY" : "MISSILE AWAY — NO LOCK");
+    return true;
+  }
+  function updateAircraftWeapons(dt) {
+    if (!warthog) return;
+    const j = warthog;
+    j.missileCooldown = Math.max(0, j.missileCooldown - dt);
+    const keys = inputState.keys;
+    if (inputState.aircraftMissileLaunch) {
+      inputState.aircraftMissileLaunch = false;
+      launchAircraftMissile();
+    }
+    const missileKey = keys.has("KeyG");
+    if (missileKey && !j.missileKeyWasDown) launchAircraftMissile();
+    j.missileKeyWasDown = missileKey;
+
+    const gunCfg = j.config.weapons.gun;
+    const gunWanted = j.occupied && !j.exploded && !!gunCfg && gunCfg.installed && j.performance.gunOperational &&
+      (inputState.aircraftGunHeld || keys.has("KeyF"));
+    debugStats.aircraftGunFiring = gunWanted && j.gunAmmo > 0 ? 1 : 0;
+    if (gunWanted && j.gunAmmo > 0) {
+      j.gunAccumulator += dt * gunCfg.roundsPerSecond;
+      const rounds = Math.min(j.gunAmmo, Math.floor(j.gunAccumulator));
+      if (rounds > 0) {
+        j.gunAccumulator -= rounds;
+        j.gunAmmo -= rounds;
+        j.cannonShots += rounds;
+        _aircraftPoint.set(0, 2.5, -8.15);
+        j.group.localToWorld(_aircraftPoint);
+        const shells = Math.min(4, Math.max(1, Math.ceil(rounds / 6)));
+        for (let i = 0; i < shells; i++) {
+          _aircraftDir.set((rand() - 0.5) * 0.004, (rand() - 0.5) * 0.004, -1).normalize().applyQuaternion(j.group.quaternion);
+          spawnAircraftShell(_aircraftPoint, _aircraftDir, j.velocity, gunCfg.damage);
+        }
+        // The real GAU-8 recoil is enormous; a small, honest speed bleed
+        // and shake sells it without making the jet unflyable.
+        _aircraftDir.set(0, 0, -1).applyQuaternion(j.group.quaternion);
+        j.velocity.addScaledVector(_aircraftDir, -rounds * 0.0018);
+      }
+      j.gunSoundAcc -= dt;
+      if (j.gunSoundAcc <= 0) {
+        j.gunSoundAcc = 0.09;
+        if (hooks.onAircraftCannon) hooks.onAircraftCannon();
+      }
+    } else {
+      j.gunAccumulator = 0;
+      j.gunSoundAcc = 0;
+    }
+  }
+  function updateAircraftProjectiles(dt) {
+    let shellsActive = 0, missilesActive = 0;
+    for (const shell of aircraftShells) {
+      if (!shell.active) continue;
+      shell.life -= dt;
+      if (shell.life <= 0) { shell.active = false; shell.mesh.visible = false; continue; }
+      let hit = false;
+      const steps = 4;
+      const stepDt = dt / steps;
+      for (let step = 0; step < steps && !hit; step++) {
+        shell.vel.y -= 9.81 * stepDt;
+        shell.mesh.position.addScaledVector(shell.vel, stepDt);
+        const pos = shell.mesh.position;
+        for (const drone of drones) {
+          if (drone.alive && drone.group.position.distanceToSquared(pos) < 3.2) {
+            burst(pos, 24, 4.5);
+            killDrone(drone);
+            hit = true;
+            break;
+          }
+        }
+        if (!hit && pos.y <= terrainSurfaceHeight(pos.x, pos.z) + 0.06) {
+          burst(pos, 16, 4);
+          hit = true;
+        }
+      }
+      if (hit) { shell.active = false; shell.mesh.visible = false; }
+      else {
+        _aircraftPoint.copy(shell.mesh.position).add(shell.vel);
+        shell.mesh.lookAt(_aircraftPoint);
+      }
+      if (shell.active) shellsActive++;
+    }
+    for (const missile of aircraftMissiles) {
+      if (!missile.active) continue;
+      missile.life -= dt;
+      missile.armedT += dt;
+      if (missile.life <= 0) {
+        explodeAt(missile.group.position.clone(), 15, 150, "missile");
+        missile.active = false; missile.group.visible = false;
+        continue;
+      }
+      const speed = Math.max(20, missile.vel.length());
+      _aircraftDir.copy(missile.vel).multiplyScalar(1 / speed);
+      if (missile.target && missile.target.alive) {
+        _aircraftPoint.copy(missile.target.group.position).sub(missile.group.position).normalize();
+        const blend = clamp(dt * 1.85, 0, 1);
+        _aircraftDir.lerp(_aircraftPoint, blend).normalize();
+      }
+      const nextSpeed = Math.min(285, speed + (missile.armedT < 0.22 ? 55 : 210) * dt);
+      missile.vel.copy(_aircraftDir).multiplyScalar(nextSpeed);
+      missile.group.position.addScaledVector(missile.vel, dt);
+      _aircraftPoint.copy(missile.group.position).add(_aircraftDir);
+      missile.group.lookAt(_aircraftPoint);
+      missile.trailAcc -= dt;
+      if (missile.trailAcc <= 0) {
+        missile.trailAcc = 0.045;
+        burst(missile.group.position, 1, 0.25);
+      }
+      const pos = missile.group.position;
+      let detonated = pos.y <= terrainSurfaceHeight(pos.x, pos.z) + 0.12;
+      if (!detonated && missile.target && missile.target.alive && missile.target.group.position.distanceToSquared(pos) < 9) detonated = true;
+      if (detonated) {
+        explodeAt(pos.clone(), warthog.config.weapons.missiles.radiusM, warthog.config.weapons.missiles.damage, "missile");
+        missile.active = false;
+        missile.group.visible = false;
+      }
+    }
+    for (const missile of aircraftMissiles) if (missile.active) missilesActive++;
+    aircraftProjectilesActive = shellsActive + missilesActive > 0;
+    debugStats.aircraftShellsActive = shellsActive;
+    debugStats.aircraftMissilesActive = missilesActive;
+  }
+  function collideAircraftWithObstacles() {
+    if (!warthog || warthog.exploded || !localObstacleCount) return;
+    const j = warthog;
+    const now = performance.now() / 1000;
+    if (now - j.lastCollisionAt < 0.28) return;
+    for (const sample of AIRCRAFT_COLLISION_SAMPLES) {
+      if (j.detached.has(sample.part)) continue;
+      if (sample.part === "gear" && !j.gearDown) continue;
+      const world = _collisionWorld.set(sample.x, sample.y, sample.z);
+      j.group.localToWorld(world);
+      for (let i = aircraftSelfObstacleCount; i < localObstacleCount; i++) {
+        const o = i * 4;
+        if (world.y > localObstacles[o + 3] + 0.25) continue;
+        const dx = world.x - localObstacles[o];
+        const dz = world.z - localObstacles[o + 1];
+        const minD = localObstacles[o + 2] + 0.62;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= minD * minD) continue;
+        const speed = j.velocity.length();
+        if (speed < 0.35) return;
+        const d = Math.max(0.05, Math.sqrt(d2));
+        const nx = dx / d, nz = dz / d;
+        const keMJ = aircraftKineticEnergyMJ(j.massKg, speed);
+        const damage = collisionDamageFromEnergy(keMJ * sample.share, speed);
+        j.lastCollisionAt = now;
+        j.lastCollisionPart = sample.part;
+        debugStats.aircraftLastCollisionPart = sample.part;
+        debugStats.aircraftLastCollisionKmh = Math.round(speed * 3.6);
+        debugStats.aircraftLastCollisionMJ = Math.round(keMJ * 10) / 10;
+        debugStats.aircraftCollisions = (debugStats.aircraftCollisions || 0) + 1;
+        damageAircraft(sample.part, damage, "collision", world);
+        // The obstacle removes the inward velocity component and shoves
+        // the airframe back out; a wingtip strike also yaws/rolls it.
+        const push = minD - d + 0.08;
+        j.group.position.x += nx * push;
+        j.group.position.z += nz * push;
+        const vn = j.velocity.x * nx + j.velocity.z * nz;
+        if (vn < 0) {
+          j.velocity.x -= vn * nx * 1.18;
+          j.velocity.z -= vn * nz * 1.18;
+        }
+        j.velocity.multiplyScalar(sample.part.startsWith("wing") ? 0.82 : 0.62);
+        if (sample.part === "wing-port") { j.yaw = wrapJetAngle(j.yaw - 0.05); j.rollRateVel -= 0.45; }
+        if (sample.part === "wing-starboard") { j.yaw = wrapJetAngle(j.yaw + 0.05); j.rollRateVel += 0.45; }
+        if (speed > 62 && (sample.part === "fuselage" || sample.part === "gun")) {
+          j.pendingExplosion = "HIGH-ENERGY IMPACT // AIRCRAFT EXPLODED";
+        }
+        return;
+      }
+    }
+  }
+  function ejectFromWarthog() {
+    if (!warthog || !warthog.occupied || warthog.exploded || ejection.active) return false;
+    const j = warthog;
+    j.occupied = false;
+    j.entryPhase = "ejected";
+    j.canopyTarget = 1;
+    j.canopyOpen = 1;
+    j.assembly.setCanopyOpen(1);
+    j.assembly.setCockpitView(false);
+    _aircraftPoint.set(0, 4.15, -2.95);
+    j.group.localToWorld(_aircraftPoint);
+    player.pos.copy(_aircraftPoint);
+    _aircraftDir.set(0, 1, 0).applyQuaternion(j.group.quaternion).normalize();
+    ejection.vel.copy(j.velocity).addScaledVector(_aircraftDir, 16);
+    _aircraftDir.set(0, 0, -1).applyQuaternion(j.group.quaternion).normalize();
+    ejection.vel.addScaledVector(_aircraftDir, -1.5);
+    ejection.active = true;
+    ejection.chute = false;
+    ejection.t = 0;
+    player.yaw = j.yaw;
+    player.pitch = -0.06;
+    player.vel.set(ejection.vel.x, 0, ejection.vel.z);
+    player.vy = ejection.vel.y;
+    resetPhysics(player.pos.x, player.pos.y - player.eyeHeight, player.pos.z);
+    physBuf[3] = ejection.vel.x; physBuf[4] = ejection.vel.y; physBuf[5] = ejection.vel.z;
+    inputState.flightPitchInput = 0;
+    inputState.flightRollInput = 0;
+    inputState.aircraftGunHeld = false;
+    inputState.aircraftMissileLaunch = false;
+    debugStats.ejections = (debugStats.ejections || 0) + 1;
+    debugStats.ejectionActive = 1;
+    debugStats.jetMessage = "EJECTED // PARACHUTE DEPLOYING";
+    if (hooks.onEject) hooks.onEject();
+    return true;
+  }
+  function updateEjection(dt) {
+    // Drag-look stays live under canopy.
+    const lookScale = clamp(inputState.sensitivity || 0.55, 0.15, 1.5);
+    player.yaw -= inputState.lookDX * 0.0024 * lookScale;
+    player.pitch = clamp(player.pitch - inputState.lookDY * 0.0024 * lookScale, -1.35, 1.35);
+    inputState.lookDX = 0; inputState.lookDY = 0;
+    ejection.t += dt;
+    if (!ejection.chute && ejection.t > 0.78) {
+      ejection.chute = true;
+      if (hooks.onParachute) hooks.onParachute();
+    }
+    ejection.vel.y -= 9.81 * dt;
+    const drag = Math.exp(-dt * (ejection.chute ? 0.62 : 0.08));
+    ejection.vel.x *= drag;
+    ejection.vel.z *= drag;
+    if (ejection.chute) ejection.vel.y = Math.max(ejection.vel.y, -5.35);
+    player.pos.addScaledVector(ejection.vel, dt);
+    player.vel.set(ejection.vel.x, 0, ejection.vel.z);
+    player.vy = ejection.vel.y;
+    physBuf[0] = player.pos.x; physBuf[1] = player.pos.y - player.eyeHeight; physBuf[2] = player.pos.z;
+    physBuf[3] = ejection.vel.x; physBuf[4] = ejection.vel.y; physBuf[5] = ejection.vel.z;
+    physBuf[31] = Math.hypot(ejection.vel.x, ejection.vel.z);
+    const groundY = groundHeightWithBridge(player.pos.x, player.pos.z) + player.eyeHeight;
+    if (player.pos.y <= groundY) {
+      const landingSpeed = Math.abs(ejection.vel.y);
+      player.pos.y = groundY;
+      ejection.active = false;
+      ejection.chute = false;
+      resetPhysics(player.pos.x, groundY - player.eyeHeight, player.pos.z);
+      if (landingSpeed > 8.5) damagePlayerNow((landingSpeed - 8.5) * 5, "HARD PARACHUTE LANDING");
+      if (hooks.onLand) hooks.onLand(landingSpeed);
+    }
+    playerPose(_v2, _q1);
+    camera.position.copy(_v2);
+    camera.quaternion.copy(_q1);
+    gun.visible = false;
+    playerBlobShadow.visible = false;
+    setCameraFov(clamp(inputState.fov || 71, 55, 100), dt, 5);
+    debugStats.ejectionActive = ejection.active ? 1 : 0;
+    debugStats.ejectionChute = ejection.chute ? 1 : 0;
+    debugStats.ejectionSpeed = Math.round(ejection.vel.length() * 10) / 10;
+    debugStats.speed = Math.round(ejection.vel.length() * 10) / 10;
+  }
+
   // ----- Warthog interaction + flight model -----
   // SI-unit point-mass aerodynamics: thrust, lift from angle of attack,
   // induced/parasitic drag, air density with altitude, coordinated banked
@@ -2404,12 +3239,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // descend and land for physical reasons — there is no hover/fly-up key.
   const _jetFwd = new THREE.Vector3(), _jetRight = new THREE.Vector3(), _jetUp = new THREE.Vector3();
   const _jetDir = new THREE.Vector3(), _jetForce = new THREE.Vector3();
+  const wrapJetAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
   function warthogGroundY(x, z) {
     return Math.max(
       terrainSurfaceHeight(x, z),
       terrainSurfaceHeight(x + 3.5, z), terrainSurfaceHeight(x - 3.5, z),
       terrainSurfaceHeight(x, z + 3.5), terrainSurfaceHeight(x, z - 3.5)
-    ) + 0.05;
+    ) + 0.05 + (warthog && warthog.performance && warthog.performance.gearFactor <= 0 ? -1.12 : 0);
   }
   function animateWarthogCanopy(j, dt) {
     const step = Math.max(0, dt) / 0.85;
@@ -2422,7 +3258,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     j.occupied = true;
     j.entryPhase = "closing-seated";
     j.canopyTarget = 0;
-    j.assembly.setCockpitView(true);
+    j.assembly.setCockpitView(inputState.aircraftCameraMode !== "chase");
     inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
     inputState.flightPitchInput = 0; inputState.flightRollInput = 0;
     inputState.flightThrottleTarget = j.throttle;
@@ -2430,7 +3266,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED" : "CANOPY CLOSING // ENGINE READY";
   }
   function enterWarthog() {
-    if (!warthog || warthog.occupied || warthog.nearDistance > 10.5) return;
+    if (!warthog || warthog.occupied || warthog.exploded || ejection.active || warthog.nearDistance > 10.5) return;
     if (warthog.entryPhase === "opening") return;
     warthog.entryPhase = "opening";
     warthog.canopyTarget = 1;
@@ -2458,7 +3294,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   function exitWarthog() {
     if (!warthog || !warthog.occupied || warthog.entryPhase === "exit-opening") return;
     if (warthog.entryPhase !== "seated" && warthog.entryPhase !== "closing-seated") return;
-    if (warthog.airborne || warthog.speed > 3) {
+    if (warthog.airborne || warthog.speed > 3 || Math.abs(warthog.signedSpeed || 0) > 0.6) {
       debugStats.jetMessage = "LAND AND STOP TO EXIT";
       return;
     }
@@ -2472,12 +3308,34 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (!warthog) return false;
     const j = warthog, pos = j.group.position;
     j.nearDistance = Math.hypot(player.pos.x - pos.x, player.pos.z - pos.z);
-    debugStats.jetNear = !j.occupied && j.nearDistance <= 10.5 ? 1 : 0;
+    debugStats.jetNear = !j.occupied && !j.exploded && !ejection.active && j.nearDistance <= 10.5 && Math.abs(player.pos.y - (pos.y + 1.7)) <= 4.5 ? 1 : 0;
     debugStats.jetDistance = Math.round(j.nearDistance * 10) / 10;
     debugStats.jetOccupied = j.occupied ? 1 : 0;
+    if (!debugStats.aircraftComponents) publishAircraftDamage();
+    updateAircraftDebris(dt);
+    if (aircraftProjectilesActive) updateAircraftProjectiles(dt);
     if (inputState.jetAction === "enter") enterWarthog();
     else if (inputState.jetAction === "exit") exitWarthog();
+    else if (inputState.jetAction === "eject") ejectFromWarthog();
     inputState.jetAction = null;
+    const interactKey = inputState.keys.has("KeyE");
+    if (interactKey && !j.interactKeyWasDown) {
+      if (j.occupied && (j.airborne || j.speed > 3)) ejectFromWarthog();
+      else if (j.occupied) exitWarthog();
+      else if (!ejection.active) enterWarthog();
+    }
+    j.interactKeyWasDown = interactKey;
+    const cameraKey = inputState.keys.has("KeyV");
+    if (cameraKey && !j.cameraKeyWasDown && j.occupied) {
+      inputState.aircraftCameraMode = inputState.aircraftCameraMode === "chase" ? "cockpit" : "chase";
+      chaseCameraReady = false;
+    }
+    j.cameraKeyWasDown = cameraKey;
+    debugStats.jetOccupied = j.occupied ? 1 : 0;
+    debugStats.aircraftCameraMode = inputState.aircraftCameraMode;
+    // A stopped wreck is scenery/debris, not a perpetual flight-model job:
+    // only an airborne or still-moving unpiloted airframe falls through.
+    const unpilotedMoving = !j.occupied && (j.airborne || j.velocity.lengthSq() > 0.04);
     if (!j.occupied) {
       if (j.entryPhase === "opening" && j.nearDistance > 13) {
         j.entryPhase = "closing"; j.canopyTarget = 0;
@@ -2485,21 +3343,28 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       animateWarthogCanopy(j, dt);
       if (j.entryPhase === "opening" && j.canopyOpen >= 0.92) seatPlayerInWarthog();
       else if (j.entryPhase === "closing" && j.canopyOpen <= 0.02) j.entryPhase = "parked";
-      j.spool = Math.max(0, j.spool - dt * 0.5);
-      j.assembly.setGearDown(j.gearDown);
-      debugStats.jetSpeedKmh = 0; debugStats.jetAltitudeM = 0;
+      if (!unpilotedMoving) j.spool = Math.max(0, j.spool - dt * 0.5);
+      j.assembly.setGearDown(j.gearDown && j.performance.gearFactor > 0);
+      if (j.assembly.fans) {
+        if (j.assembly.fans[0]) j.assembly.fans[0].rotation.z -= j.spool * j.performance.percentages["engine-port"] * dt * 42;
+        if (j.assembly.fans[1]) j.assembly.fans[1].rotation.z -= j.spool * j.performance.percentages["engine-starboard"] * dt * 41;
+      }
+      if (!unpilotedMoving) {
+        debugStats.jetSpeedKmh = 0; debugStats.jetAltitudeM = 0;
+        debugStats.jetAirborne = 0; debugStats.jetStall = 0;
+      }
       debugStats.jetThrottlePct = Math.round(j.throttle * 100);
-      debugStats.jetAirborne = 0; debugStats.jetStall = 0;
       debugStats.jetCanopyPct = Math.round(j.canopyOpen * 100);
       debugStats.jetEntryPhase = j.entryPhase;
-      debugStats.aircraftName = "A-10C WARTHOG";
+      debugStats.jetCrashed = j.crashed ? 1 : 0;
+      debugStats.aircraftName = j.config.name;
       debugStats.aircraftPitchDeg = Math.round(j.pitch * 180 / Math.PI * 10) / 10;
       debugStats.aircraftRollDeg = Math.round(j.roll * 180 / Math.PI * 10) / 10;
       debugStats.aircraftHeadingDeg = Math.round(((-j.yaw * 180 / Math.PI) % 360 + 360) % 360) % 360;
       debugStats.aircraftVerticalMps = 0;
-      if (j.occupied) {
-        // Fall through in the same frame after seating so the cockpit
-        // camera and HUD appear without a one-frame on-foot flash.
+      if (j.occupied || unpilotedMoving) {
+        // Fall through after seating, and also keep an ejected-from or
+        // damaged aircraft flying/falling after the pilot leaves it.
       } else {
         if (!debugStats.jetMessage) debugStats.jetMessage = j.nearDistance <= 10.5 ? "WARTHOG IN REACH" : "WARTHOG PARKED X18 Z0";
         return false;
@@ -2508,7 +3373,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     animateWarthogCanopy(j, dt);
     if (j.entryPhase === "closing-seated" && j.canopyOpen <= 0.02) j.entryPhase = "seated";
-    if (j.entryPhase === "exit-opening") {
+    if (j.occupied) j.assembly.setCockpitView(inputState.aircraftCameraMode !== "chase");
+    if (j.occupied && j.entryPhase === "exit-opening") {
       j.throttle = 0;
       j.spool = Math.max(0, j.spool - dt);
       j.group.rotation.set(j.pitch, j.yaw, -j.roll);
@@ -2520,9 +3386,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     const k = inputState.keys;
     let throttleDelta = clamp(inputState.jetThrottleDelta || 0, -1, 1);
+    if (!j.occupied) throttleDelta = 0;
     if (k.has("ShiftLeft") || k.has("ShiftRight")) throttleDelta += 1;
     if (k.has("ControlLeft") || k.has("ControlRight")) throttleDelta -= 1;
-    if (inputState.flightThrottleTarget != null && throttleDelta === 0) {
+    if (!j.occupied) throttleDelta = 0;
+    if (j.occupied && inputState.flightThrottleTarget != null && throttleDelta === 0) {
       const target = clamp(inputState.flightThrottleTarget, 0, 1);
       const step = clamp(target - j.throttle, -dt * 1.4, dt * 1.4);
       j.throttle = clamp(j.throttle + step, 0, 1);
@@ -2531,21 +3399,28 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       if (throttleDelta !== 0) inputState.flightThrottleTarget = j.throttle;
     }
     j.spool += (j.throttle - j.spool) * (1 - Math.exp(-dt / 1.05)); // turbofan lag
-    if (j.crashed) { j.throttle = 0; j.spool = Math.max(0, j.spool - dt); }
-    let rawPitchInput = clamp((inputState.flightPitchInput || 0) + inputState.moveY + ((k.has("KeyW") || k.has("ArrowUp")) ? 1 : 0) - ((k.has("KeyS") || k.has("ArrowDown")) ? 1 : 0), -1, 1);
-    let rawRollInput = clamp((inputState.flightRollInput || 0) + inputState.moveX + ((k.has("KeyD") || k.has("ArrowRight")) ? 1 : 0) - ((k.has("KeyA") || k.has("ArrowLeft")) ? 1 : 0), -1, 1);
-    // Cubic-centred, exponentially smoothed stick: tiny thumb sways make
-    // gentle corrections, while a full deliberate throw still reaches the
-    // complete A-10 control authority already modelled below.
+    if (j.crashed || j.exploded) { j.throttle = 0; j.spool = Math.max(0, j.spool - dt); }
+    // Default aircraft scheme (triangles on touch, WASD/arrows on keys):
+    // W/S = pitch, A/D = ground steering on the tyres and roll in the air.
+    // The on-foot MOVE stick is intentionally not mixed in any more.
+    let rawPitchInput = clamp((inputState.flightPitchInput || 0) + ((k.has("KeyW") || k.has("ArrowUp")) ? 1 : 0) - ((k.has("KeyS") || k.has("ArrowDown")) ? 1 : 0), -1, 1);
+    let rawRollInput = clamp((inputState.flightRollInput || 0) + ((k.has("KeyD") || k.has("ArrowRight")) ? 1 : 0) - ((k.has("KeyA") || k.has("ArrowLeft")) ? 1 : 0), -1, 1);
+    if (inputState.flightInvertPitch) rawPitchInput = -rawPitchInput;
+    if (inputState.flightInvertRoll) rawRollInput = -rawRollInput;
+    if (!j.occupied) { rawPitchInput = 0; rawRollInput = 0; }
+    // Cubic-centred, exponentially smoothed command: a short triangle tap
+    // makes a gentle correction, while holding reaches full authority.
     const shapeStick = (v) => v * (0.62 + 0.38 * v * v);
     const stickBlend = 1 - Math.exp(-dt * 6.5);
-    j.controlPitch += (shapeStick(rawPitchInput) - j.controlPitch) * stickBlend;
+    const pitchStickBlend = 1 - Math.exp(-dt * 4.6);
+    j.controlPitch += (shapeStick(rawPitchInput) - j.controlPitch) * pitchStickBlend;
     j.controlRoll += (shapeStick(rawRollInput) - j.controlRoll) * stickBlend;
     if (Math.abs(rawPitchInput) < 0.02 && Math.abs(j.controlPitch) < 0.012) j.controlPitch = 0;
     if (Math.abs(rawRollInput) < 0.02 && Math.abs(j.controlRoll) < 0.012) j.controlRoll = 0;
     let pitchInput = j.controlPitch;
     let rollInput = j.controlRoll;
-    const braking = !!(inputState.jetBrake || k.has("Space"));
+    const braking = !!j.occupied && !!(inputState.jetBrake || k.has("Space"));
+    const perf = j.performance || deriveAircraftPerformance(j.components);
     const weightN = j.massKg * 9.81;
     const substeps = clamp(Math.ceil(dt / (1 / 120)), 1, 6), sdt = dt / substeps;
     let liftN = 0, aoa = 0;
@@ -2556,35 +3431,77 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const speed0 = j.velocity.length();
       const fwdHx = -Math.sin(j.yaw), fwdHz = -Math.cos(j.yaw);
       const rightHx = Math.cos(j.yaw), rightHz = -Math.sin(j.yaw);
-      let pitchTarget;
+      let pitchTarget = j.pitch;
+      const signedSpeed0 = j.velocity.x * fwdHx + j.velocity.z * fwdHz;
+      j.signedSpeed = signedSpeed0;
       if (onGround) {
         const frontY = terrainSurfaceHeight(pos.x + fwdHx * 8, pos.z + fwdHz * 8);
         const backY = terrainSurfaceHeight(pos.x - fwdHx * 8, pos.z - fwdHz * 8);
         const slopePitch = Math.atan2(frontY - backY, 16);
-        pitchTarget = slopePitch + (speed0 > 48 ? pitchInput * 0.21 : 0);
+        // W is rotate-only on the ground: thrust alone just taxis/drives.
+        // Nose authority fades in from 35 m/s; S is brake/reverse below, so
+        // it never spears the nose into the strip.
+        const rotateAuthority = clamp((speed0 - 35) / 15, 0, 1);
+        pitchTarget = slopePitch + (pitchInput > 0 ? pitchInput * 0.22 * rotateAuthority : 0);
         pitchTarget = clamp(pitchTarget, -0.08, 0.26);
         const rightY = terrainSurfaceHeight(pos.x + rightHx * 5, pos.z + rightHz * 5);
         const leftY = terrainSurfaceHeight(pos.x - rightHx * 5, pos.z - rightHz * 5);
         const groundRoll = -Math.atan2(rightY - leftY, 10);
-        j.roll += (groundRoll - j.roll) * (1 - Math.exp(-sdt * 3.2));
-        // Stick roll is only a gentle taxi aid. Nosewheel authority fades
-        // out by 18 m/s so holding a fun diagonal sway during the takeoff
-        // roll cannot steer the jet off the strip like a car.
-        const steeringAuthority = clamp(speed0 / 8, 0, 1) * clamp((18 - speed0) / 8, 0, 1);
-        j.yaw -= rollInput * steeringAuthority * 0.32 * sdt;
+        j.roll += (wrapJetAngle(groundRoll - j.roll)) * (1 - Math.exp(-sdt * 3.2));
+        j.pitchRateVel = 0; j.rollRateVel = 0;
+        // Car-like nosewheel steering: yaw rate follows signed taxi speed
+        // and a steer angle that shrinks as speed rises (so it stays calm
+        // at rotation speed). Reversing flips the turn, like a car.
+        // Practical refinement: full nosewheel lock is a parking-speed
+        // tool. By rotation speed only a few degrees remain, supplemented
+        // by rudder effect, so a held A/D pad cannot slew the jet sideways.
+        const steerAngle = rollInput * clamp(0.58 - Math.abs(signedSpeed0) * 0.011, 0.035, 0.58) * (0.35 + 0.65 * perf.gearFactor);
+        j.groundSteerDeg = Math.round(steerAngle * 180 / Math.PI * 10) / 10;
+        const yawRate = clamp((signedSpeed0 / 10) * Math.tan(steerAngle), -0.42, 0.42);
+        j.yaw = wrapJetAngle(j.yaw - yawRate * sdt);
         if (speed0 > 0.05) {
-          const keep = Math.exp(-sdt * 4.5); // tires reject lateral slide
-          j.velocity.x = j.velocity.x * keep + fwdHx * speed0 * (1 - keep);
-          j.velocity.z = j.velocity.z * keep + fwdHz * speed0 * (1 - keep);
+          const keep = Math.exp(-sdt * 4.5); // tyres reject lateral slide, keep sign for reverse
+          j.velocity.x = j.velocity.x * keep + fwdHx * signedSpeed0 * (1 - keep);
+          j.velocity.z = j.velocity.z * keep + fwdHz * signedSpeed0 * (1 - keep);
         }
+        j.pitch += (pitchTarget - j.pitch) * (1 - Math.exp(-sdt * 3.0));
       } else {
-        pitchTarget = pitchInput * 0.52;
-        if (j.stall) pitchTarget -= 0.18; // nose drops through the stall break
-        const rollTarget = rollInput * 1.13; // 65 degrees
-        j.roll += (rollTarget - j.roll) * (1 - Math.exp(-sdt * 2.4));
-        j.yaw -= (9.81 * Math.tan(j.roll)) / Math.max(speed0, 28) * sdt; // coordinated turn
+        // Practical, easier aerobatics: W/S and A/D command angular
+        // RATES, but those rates now have inertia, dynamic-pressure
+        // authority and component-damage limits. Loops and barrel rolls
+        // still work when the jet has energy; they no longer rotate like
+        // a camera at taxi speed. A stability-augmentation layer damps
+        // rates and only walks wings toward level inside ±66° of bank.
+        const qAuthority = clamp(Math.pow(speed0 / 58, 1.35), 0.12, 1);
+        // Soft alpha limiter: pitch authority fades as AoA approaches the
+        // stall instead of letting a held W spear straight through it.
+        // It never reaches zero, so loops/aerobatics remain possible when
+        // the jet has energy, but ordinary takeoff/climb inputs settle at
+        // a maintainable climb attitude. In a developed stall the nose
+        // drop can finally dominate a held-up input and recover the wing.
+        const aoaForLimit = j.aoaDeg || 0;
+        let alphaFactor = 1;
+        if (pitchInput > 0 && aoaForLimit > 11) alphaFactor = clamp((18 - aoaForLimit) / 7, 0.18, 1);
+        if (pitchInput < 0 && aoaForLimit < -8) alphaFactor = clamp((aoaForLimit + 15) / 7, 0.18, 1);
+        const desiredPitchRate = pitchInput * (j.stall ? 0.42 : 0.56) * qAuthority * perf.pitchAuthority * alphaFactor - (j.stall ? 0.34 * qAuthority : 0);
+        const desiredRollRate = rollInput * 1.65 * qAuthority * perf.rollAuthority + perf.asymmetricRoll * (0.2 + 0.8 * qAuthority);
+        j.pitchRateVel += (desiredPitchRate - j.pitchRateVel) * (1 - Math.exp(-sdt * 4.2));
+        j.rollRateVel += (desiredRollRate - j.rollRateVel) * (1 - Math.exp(-sdt * 5.2));
+        j.pitch = wrapJetAngle(j.pitch + j.pitchRateVel * sdt);
+        j.roll = wrapJetAngle(j.roll + j.rollRateVel * sdt);
+        const wrappedRoll = wrapJetAngle(j.roll);
+        if (Math.abs(pitchInput) < 0.04 && Math.abs(wrappedRoll) < 1.15) {
+          j.pitch = wrapJetAngle(j.pitch + wrapJetAngle(-j.pitch) * (1 - Math.exp(-sdt * 0.1)));
+        }
+        if (Math.abs(rollInput) < 0.04 && Math.abs(wrappedRoll) < 1.15 && Math.abs(perf.asymmetricRoll) < 0.08) {
+          j.roll = wrapJetAngle(j.roll + wrapJetAngle(-j.roll) * (1 - Math.exp(-sdt * 0.55)));
+        }
+        // Banked-turn yaw from the horizontal lift component, plus the
+        // yaw moment of asymmetric engine damage. Sin/cos stays finite
+        // at knife-edge and inverted attitudes (no tan blow-up).
+        j.yaw = wrapJetAngle(j.yaw - (9.81 * Math.sin(j.roll) * Math.cos(j.pitch)) / Math.max(speed0, 28) * sdt + perf.asymmetricYaw * j.spool * sdt);
+        pitchTarget = j.pitch;
       }
-      j.pitch += (pitchTarget - j.pitch) * (1 - Math.exp(-sdt * (onGround ? 3.0 : 1.85)));
       const cp = Math.cos(j.pitch);
       _jetFwd.set(-Math.sin(j.yaw) * cp, Math.sin(j.pitch), -Math.cos(j.yaw) * cp).normalize();
       _jetRight.set(rightHx, 0, rightHz);
@@ -2592,34 +3509,51 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const rolledUp = _v3.copy(_jetUp).multiplyScalar(Math.cos(j.roll)).addScaledVector(_jetRight, Math.sin(j.roll)).normalize();
       const speed = j.velocity.length();
       if (speed > 0.05) _jetDir.copy(j.velocity).multiplyScalar(1 / speed); else _jetDir.copy(_jetFwd);
-      const flightPath = Math.asin(clamp(_jetDir.y, -1, 1));
-      aoa = speed > 1 ? j.pitch - flightPath : 0;
+      // Signed AoA from the velocity in body axes; stays meaningful past
+      // vertical and inverted, where pitch-minus-flight-path breaks down.
+      aoa = speed > 1 ? Math.atan2(-_jetDir.dot(rolledUp), _jetDir.dot(_jetFwd)) : 0;
       const aoaDegAbs = Math.abs(aoa * 180 / Math.PI);
       const stallLimit = aoa >= 0 ? 15 : 12;
       const stallFactor = 1 - clamp((aoaDegAbs - stallLimit) / 12, 0, 0.65);
       j.stall = j.airborne && aoaDegAbs > stallLimit && speed > 5;
       const cl = clamp((0.25 + 5.0 * aoa) * stallFactor, -1.0, 1.5);
-      const cd = 0.024 + 0.052 * cl * cl + (j.gearDown ? 0.018 : 0) + (j.stall ? 0.075 : 0) + Math.max(0, speed - 165) * 0.0011;
+      const groundEffect = altitude < 9 ? 1 + (1 - Math.max(0, altitude) / 9) * 0.13 : 1;
+      const cd = 0.024 + 0.052 * cl * cl + perf.dragBonus + (j.gearDown && perf.gearFactor > 0 ? 0.018 : 0) + (j.stall ? 0.075 : 0) + (!onGround && braking ? 0.09 : 0) + Math.max(0, speed - 165) * 0.0011; // BRK alone is the airbrake; S is elevator in flight
       const rho = 1.225 * Math.exp(-Math.max(0, pos.y) / 8500);
       const q = 0.5 * rho * speed * speed;
-      liftN = q * j.wingAreaM2 * cl;
+      liftN = q * j.wingAreaM2 * cl * perf.liftFactor * groundEffect;
       const dragN = q * j.wingAreaM2 * cd;
-      const thrustN = j.crashed ? 0 : j.maxThrustN * j.spool * (0.72 + 0.28 * (rho / 1.225));
+      const thrustN = j.crashed || j.exploded ? 0 : j.maxThrustN * j.spool * perf.thrustFactor * (0.72 + 0.28 * (rho / 1.225));
       _jetForce.set(0, -weightN, 0)
         .addScaledVector(_jetFwd, thrustN)
         .addScaledVector(rolledUp, liftN)
         .addScaledVector(_jetDir, -dragN);
       if (onGround) {
         const normalN = Math.max(0, weightN - liftN * rolledUp.y - thrustN * _jetFwd.y);
-        const mu = braking ? 0.3 : 0.032;
+        // S on the ground is not "pitch down": it brakes a forward roll,
+        // then becomes a very slow pushback/reverse taxi at low thrust.
+        const reverseHeld = pitchInput < -0.25;
+        const groundBrake = braking || (reverseHeld && signedSpeed0 > 0.3);
+        const mu = perf.gearFactor <= 0 ? 0.46 : (groundBrake ? 0.34 : 0.032 + (1 - perf.gearFactor) * 0.08);
         if (speed > 0.05) {
           _jetForce.addScaledVector(_jetDir, -mu * normalN);
-        } else if (j.throttle < 0.16) {
+        } else if (j.throttle < 0.16 && !reverseHeld) {
           j.velocity.multiplyScalar(Math.max(0, 1 - sdt * 5)); // parking brake
+        }
+        if (!j.crashed && reverseHeld && signedSpeed0 <= 0.3 && j.throttle <= 0.28) {
+          _jetForce.x -= fwdHx * 6500; // pushback tug, not reverse thrust
+          _jetForce.z -= fwdHz * 6500;
         }
       }
       j.velocity.addScaledVector(_jetForce, sdt / j.massKg);
-      if (j.velocity.lengthSq() > 230 * 230) j.velocity.setLength(230);
+      if (onGround) {
+        const signedNow = j.velocity.x * fwdHx + j.velocity.z * fwdHz;
+        if (signedNow < -2.2) { // pushback is deliberately walking pace
+          j.velocity.x += fwdHx * (-2.2 - signedNow);
+          j.velocity.z += fwdHz * (-2.2 - signedNow);
+        }
+      }
+      if (j.velocity.lengthSq() > 205 * 205) j.velocity.setLength(205); // ~738 km/h dive cap around the 706 km/h level spec
       pos.addScaledVector(j.velocity, sdt);
       pos.x = clamp(pos.x, -mapPreset.hardClamp + 25, mapPreset.hardClamp - 25);
       pos.z = clamp(pos.z, -mapPreset.hardClamp + 25, mapPreset.hardClamp - 25);
@@ -2627,20 +3561,49 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       if (pos.y <= groundY + 0.02) {
         const impactVy = j.velocity.y;
         if (j.airborne) {
-          if (impactVy < -7.5 || Math.abs(j.roll) > 0.49 || j.pitch < -0.18) {
+          const impactSpeed = j.velocity.length();
+          const impactKeMJ = aircraftKineticEnergyMJ(j.massKg, impactSpeed);
+          const badAttitude = Math.cos(j.roll) < 0.82 || Math.cos(j.pitch) < 0.72;
+          debugStats.aircraftLastImpactVy = Math.round(impactVy * 10) / 10;
+          debugStats.aircraftLastImpactKmh = Math.round(impactSpeed * 3.6);
+          debugStats.aircraftLastImpactMJ = Math.round(impactKeMJ * 10) / 10;
+          if (impactVy < -13.5 || (badAttitude && impactVy < -4.5) || (j.pitch < -0.5 && impactSpeed > 45)) {
             j.crashed = true; j.throttle = 0;
-            j.velocity.multiplyScalar(0.25);
-            debugStats.jetMessage = "HARD IMPACT // AIRFRAME DAMAGED";
+            j.pendingExplosion = "HIGH-ENERGY GROUND IMPACT // AIRCRAFT EXPLODED";
+            damageAircraft("fuselage", collisionDamageFromEnergy(impactKeMJ * 0.65, impactSpeed), "collision", pos.clone());
+            damageAircraft("gear", 180, "collision", pos.clone());
+            j.velocity.multiplyScalar(0.16);
+          } else if (impactVy < -7 || badAttitude) {
+            const gearDamage = clamp((Math.abs(impactVy) - 4.5) * 11 + impactSpeed * 0.22 + (badAttitude ? 28 : 0), 8, 190);
+            damageAircraft("gear", gearDamage, "collision", pos.clone());
+            damageAircraft("fuselage", gearDamage * 0.38, "collision", pos.clone());
+            if (Math.abs(wrapJetAngle(j.roll)) > 0.34) {
+              damageAircraft(wrapJetAngle(j.roll) > 0 ? "wing-starboard" : "wing-port", gearDamage * 0.72, "collision", pos.clone());
+            }
+            if (impactVy < -10.5 || badAttitude || j.performance.gearFactor <= 0) {
+              j.crashed = true; j.throttle = 0;
+              j.velocity.multiplyScalar(0.42);
+            }
+            debugStats.jetMessage = "HARD LANDING // COMPONENT DAMAGE";
           }
           j.airborne = false;
         }
         pos.y = groundY;
         if (j.velocity.y < 0) j.velocity.y = 0;
         const liftVertical = liftN * rolledUp.y + thrustN * _jetFwd.y;
-        if (!j.crashed && liftVertical > weightN * 1.01 && j.pitch > 0.035 && j.velocity.length() > 42) {
+        // No W, no liftoff: full thrust alone only makes a faster taxi.
+        if (!j.crashed && pitchInput > 0.22 && liftVertical > weightN * 1.01 && j.pitch > 0.035 && j.velocity.length() > 42) {
           j.airborne = true; pos.y = groundY + 0.04;
           j.velocity.y = Math.max(j.velocity.y, 1.1);
         }
+      } else if (!j.airborne && pos.y - groundY < 1.25) {
+        // The gear stays planted over ordinary terrain undulation. A
+        // thrust-only roll does not become a "takeoff" merely because the
+        // ground falls a few centimetres between samples; aerodynamic
+        // liftoff still requires the W rotate gate in the contact branch.
+        // A genuine cliff/major separation beyond 1.25 m does go airborne.
+        pos.y = groundY;
+        if (j.velocity.y < 0 || pitchInput <= 0.22) j.velocity.y = 0;
       } else {
         j.airborne = true;
       }
@@ -2648,13 +3611,58 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       j.verticalSpeed = j.velocity.y;
       j.altitudeAgl = Math.max(0, pos.y - groundY);
     }
+    j.group.rotation.set(j.pitch, j.yaw, -j.roll);
+    collideAircraftWithObstacles();
+    if (j.pendingExplosion && !j.exploded) explodeAircraft(j.pendingExplosion);
+    const burning = !j.exploded && (perf.engineFire || perf.fuselageFire || j.performance.engineFire || j.performance.fuselageFire);
+    if (burning) {
+      if (j.explosionTimer < 0) j.explosionTimer = 14;
+      j.explosionTimer -= dt;
+      j.fireAcc += dt;
+      if (j.fireAcc >= 1) {
+        j.fireAcc = 0;
+        const firePart = j.performance.percentages["engine-port"] < j.performance.percentages["engine-starboard"] ? "engine-port" : "engine-starboard";
+        aircraftPartWorld(j.performance.fuselageFire ? "fuselage" : firePart, _aircraftPoint);
+        damageAircraft(j.performance.fuselageFire ? "fuselage" : firePart, 2.3, "fire", _aircraftPoint.clone());
+      }
+      if (j.explosionTimer <= 0 && !j.exploded) explodeAircraft("UNCONTROLLED FIRE // AIRCRAFT EXPLODED");
+    } else {
+      j.explosionTimer = -1;
+      j.fireAcc = 0;
+    }
+    if (j.occupied) updateAircraftWeapons(dt);
+    if (j.assembly.fans) {
+      if (j.assembly.fans[0]) j.assembly.fans[0].rotation.z -= j.spool * j.performance.percentages["engine-port"] * dt * 42;
+      if (j.assembly.fans[1]) j.assembly.fans[1].rotation.z -= j.spool * j.performance.percentages["engine-starboard"] * dt * 41;
+    }
+    j.engineGlows.forEach((glow, index) => {
+      const pct = j.performance.percentages[index === 0 ? "engine-port" : "engine-starboard"];
+      const level = j.exploded ? 0 : j.spool * pct;
+      glow.visible = level > 0.035;
+      glow.material.opacity = level * 0.5;
+      glow.scale.set(0.72, 0.72, 1.55 + j.spool * 0.8 + Math.sin(elapsed * 31 + index * 2.1) * 0.08);
+    });
+    if (j.fireMesh) {
+      const showFire = burning || j.exploded;
+      j.fireMesh.visible = showFire;
+      if (showFire) {
+        const portPct = j.performance.percentages["engine-port"];
+        const starboardPct = j.performance.percentages["engine-starboard"];
+        j.fireMesh.position.set(portPct < starboardPct ? -1.8 : 1.8, 3.6, j.performance.fuselageFire || j.exploded ? 1.6 : 3.6);
+        const flicker = 0.92 + Math.sin(elapsed * 27) * 0.13 + Math.sin(elapsed * 61) * 0.06;
+        j.fireMesh.scale.set(1.1 * flicker, 0.72 * flicker, (j.exploded ? 3.4 : 2.1) * flicker);
+        j.fireMesh.material.opacity = j.exploded ? 0.62 : 0.42;
+      }
+    }
     if (j.airborne && j.altitudeAgl > 14) j.gearDown = false;
     if (!j.airborne || j.altitudeAgl < 28 || j.speed < 78) j.gearDown = true;
+    if (j.performance.gearFactor <= 0) j.gearDown = false;
     j.assembly.setGearDown(j.gearDown);
     j.group.rotation.set(j.pitch, j.yaw, -j.roll);
     if (j.elevator) j.elevator.rotation.x = -pitchInput * 0.32;
     if (j.aileronL) j.aileronL.rotation.x = rollInput * 0.3;
     if (j.aileronR) j.aileronR.rotation.x = -rollInput * 0.3;
+    j.signedSpeed = j.velocity.x * -Math.sin(j.yaw) + j.velocity.z * -Math.cos(j.yaw);
     j.aoaDeg = Math.round(aoa * 180 / Math.PI * 10) / 10;
     debugStats.jetSpeedKmh = Math.round(j.speed * 3.6);
     debugStats.jetAltitudeM = Math.round(j.altitudeAgl * 10) / 10;
@@ -2667,7 +3675,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.jetAoaDeg = j.aoaDeg;
     debugStats.jetVerticalMps = Math.round(j.verticalSpeed * 10) / 10;
     debugStats.jetLoadG = Math.round((liftN / weightN) * 100) / 100;
-    debugStats.jetCanExit = !j.airborne && j.speed <= 3 ? 1 : 0;
+    debugStats.jetCanExit = !j.airborne && j.speed <= 3 && Math.abs(j.signedSpeed) <= 0.6 ? 1 : 0;
     debugStats.jetCanopyPct = Math.round(j.canopyOpen * 100);
     debugStats.jetEntryPhase = j.entryPhase;
     // Generic aircraft telemetry: future airframes can publish these same
@@ -2679,12 +3687,60 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.aircraftVerticalMps = debugStats.jetVerticalMps;
     debugStats.aircraftControlPitch = Math.round(j.controlPitch * 100) / 100;
     debugStats.aircraftControlRoll = Math.round(j.controlRoll * 100) / 100;
-    debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
-      : j.stall ? "STALL // LOWER THE NOSE"
-      : j.airborne ? "AIRBORNE"
-      : j.speed > 42 ? "ROTATE // PULL GENTLY UP"
-      : j.speed > 3 ? "TAKEOFF ROLL" : "ENGINE READY // THR +";
-    return true;
+    debugStats.jetSignedSpeedKmh = Math.round(j.signedSpeed * 3.6);
+    debugStats.jetSteerDeg = j.groundSteerDeg;
+    debugStats.jetGroundMode = j.airborne ? "AIR" : (j.signedSpeed < -0.3 ? "REVERSE" : "TAXI");
+    debugStats.aircraftMode = debugStats.jetGroundMode;
+    debugStats.flightInvertPitch = inputState.flightInvertPitch ? 1 : 0;
+    debugStats.flightInvertRoll = inputState.flightInvertRoll ? 1 : 0;
+    debugStats.aircraftCameraMode = inputState.aircraftCameraMode;
+    debugStats.aircraftHasGun = j.config.weapons.gun && j.config.weapons.gun.installed ? 1 : 0;
+    debugStats.aircraftGunName = j.config.weapons.gun ? j.config.weapons.gun.name : "NO GUN";
+    debugStats.aircraftGunAmmo = Math.max(0, Math.round(j.gunAmmo));
+    debugStats.aircraftGunOperational = j.performance.gunOperational ? 1 : 0;
+    debugStats.aircraftHasMissiles = j.config.weapons.missiles && j.config.weapons.missiles.installed ? 1 : 0;
+    debugStats.aircraftMissileName = j.config.weapons.missiles ? j.config.weapons.missiles.name : "NO MISSILES";
+    debugStats.aircraftMissiles = Math.max(0, j.missilesLeft);
+    debugStats.aircraftMissilesOperational = j.performance.storesOperational ? 1 : 0;
+    debugStats.aircraftCannonShots = j.cannonShots;
+    debugStats.aircraftKineticMJ = Math.round(aircraftKineticEnergyMJ(j.massKg, j.speed) * 10) / 10;
+    debugStats.aircraftFire = burning ? 1 : 0;
+    debugStats.aircraftExplosionTimer = j.explosionTimer < 0 ? -1 : Math.round(j.explosionTimer * 10) / 10;
+    debugStats.aircraftExploded = j.exploded ? 1 : 0;
+    debugStats.ejectionActive = ejection.active ? 1 : 0;
+    const worstComponent = worstAircraftComponent(j.components);
+    const advisory = aircraftAdvisoryFor({
+      exploded: j.exploded,
+      ejectAdvised: j.occupied && j.explosionTimer >= 0 && j.explosionTimer < 5,
+      engineFire: j.performance.engineFire,
+      fuselageFire: j.performance.fuselageFire,
+      stall: j.stall,
+      airborne: j.airborne,
+      altitudeAgl: j.altitudeAgl,
+      verticalSpeed: j.verticalSpeed,
+      speed: j.speed,
+      worstComponentPct: worstComponent.pct,
+      worstComponentLabel: worstComponent.label,
+      gunAmmo: j.gunAmmo,
+      hasGun: !!j.config.weapons.gun,
+      missileAway: false,
+    });
+    if (advisory.text !== j.advisory) {
+      j.advisory = advisory.text;
+      j.advisoryLevel = advisory.level;
+      if (j.occupied && hooks.onAircraftAdvisory) hooks.onAircraftAdvisory(advisory);
+    }
+    debugStats.aircraftAdvisory = advisory.text;
+    debugStats.aircraftAdvisoryLevel = advisory.level;
+    debugStats.jetMessage = j.exploded ? "AIRCRAFT DESTROYED" : advisory.level === "warning" ? advisory.text : j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
+      : j.stall ? "STALL // S = NOSE DOWN"
+      : j.airborne ? (braking ? "AIRBORNE // AIRBRAKE" : "AIRBORNE // FREE PITCH + ROLL")
+      : j.signedSpeed < -0.3 ? "REVERSE TAXI // VERY SLOW"
+      : j.speed > 38 ? (pitchInput > 0.22 ? "ROTATE // W HELD" : "HOLD W ▲ TO TAKE OFF")
+      : j.speed > 1 ? "TAXI // A-D STEER · S BRAKE/REVERSE"
+      : j.throttle > 0.03 ? "THRUST SET // TAXI WHEN READY" : "SET THRUST SLIDER // ENGINE IDLE";
+    debugStats.jetOccupied = j.occupied ? 1 : 0;
+    return j.occupied;
   }
 
   function snapToPlayerCamera() {
@@ -2723,6 +3779,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const raycaster = new THREE.Raycaster();
   raycaster.far = 700;
   const _muzzleWorld = new THREE.Vector3(), _far = new THREE.Vector3();
+  const _aircraftRayCenter = new THREE.Vector3(), _aircraftRayTmp = new THREE.Vector3();
   const _center2 = new THREE.Vector2(0, 0);
   const _shootTargets = [];
   function reload() {
@@ -2730,7 +3787,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.reloadT = player.reloadDur;
   }
   function shoot() {
-    if (!playing) return;
+    if (!playing || (warthog && warthog.occupied) || ejection.active) return;
     player.recoil = 1;
     player.shotsFired += 1;
     player.lastShotAt = performance.now() / 1000;
@@ -2758,6 +3815,26 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     targets.length = 0;
     for (const mesh of terrainMeshes) if (mesh.visible) targets.push(mesh);
     for (const d of drones) if (d.alive && d.group.visible) targets.push(d.body);
+    let aircraftRaycastTargets = 0;
+    if (warthog && !warthog.occupied) {
+      // Broadphase first: ordinary terrain/drone shots never pay for a
+      // detailed inspection of the supplied airframe. Only a ray passing
+      // through the aircraft's 12m bounding sphere considers its meshes.
+      _aircraftRayCenter.copy(warthog.group.position);
+      _aircraftRayCenter.y += 2.6;
+      _aircraftRayTmp.subVectors(_aircraftRayCenter, raycaster.ray.origin);
+      const alongRay = _aircraftRayTmp.dot(raycaster.ray.direction);
+      const closest2 = _aircraftRayTmp.lengthSq() - alongRay * alongRay;
+      if (alongRay > -12 && closest2 <= 144) {
+        for (const mesh of warthog.hitMeshes) {
+          if (!mesh.visible) continue;
+          const partId = mesh.userData.aircraftPartId || aircraftPartIdForObject(mesh);
+          if (partId === "gear" && !warthog.gearDown) continue;
+          if (!warthog.detached.has(partId)) { targets.push(mesh); aircraftRaycastTargets++; }
+        }
+      }
+    }
+    debugStats.aircraftRaycastTargets = aircraftRaycastTargets;
     const hits = raycaster.intersectObjects(targets, false);
     muzzle.getWorldPosition(_muzzleWorld);
     if (hits.length) {
@@ -2770,12 +3847,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (drones[di].body === hit.object) { drone = drones[di]; break; }
       }
       if (drone && drone.alive) {
-        drone.alive = false;
-        drone.landed = false;
-        drone.vy = 0;
-        drone.respawnAt = performance.now() / 1000 + 9;
-        drone.eye.material.color.set(0x3a1512);
-        if (hooks.onDroneDown) hooks.onDroneDown();
+        killDrone(drone);
+      } else if (warthog && warthog.hitMeshSet.has(hit.object)) {
+        const partId = hit.object.userData.aircraftPartId || aircraftPartIdForObject(hit.object);
+        const weaponDamage = inputState.weaponId === "dmr7" ? 11 : inputState.weaponId === "vp70" ? 3 : 5;
+        debugStats.lastShotAircraftPart = partId;
+        damageAircraft(partId, weaponDamage, "gun", hit.point.clone());
       }
     } else {
       raycaster.ray.at(320, _far);
@@ -2788,9 +3865,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // even when a menu button/slider still has focus, when an IME or a
   // non-US layout reports an unfamiliar code, or when the game runs in a
   // preview iframe that only just received focus.
-  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyC", "ControlLeft", "ControlRight"];
+  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyC", "KeyE", "KeyF", "KeyG", "KeyV", "ControlLeft", "ControlRight"];
   const KEY_FALLBACK = {
-    w: "KeyW", a: "KeyA", s: "KeyS", d: "KeyD", c: "KeyC",
+    w: "KeyW", a: "KeyA", s: "KeyS", d: "KeyD", c: "KeyC", e: "KeyE", f: "KeyF", g: "KeyG", v: "KeyV",
     arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
     " ": "Space", spacebar: "Space", shift: "ShiftLeft", control: "ControlLeft",
   };
@@ -2903,13 +3980,31 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
   function updatePlayer(dt) {
     if (updateWarthog(dt)) {
-      // Cockpit seat: the airframe owns position, velocity and camera until
-      // the player lands, stops and exits beside it.
+      // The airframe owns the pilot's physical position in both camera
+      // modes. COCKPIT is the pack eye point; CHASE is a damped external
+      // third-person camera toggled from the top-corner aircraft button.
       _v3.set(0, 4.01, -2.95); // pack eye point (model Y 1.65/Z 2.95 + gear offset), 180° yaw
       warthog.group.localToWorld(_v3);
-      camera.position.copy(_v3);
-      camera.quaternion.copy(warthog.group.quaternion);
       player.pos.copy(_v3);
+      if (inputState.aircraftCameraMode === "chase") {
+        // Frame the whole airframe just below screen centre rather than
+        // dropping the tail behind the bottom console.
+        _v3.set(0, 5.2, 17.5);
+        warthog.group.localToWorld(_v3);
+        if (!chaseCameraReady) { _chasePos.copy(_v3); chaseCameraReady = true; }
+        _chasePos.lerp(_v3, 1 - Math.exp(-dt * 7.5));
+        camera.position.copy(_chasePos);
+        _v2.set(0, 1, 0).applyQuaternion(warthog.group.quaternion).normalize();
+        camera.up.copy(_v2);
+        _v3.set(0, -1.0, -4);
+        warthog.group.localToWorld(_v3);
+        camera.lookAt(_v3);
+      } else {
+        chaseCameraReady = false;
+        camera.up.set(0, 1, 0);
+        camera.position.copy(player.pos);
+        camera.quaternion.copy(warthog.group.quaternion);
+      }
       player.vel.copy(warthog.velocity);
       player.yaw = warthog.yaw;
       player.pitch = warthog.pitch;
@@ -2921,6 +4016,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       debugStats.speed = Math.round(warthog.speed * 10) / 10;
       return;
     }
+    if (ejection.active) {
+      updateEjection(dt);
+      return;
+    }
+    camera.up.set(0, 1, 0);
     // Weapon swap queued by tapping a HUD gun slot: lower + draw animation,
     // and ADS always drops while a new gun is coming up.
     if (inputState.weaponSwap) {
@@ -3813,7 +4913,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     resetPhysics(safe.x, safe.y, safe.z);
   }
   function safetySweep(dt) {
-    if (playing && !(warthog && warthog.occupied)) {
+    if (playing && !(warthog && warthog.occupied) && !ejection.active) {
       const feetY = physBuf[1];
       const groundY = groundHeightWithBridge(player.pos.x, player.pos.z);
       const bad = !Number.isFinite(feetY) || !Number.isFinite(player.pos.x) || !Number.isFinite(player.pos.z)
@@ -3985,6 +5085,19 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       _ambience.day = daylight;
       _ambience.night = nightness;
       hooks.onAmbience(_ambience);
+      if (hooks.onEngine && warthog) {
+        const distance = camera.position.distanceTo(warthog.group.position);
+        const engineDamage = 1 - Math.min(
+          warthog.performance.percentages["engine-port"],
+          warthog.performance.percentages["engine-starboard"]
+        );
+        hooks.onEngine({
+          spool: warthog.exploded ? 0 : warthog.spool,
+          load: warthog.throttle,
+          level: !playing ? 0 : (warthog.occupied ? 1 : clamp(1 - distance / 240, 0, 0.82)),
+          damaged: engineDamage,
+        });
+      }
     }
   }
 
@@ -3994,6 +5107,21 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     frameSerial++;
     const dt = Math.min(clock.getDelta(), 0.05);
     elapsed += dt;
+    if (worldControl.resetAircraft) {
+      worldControl.resetAircraft = false;
+      resetAircraftToSpawn();
+    }
+    if (worldControl.aircraftDamage) {
+      const request = worldControl.aircraftDamage;
+      worldControl.aircraftDamage = null;
+      damageAircraft(request.part || "fuselage", request.amount || 0, request.source || "external", request.point || null);
+    }
+    if (worldControl.explodeAt) {
+      const request = worldControl.explodeAt;
+      worldControl.explodeAt = null;
+      _v1.set(request.x || 0, request.y || 0, request.z || 0);
+      explodeAt(_v1.clone(), request.radius || 16, request.power || 160, request.source || "explosive", request.options || {});
+    }
     if (worldControl.teleport) {
       const tp = worldControl.teleport;
       worldControl.teleport = null;
@@ -4037,8 +5165,19 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     pushHud();
     scatterCullAcc += dt;
     if (scatterCullAcc >= 0.2) {
-      scatterCullAcc = 0;
-      refreshScatterCulling();
+      const scatterDx = camera.position.x - lastScatterX;
+      const scatterDz = camera.position.z - lastScatterZ;
+      const scatterMoved2 = scatterDx * scatterDx + scatterDz * scatterDz;
+      const scatterDue = scatterForce || scatterMoved2 > (playing ? 6.25 : 25) || elapsed - lastScatterAt > 1.2;
+      if (scatterDue) {
+        scatterCullAcc = 0;
+        lastScatterAt = elapsed;
+        scatterForce = false;
+        refreshScatterCulling();
+      } else {
+        scatterCullAcc = 0.16;
+        debugStats.scatterSkips = (debugStats.scatterSkips || 0) + 1;
+      }
     }
     chunkStreamAcc += dt;
     if (chunkStreamAcc >= 0.25) {
@@ -4046,8 +5185,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       updateChunkStreaming();
     }
     // Time-sliced chunk work remains capped so terrain streaming does
-    // not hitch movement.
-    pumpChunkJobs(3.5);
+    // not hitch movement. Live play gets a smaller slice under load;
+    // title/menu preload can spend more without affecting controls.
+    pumpChunkJobs(playing ? (debugStats.frameMs > 22 ? 1.4 : 2.6) : 4.5);
     pumpBvh();
     const renderStart = frameProfile.enabled ? performance.now() : 0;
     renderer.render(scene, camera);
@@ -4109,13 +5249,42 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (window.visualViewport) window.visualViewport.removeEventListener("resize", onResize);
     for (const t of resizeTimers) clearTimeout(t);
     resizeTimers = [];
+    // Shared geometries/materials/textures are deduped before disposal:
+    // map switches recreate the world on the same canvas, so leaked
+    // CanvasTextures/PMREM targets would otherwise survive each rebuild.
+    const disposedGeometries = new Set();
+    const disposedMaterials = new Set();
+    const disposedTextures = new Set();
+    const collectTexture = (value) => {
+      if (value && value.isTexture && !disposedTextures.has(value)) disposedTextures.add(value);
+    };
     scene.traverse((obj) => {
-      if (obj.geometry) {
+      if (obj.geometry && !disposedGeometries.has(obj.geometry)) {
+        disposedGeometries.add(obj.geometry);
         if (obj.geometry.disposeBoundsTree) obj.geometry.disposeBoundsTree();
         obj.geometry.dispose();
       }
-      if (obj.material) (Array.isArray(obj.material) ? obj.material : [obj.material]).forEach((m) => m.dispose());
+      if (!obj.material) return;
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const material of materials) {
+        if (!material || disposedMaterials.has(material)) continue;
+        disposedMaterials.add(material);
+        for (const value of Object.values(material)) collectTexture(value);
+        if (material.uniforms) {
+          for (const uniform of Object.values(material.uniforms)) collectTexture(uniform && uniform.value);
+        }
+        material.dispose();
+      }
     });
+    for (const texture of disposedTextures) texture.dispose();
+    scene.clear();
+    terrainChunks.clear();
+    terrainMeshes.length = 0;
+    chunkJobs.clear();
+    chunkQueue.length = 0;
+    bvhQueue.length = 0;
+    workerPending.clear();
+    if (renderer.renderLists && renderer.renderLists.dispose) renderer.renderLists.dispose();
     renderer.dispose();
   }
 

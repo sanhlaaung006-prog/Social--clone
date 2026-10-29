@@ -14,6 +14,10 @@ let noiseBuffer = null;
 let ambience = { water: 0, day: 1, night: 0 };
 let windGain = null;
 let riverGain = null;
+let engineGain = null;
+let engineFilter = null;
+let engineOsc = null;
+let engineWaveGain = null;
 let schedulerOn = false;
 let gunBuffer = null; // decoded recorded gunshot (null = synth fallback)
 let gunLoadTried = false;
@@ -142,6 +146,29 @@ function startLoops() {
   babble.connect(babbleAmt).connect(rf.frequency);
   river.connect(rf).connect(rf2).connect(riverGain).connect(master);
   river.start(); babble.start();
+  // Living turbofan loop: broadband fan noise plus a low mechanical tone.
+  // A fast wave LFO continuously bends the filter so the engine surges and
+  // breathes instead of sounding like a static noise loop; damage widens
+  // that wave in setEngine().
+  const engineNoise = noiseSource();
+  engineFilter = ctx.createBiquadFilter();
+  engineFilter.type = "bandpass"; engineFilter.frequency.value = 320; engineFilter.Q.value = 0.55;
+  const engineLowpass = ctx.createBiquadFilter();
+  engineLowpass.type = "lowpass"; engineLowpass.frequency.value = 3600;
+  engineGain = ctx.createGain(); engineGain.gain.value = 0;
+  engineNoise.connect(engineFilter).connect(engineLowpass).connect(engineGain).connect(master);
+  engineNoise.start();
+  engineOsc = ctx.createOscillator();
+  engineOsc.type = "sawtooth"; engineOsc.frequency.value = 44;
+  const engineOscFilter = ctx.createBiquadFilter();
+  engineOscFilter.type = "lowpass"; engineOscFilter.frequency.value = 420;
+  const engineOscGain = ctx.createGain(); engineOscGain.gain.value = 0.32;
+  engineOsc.connect(engineOscFilter).connect(engineOscGain).connect(engineGain);
+  engineOsc.start();
+  const engineWave = ctx.createOscillator(); engineWave.frequency.value = 4.7;
+  engineWaveGain = ctx.createGain(); engineWaveGain.gain.value = 45;
+  engineWave.connect(engineWaveGain).connect(engineFilter.frequency);
+  engineWave.start();
   startScheduler();
 }
 
@@ -186,6 +213,60 @@ export const sfx = {
     if (ensure() && windGain) {
       windGain.gain.setTargetAtTime(0.04 + ambience.night * 0.02, ctx.currentTime, 0.5);
     }
+  },
+  setEngine(next = {}) {
+    if (!ensure() || !engineGain || !engineFilter || !engineOsc) return;
+    const spool = Math.max(0, Math.min(1, next.spool || 0));
+    const level = Math.max(0, Math.min(1, next.level == null ? 1 : next.level));
+    const load = Math.max(0, Math.min(1.5, next.load || 0));
+    const damaged = Math.max(0, Math.min(1, next.damaged || 0));
+    const t = ctx.currentTime;
+    const gain = level <= 0.01 || spool <= 0.015 ? 0 : level * (0.035 + spool * 0.22 + damaged * 0.025);
+    engineGain.gain.setTargetAtTime(gain, t, 0.12);
+    engineFilter.frequency.setTargetAtTime(260 + spool * 1850 + load * 180, t, 0.16);
+    engineFilter.Q.setTargetAtTime(0.5 + damaged * 0.9, t, 0.2);
+    engineOsc.frequency.setTargetAtTime(42 + spool * 96 + Math.sin(t * 2.3) * (1.5 + damaged * 7), t, 0.12);
+    if (engineWaveGain) engineWaveGain.gain.setTargetAtTime(35 + spool * 150 + damaged * 420, t, 0.2);
+  },
+  aircraftCannon() {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    noiseBurst({ t0, dur: 0.11, type: "lowpass", from: 2100, to: 160, q: 0.45, peak: 0.62 });
+    tone({ t0, dur: 0.09, type: "square", from: 92, to: 36, peak: 0.32 });
+  },
+  missileLaunch() {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    noiseBurst({ t0, dur: 0.85, type: "bandpass", from: 320, to: 2600, q: 0.75, peak: 0.34 });
+    noiseBurst({ t0, dur: 0.28, type: "lowpass", from: 900, to: 180, q: 0.6, peak: 0.42 });
+  },
+  explosion(size = 1) {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    const k = Math.max(0.35, Math.min(1.6, size));
+    noiseBurst({ t0, dur: 1.05 * k, type: "lowpass", from: 1100, to: 42, q: 0.38, peak: 0.95 });
+    noiseBurst({ t0, dur: 0.22, type: "highpass", from: 2600, peak: 0.28 });
+    tone({ t0, dur: 0.75 * k, type: "sine", from: 96, to: 24, peak: 0.52 });
+  },
+  aircraftHit() {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    noiseBurst({ t0, dur: 0.08, type: "bandpass", from: 1800 + Math.random() * 900, q: 3.2, peak: 0.22 });
+    tone({ t0, dur: 0.055, type: "square", from: 310, to: 150, peak: 0.08 });
+  },
+  warning(urgent = false) {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    const count = urgent ? 3 : 2;
+    for (let i = 0; i < count; i++) {
+      tone({ t0: t0 + i * 0.16, dur: 0.105, type: "square", from: urgent ? 980 : 760, to: urgent ? 720 : 620, peak: urgent ? 0.13 : 0.085 });
+    }
+  },
+  eject() {
+    if (!ensure()) return;
+    const t0 = ctx.currentTime;
+    noiseBurst({ t0, dur: 0.5, type: "bandpass", from: 420, to: 3100, q: 0.8, peak: 0.42 });
+    tone({ t0, dur: 0.32, type: "sawtooth", from: 180, to: 920, peak: 0.12 });
   },
   click() {
     if (!ensure()) return;
