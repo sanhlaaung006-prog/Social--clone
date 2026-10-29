@@ -8,8 +8,8 @@ A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
 <http://localhost:8000>. The start world is a real-time 3D first-person
 terrain (procedurally generated Karst-9 ridges, the relay-station objective,
 hostile hover drones) — **WASD + drag-aim** on desktop, floating **MOVE /
-AIM thumbsticks + FIRE button** on touch devices. A 4-minute day/night
-cycle (sun, moon, stars, spiral galaxies — `T` skips +3h, `?phase=0.75`
+AIM thumbsticks + FIRE button** on touch devices. A realistic day/night cycle (20-minute day,
+10-minute night; sun, moon, stars, spiral galaxies — `T` skips +3h, `?phase=0.75`
 starts at midnight) plays over a river-carved valley with a plank bridge,
 and everything is sonified with synthesized WebAudio SFX: gunshots, UI
 clicks, grass/water footsteps, river, birdsong, crickets, wind (`M` mutes).

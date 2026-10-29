@@ -850,8 +850,9 @@ export function createWorld(canvas, hooks = {}) {
   }
 
 
-  // ----- day/night cycle (4-minute loop; T key skips +3h; ?phase= sets start) -----
-  const DAY_LENGTH = 240;
+  // ----- day/night cycle (20-min day / 10-min night; T skips +3h; ?phase= sets start) -----
+  const DAY_SECONDS = 1200; // 20-minute day
+  const NIGHT_SECONDS = 600; // 10-minute night
   let cycleT = (() => {
     try {
       const p = parseFloat(new URLSearchParams(window.location.search).get("phase"));
@@ -872,7 +873,9 @@ export function createWorld(canvas, hooks = {}) {
       inputState.timeSkip = false;
       cycleT = (cycleT + 0.125) % 1;
     }
-    cycleT = (cycleT + dt / DAY_LENGTH) % 1;
+    // Sun-up half (cycleT 0..0.5) lasts DAY_SECONDS, night half NIGHT_SECONDS.
+    const seg = cycleT < 0.5 ? DAY_SECONDS : NIGHT_SECONDS;
+    cycleT = (cycleT + (dt * 0.5) / seg) % 1;
     const th = cycleT * Math.PI * 2;
     const elev = Math.sin(th);
     const daylight = smoothstep(-0.06, 0.28, elev);
