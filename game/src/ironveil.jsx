@@ -1,6 +1,7 @@
     import React, { useEffect, useState } from "react";
     import { createRoot } from "react-dom/client";
     import { create } from "zustand";
+    import { createWorld, inputState } from "./world.js";
 
     // === [UI: ZUSTAND_STORE] ===
     const ITEMS = {
@@ -112,6 +113,8 @@
       reserveAmmo: 120,
       magazineSize: 30,
       heading: 34,
+      objectiveDistance: 264,
+      objectiveBearing: 34,
       inventory: makeInventory(),
       isMenuOpen: true,
 
@@ -258,45 +261,34 @@
       return <>{faction === FACTION_A ? "VANGUARD" : "CINDER"}</>;
     });
 
-    const Scene = React.memo(function Scene() {
+    // === [WORLD: THREE_TERRAIN / REACT BRIDGE] ===
+    const WorldScene = React.memo(function WorldScene() {
+      const canvasRef = React.useRef(null);
+      const apiRef = React.useRef(null);
+      const hasStarted = useGameStore((state) => state.hasStarted);
+      const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+
+      useEffect(() => {
+        const api = createWorld(canvasRef.current, {
+          onHeading: (deg) => gameStore.setState({ heading: deg }),
+          onObjective: (dist, bearing) => gameStore.setState({ objectiveDistance: dist, objectiveBearing: bearing }),
+          onDroneDown: () => gameStore.getState().notify("HOSTILE DRONE DOWN // SECTOR SWEEP +1"),
+        });
+        apiRef.current = api;
+        const unsubscribe = gameStore.subscribe((state, prev) => {
+          if (state.shots > prev.shots) api.shoot();
+        });
+        return () => { unsubscribe(); api.dispose(); apiRef.current = null; };
+      }, []);
+
+      useEffect(() => {
+        if (apiRef.current) apiRef.current.setPlaying(hasStarted && !isMenuOpen);
+      }, [hasStarted, isMenuOpen]);
+
       return (
-        <div className="scene" aria-hidden="true">
-          <div className="scene-photo" />
-          <div className="scene-tint" />
-          <svg className="scene-ridge" viewBox="0 0 1440 430" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="ridgeBack" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#172117" stopOpacity=".82" />
-                <stop offset="100%" stopColor="#070b07" stopOpacity=".98" />
-              </linearGradient>
-              <linearGradient id="ridgeFront" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#0e160f" stopOpacity=".92" />
-                <stop offset="100%" stopColor="#050805" />
-              </linearGradient>
-            </defs>
-            <polygon points="0,430 0,278 92,246 168,272 261,202 338,241 430,174 522,223 638,158 744,208 854,145 947,199 1056,152 1158,216 1264,182 1360,232 1440,206 1440,430" fill="url(#ridgeBack)" />
-            <polygon points="0,430 0,342 97,319 178,339 284,283 366,313 486,251 602,300 707,238 818,281 929,241 1042,303 1134,277 1231,325 1341,297 1440,342 1440,430" fill="url(#ridgeFront)" />
-            <polyline points="0,342 97,319 178,339 284,283 366,313 486,251 602,300 707,238 818,281 929,241 1042,303 1134,277 1231,325 1341,297 1440,342" fill="none" stroke="rgba(200,244,92,.19)" strokeWidth="1" />
-            <polyline points="0,278 92,246 168,272 261,202 338,241 430,174 522,223 638,158 744,208 854,145 947,199 1056,152 1158,216 1264,182 1360,232 1440,206" fill="none" stroke="rgba(197,214,186,.1)" strokeWidth="1" />
-            <g fill="none" stroke="rgba(197,214,186,.08)" strokeWidth=".7">
-              <path d="M0 390 L140 355 L256 374 L401 321 L540 352 L684 294 L813 331 L970 286 L1094 324 L1231 294 L1440 347" />
-              <path d="M0 408 L156 377 L301 396 L457 347 L592 382 L752 323 L884 363 L1039 319 L1170 365 L1317 330 L1440 374" />
-            </g>
-            <g opacity=".55">
-              <line x1="854" y1="145" x2="854" y2="65" stroke="rgba(200,217,192,.25)" strokeWidth="1" />
-              <line x1="844" y1="65" x2="864" y2="65" stroke="rgba(200,244,92,.45)" strokeWidth="1" />
-              <line x1="834" y1="77" x2="874" y2="77" stroke="rgba(200,244,92,.2)" strokeWidth="1" />
-              <circle cx="854" cy="145" r="2" fill="rgba(200,244,92,.8)" />
-              <circle cx="854" cy="145" r="9" fill="none" stroke="rgba(200,244,92,.25)" strokeWidth=".7" />
-            </g>
-          </svg>
-          <div className="scene-ring" />
-          <div className="scene-noise" />
-          <div className="scene-scan" />
-          <div className="scene-rail left" />
-          <div className="scene-rail right" />
-          <span className="scene-coords">41.9028 N / 12.4964 E · KARST-9 FIELD FEED · ENCRYPTED</span>
-          <span className="scene-tag">FIELD FEED 04-C<br />SIGNAL ENCRYPTED / 24MS</span>
+        <div className="world" aria-hidden="true">
+          <canvas ref={canvasRef} />
+          <div className="world-grade" />
         </div>
       );
     });
@@ -467,8 +459,21 @@
       );
     });
 
+    const ObjectiveLabel = React.memo(function ObjectiveLabel() {
+      const dist = useGameStore((state) => state.objectiveDistance);
+      const bearing = useGameStore((state) => state.objectiveBearing);
+      return (
+        <div className="hud-radar-label">
+          <b>RELAY STATION</b>
+          <span>{dist} M / {String(bearing).padStart(3, "0")}°</span>
+          <span>{dist <= 16 ? "AT OBJECTIVE" : "HOLDING POSITION"}</span>
+        </div>
+      );
+    });
+
     const Crosshair = React.memo(function Crosshair() {
       const shots = useGameStore((state) => state.shots);
+      const objectiveDistance = useGameStore((state) => state.objectiveDistance);
       const [firing, setFiring] = useState(false);
 
       useEffect(() => {
@@ -490,7 +495,7 @@
           <span className="ch-corner b" />
           <span className="ch-corner c" />
           <span className="ch-corner d" />
-          <span className="ch-range">ENGAGE / 240M</span>
+          <span className="ch-range">ENGAGE / {objectiveDistance}M</span>
         </div>
       );
     });
@@ -520,16 +525,14 @@
             <HudPauseButton />
           </div>
           <Crosshair />
-          <div className="hud-radar-label">
-            <b>RELAY STATION</b>
-            <span>240 M / 034°</span>
-            <span>HOLDING POSITION</span>
-          </div>
+          <ObjectiveLabel />
           <div className="hud-bottom">
             <Vitals />
             <AmmoPanel />
           </div>
           <div className="hud-hints" aria-hidden="true">
+            <span><kbd>WASD</kbd> MOVE</span>
+            <span><kbd>DRAG</kbd> AIM</span>
             <span><kbd>TAP</kbd> FIRE</span>
             <span><kbd>R</kbd> RELOAD</span>
             <span><kbd>ESC</kbd> COMMAND</span>
@@ -1077,7 +1080,9 @@
                       <div className="intel-head"><span>MISSION BRIEF</span><b>04-C</b></div>
                       <p>Hold Relay Station 04-C on the Karst-9 ridge until exfil arrives. Phase 02 of 03 is active and the objective is 68% secured — hostiles are probing the trench line at Grid 03. Keep your magazine topped up, watch your vitals, and do not break the line.</p>
                       <div className="brief-controls">
-                        <span className="brief-control"><kbd>TAP / SPACE</kbd> FIRE</span>
+                        <span className="brief-control"><kbd>WASD / L-STICK</kbd> MOVE</span>
+                        <span className="brief-control"><kbd>DRAG / R-STICK</kbd> AIM</span>
+                        <span className="brief-control"><kbd>TAP / SPACE / FIRE</kbd> FIRE</span>
                         <span className="brief-control"><kbd>R</kbd> RELOAD</span>
                         <span className="brief-control"><kbd>H</kbd> TRAUMA KIT</span>
                         <span className="brief-control"><kbd>ESC</kbd> COMMAND MENU</span>
@@ -1841,13 +1846,160 @@
     });
 
     const StageHitLayer = React.memo(function StageHitLayer() {
+      const dragRef = React.useRef(null);
       const handlePointerDown = (event) => {
+        if (event.pointerType === "touch") return; // touch uses sticks + FIRE button
         if (event.pointerType === "mouse" && event.button !== 0) return;
         const state = useGameStore.getState();
         if (state.isMenuOpen) return;
+        dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        event.currentTarget.setPointerCapture(event.pointerId);
         state.fire();
       };
-      return <div className="stage-hit" onPointerDown={handlePointerDown} aria-hidden="true" />;
+      const handlePointerMove = (event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.id !== event.pointerId) return;
+        inputState.lookDX += event.clientX - drag.x;
+        inputState.lookDY += event.clientY - drag.y;
+        drag.x = event.clientX;
+        drag.y = event.clientY;
+      };
+      const endDrag = (event) => {
+        if (dragRef.current && dragRef.current.id === event.pointerId) dragRef.current = null;
+      };
+      return (
+        <div
+          className="stage-hit"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          aria-hidden="true"
+        />
+      );
+    });
+
+    // === [UI: TOUCH_CONTROLS] ===
+    // Floating dual sticks: left half = move, right half = aim, plus a hold-
+    // to-fire button. Stick visuals are driven through refs (no re-render per
+    // pointermove); vectors land in the shared inputState the world reads.
+    const TouchControls = React.memo(function TouchControls() {
+      const hasStarted = useGameStore((state) => state.hasStarted);
+      const isMenuOpen = useGameStore((state) => state.isMenuOpen);
+      const moveRef = React.useRef({ id: null, ox: 0, oy: 0 });
+      const aimRef = React.useRef({ id: null, ox: 0, oy: 0 });
+      const moveBaseRef = React.useRef(null);
+      const moveNubRef = React.useRef(null);
+      const aimBaseRef = React.useRef(null);
+      const aimNubRef = React.useRef(null);
+      const fireTimerRef = React.useRef(null);
+      const MAX = 52;
+
+      useEffect(() => () => {
+        if (fireTimerRef.current) clearInterval(fireTimerRef.current);
+      }, []);
+
+      if (!hasStarted || isMenuOpen) return null;
+
+      const place = (base, nub, ox, oy, dx, dy) => {
+        if (base) {
+          base.style.display = "block";
+          base.style.transform = `translate(${ox}px, ${oy}px) translate(-50%, -50%)`;
+        }
+        if (nub) {
+          nub.style.display = "block";
+          nub.style.transform = `translate(${ox + dx}px, ${oy + dy}px) translate(-50%, -50%)`;
+        }
+      };
+      const hide = (base, nub) => {
+        if (base) base.style.display = "none";
+        if (nub) nub.style.display = "none";
+      };
+      const stickHandlers = (stick, baseRef, nubRef, apply) => ({
+        onPointerDown: (event) => {
+          if (event.pointerType === "mouse" || stick.id !== null) return;
+          stick.id = event.pointerId;
+          stick.ox = event.clientX;
+          stick.oy = event.clientY;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          place(baseRef.current, nubRef.current, stick.ox, stick.oy, 0, 0);
+        },
+        onPointerMove: (event) => {
+          if (stick.id !== event.pointerId) return;
+          let dx = event.clientX - stick.ox;
+          let dy = event.clientY - stick.oy;
+          const len = Math.hypot(dx, dy);
+          if (len > MAX) { dx = (dx / len) * MAX; dy = (dy / len) * MAX; }
+          place(baseRef.current, nubRef.current, stick.ox, stick.oy, dx, dy);
+          apply(dx / MAX, dy / MAX);
+        },
+        onPointerUp: (event) => {
+          if (stick.id !== event.pointerId) return;
+          stick.id = null;
+          hide(baseRef.current, nubRef.current);
+          apply(0, 0);
+        },
+        onPointerCancel: (event) => {
+          if (stick.id !== event.pointerId) return;
+          stick.id = null;
+          hide(baseRef.current, nubRef.current);
+          apply(0, 0);
+        },
+      });
+
+      const stopFire = () => {
+        if (fireTimerRef.current) {
+          clearInterval(fireTimerRef.current);
+          fireTimerRef.current = null;
+        }
+      };
+      const startFire = (event) => {
+        event.preventDefault();
+        const state = useGameStore.getState();
+        state.fire();
+        stopFire();
+        fireTimerRef.current = setInterval(() => useGameStore.getState().fire(), 135);
+      };
+
+      return (
+        <div className="touch-controls" aria-hidden="true">
+          <div
+            className="stick-zone zone-left"
+            {...stickHandlers(moveRef.current, moveBaseRef, moveNubRef, (x, y) => {
+              inputState.moveX = x;
+              inputState.moveY = -y;
+            })}
+          >
+            <span className="stick-hint hint-left"><i />MOVE</span>
+          </div>
+          <div
+            className="stick-zone zone-right"
+            {...stickHandlers(aimRef.current, aimBaseRef, aimNubRef, (x, y) => {
+              inputState.aimX = x;
+              inputState.aimY = y;
+            })}
+          >
+            <span className="stick-hint hint-right"><i />AIM</span>
+          </div>
+          <span ref={moveBaseRef} className="stick-base" />
+          <span ref={moveNubRef} className="stick-nub" />
+          <span ref={aimBaseRef} className="stick-base" />
+          <span ref={aimNubRef} className="stick-nub" />
+          <button
+            type="button"
+            className="fire-btn"
+            aria-label="Fire weapon"
+            onPointerDown={startFire}
+            onPointerUp={stopFire}
+            onPointerLeave={stopFire}
+            onPointerCancel={stopFire}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <UiIcon name="target" size={22} />
+            <span>FIRE</span>
+          </button>
+        </div>
+      );
     });
 
     function App() {
@@ -1875,8 +2027,9 @@
 
       return (
         <div className="app">
-          <Scene />
+          <WorldScene />
           <StageHitLayer />
+          <TouchControls />
           <GameHUD />
           <OverlayRoot />
           <Toast />

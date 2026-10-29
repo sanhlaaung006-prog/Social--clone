@@ -3,10 +3,12 @@ This is a SoCal clone that is same as Reddit and Instagram but more lightweight 
 
 ## IRONVEIL — Tactical Operations (game)
 
-A single-file tactical game UI (React 18 + Zustand, pre-bundled — no runtime
-CDN scripts, so it boots fast on mobile and even works offline apart from
-fonts/photo) lives in [`game/index.html`](game/index.html) — open it directly
-or serve the repo and visit `/game/`.
+A tactical FPS (React 18 + Zustand + Three.js, built with **Vite**) lives in
+[`game/`](game/) — run `cd game && npm install && npm run dev`, then open
+<http://localhost:8000>. The start world is a real-time 3D first-person
+terrain (procedurally generated Karst-9 ridges, the relay-station objective,
+hostile hover drones) — **WASD + drag-aim** on desktop, floating **MOVE /
+AIM thumbsticks + FIRE button** on touch devices.
 
 It boots straight to a **Start / Title screen** and **▶ START is playable
 instantly** — the systems check (uplink, field feed, armory, squad link,
@@ -16,19 +18,16 @@ In-game, `ESC` (or the COMMAND button) opens the pause menu, which can also
 **EXIT TO TITLE**. Back-navigation from the armory/settings returns to the
 title screen before deployment and to the pause menu once in the field.
 
-**Building:** `game/index.html` is a generated file. Edit
-[`game/src/ironveil.jsx`](game/src/ironveil.jsx) /
-[`game/template.html`](game/template.html), then run
-`cd game && npm install && npm run build`.
+**Developing:** edit [`game/src/ironveil.jsx`](game/src/ironveil.jsx) (UI) and
+[`game/src/world.js`](game/src/world.js) (3D world) — Vite serves with HMR on
+port 8000. `npm run build` produces `game/dist/`.
 
 ### Screenshots
 
-Captured from the shipped `game/index.html` in headless Chromium (desktop +
-emulated iPhone). The sandbox used for capture can't reach Google Fonts or
-Pexels, so only those two static assets were stubbed locally — real
-Fontsource font files and a real black-and-white ridge photograph. All game
-code and UI are the untouched production file; on your device the original
-Pexels backdrop loads.
+Captured from the running game in headless Chromium. The terrain is rendered
+live by WebGL (no backdrop photo anymore); only Google Fonts was stubbed
+locally during capture because the sandbox can't reach it. Desktop shots show
+the deployed first-person view mid-transition from the menu camera.
 
 **Start menu (desktop):**
 
@@ -45,10 +44,6 @@ Pexels backdrop loads.
 **Start menu (mobile):**
 
 ![IRONVEIL start menu on mobile](screenshots/ironveil-start-menu-mobile.png)
-
-**Gameplay (mobile):**
-
-![IRONVEIL gameplay on mobile](screenshots/ironveil-gameplay-mobile.png)
 
 **Pause menu (mobile):**
 

@@ -5,14 +5,17 @@
   "type": "module",
   "description": "IRONVEIL tactical operations interface — single-file production build (see build.mjs).",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "three": "^0.170.0",
     "zustand": "4.5.5"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "vite": "^8.3.5"
   }
 }
