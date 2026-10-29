@@ -631,6 +631,7 @@ pub extern "C" fn ironveil_build_sky_lut() -> u32 {
 // meter-scale synthesis of projection-capped Quake-style acceleration and
 // control-speed friction plus heightfield step-up/slope/contour sliding.
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     fn ironveil_ground_height(x: f64, z: f64) -> f64;
 }
