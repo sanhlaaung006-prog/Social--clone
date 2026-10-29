@@ -940,32 +940,93 @@
       );
     });
 
-    // Warthog DRIVE / flight / EXIT surface. Visibility is driven by the
-    // world's proximity + seat state through direct DOM writes, once a frame.
-    const JetInterface = React.memo(function JetInterface() {
+    // Generic aircraft DRIVE / HUD / touch-flight surface. The Warthog is
+    // the first consumer; future airframes only need to publish the same
+    // debugStats.aircraft* telemetry and flight input fields. Visibility
+    // and all fast-moving values are direct-DOM writes, never React state.
+    const AircraftInterface = React.memo(function AircraftInterface() {
       const hasStarted = useGameStore((state) => state.hasStarted);
       const isMenuOpen = useGameStore((state) => state.isMenuOpen);
       const driveRef = React.useRef(null);
+      const driveLabelRef = React.useRef(null);
+      const driveSubRef = React.useRef(null);
       const flightRef = React.useRef(null);
       const telemetryRef = React.useRef(null);
       const exitRef = React.useRef(null);
+      const aircraftNameRef = React.useRef(null);
+      const headingRef = React.useRef(null);
+      const canopyRef = React.useRef(null);
+      const horizonRef = React.useRef(null);
+      const speedRef = React.useRef(null);
+      const aoaGRef = React.useRef(null);
+      const altRef = React.useRef(null);
+      const vsiGearRef = React.useRef(null);
+      const throttleFillRef = React.useRef(null);
+      const stickNubRef = React.useRef(null);
+      const stickValueRef = React.useRef(null);
+      const pointerRef = React.useRef({ stickId: null, throttleId: null });
       useEffect(() => {
         let raf = 0;
         const paint = () => {
           const d = debugStats;
+          const occupied = !!d.jetOccupied;
+          document.body.classList.toggle("aircraft-seated", occupied);
           if (driveRef.current) driveRef.current.style.display = d.jetNear ? "flex" : "none";
+          if (driveLabelRef.current) driveLabelRef.current.textContent = d.jetEntryPhase === "opening" ? "OPENING" : "DRIVE";
+          if (driveSubRef.current) driveSubRef.current.textContent = d.jetEntryPhase === "opening" ? `CANOPY ${d.jetCanopyPct || 0}%` : "WARTHOG · X 18 · Z 0";
           if (flightRef.current) {
-            flightRef.current.style.display = d.jetOccupied ? "flex" : "none";
+            flightRef.current.style.display = occupied ? "flex" : "none";
             flightRef.current.classList.toggle("is-stall", !!d.jetStall);
+            flightRef.current.classList.toggle("is-crashed", !!d.jetCrashed);
+          }
+          const telemetry = {
+            name: d.aircraftName || "AIRCRAFT",
+            pitch: d.aircraftPitchDeg || 0,
+            roll: d.aircraftRollDeg || 0,
+            heading: d.aircraftHeadingDeg || 0,
+            speed: d.jetSpeedKmh || 0,
+            altitude: d.jetAltitudeM || 0,
+            vertical: d.aircraftVerticalMps ?? d.jetVerticalMps ?? 0,
+            throttle: d.jetThrottlePct || 0,
+            aoa: d.jetAoaDeg || 0,
+            loadG: d.jetLoadG || 0,
+            canopy: d.jetCanopyPct || 0,
+          };
+          if (aircraftNameRef.current) aircraftNameRef.current.textContent = telemetry.name;
+          if (headingRef.current) headingRef.current.textContent = `HDG ${String(Math.round(telemetry.heading)).padStart(3, "0")}°`;
+          if (canopyRef.current) canopyRef.current.textContent = telemetry.canopy > 1 ? `CANOPY ${Math.round(telemetry.canopy)}%` : "CANOPY LATCHED";
+          if (horizonRef.current) {
+            const pitchPx = Math.max(-58, Math.min(58, telemetry.pitch * 2.35));
+            horizonRef.current.style.transform = `translate(-50%, -50%) translateY(${pitchPx}px) rotate(${-telemetry.roll}deg)`;
+          }
+          if (speedRef.current) speedRef.current.textContent = `${Math.round(telemetry.speed)} KM/H`;
+          if (aoaGRef.current) aoaGRef.current.textContent = `AOA ${Number(telemetry.aoa).toFixed(1)}° · ${Number(telemetry.loadG).toFixed(2)} G`;
+          if (altRef.current) altRef.current.textContent = `${Number(telemetry.altitude).toFixed(1)} M`;
+          if (vsiGearRef.current) vsiGearRef.current.textContent = `VS ${telemetry.vertical >= 0 ? "+" : ""}${Number(telemetry.vertical).toFixed(1)} M/S · GEAR ${d.jetGearDown ? "DOWN" : "UP"}`;
+          if (throttleFillRef.current) throttleFillRef.current.style.height = `${Math.max(0, Math.min(100, telemetry.throttle))}%`;
+          const controlPitch = d.aircraftControlPitch ?? inputState.flightPitchInput ?? 0;
+          const controlRoll = d.aircraftControlRoll ?? inputState.flightRollInput ?? 0;
+          if (stickNubRef.current) {
+            stickNubRef.current.style.transform = `translate(calc(-50% + ${controlRoll * 34}px), calc(-50% + ${-controlPitch * 34}px))`;
+          }
+          if (stickValueRef.current) {
+            const signed = (v) => `${v >= 0 ? "+" : "−"}${String(Math.abs(Math.round(v * 100))).padStart(2, "0")}`;
+            stickValueRef.current.textContent = `P ${signed(controlPitch)} · R ${signed(controlRoll)}`;
           }
           if (telemetryRef.current) {
-            telemetryRef.current.textContent = `${d.jetMessage || "WARTHOG"} · ${d.jetSpeedKmh || 0} KM/H · ALT ${d.jetAltitudeM || 0} M · THR ${d.jetThrottlePct || 0}% · AOA ${d.jetAoaDeg || 0}°`;
+            telemetryRef.current.textContent = `${d.jetMessage || telemetry.name} · ${telemetry.speed} KM/H · ALT ${telemetry.altitude} M · THR ${telemetry.throttle}% · AOA ${telemetry.aoa}°`;
           }
           if (exitRef.current) exitRef.current.textContent = d.jetCanExit ? "EXIT" : "EXIT · STOP FIRST";
           raf = window.requestAnimationFrame(paint);
         };
         paint();
-        return () => window.cancelAnimationFrame(raf);
+        return () => {
+          window.cancelAnimationFrame(raf);
+          document.body.classList.remove("aircraft-seated");
+          inputState.flightPitchInput = 0;
+          inputState.flightRollInput = 0;
+          inputState.flightThrottleTarget = null;
+        };
       }, []);
       if (!hasStarted || isMenuOpen) return null;
       const queue = (action) => (event) => { event.preventDefault(); inputState.jetAction = action; };
@@ -974,20 +1035,95 @@
         onPointerUp: clear, onPointerLeave: clear, onPointerCancel: clear,
         onContextMenu: (event) => event.preventDefault(),
       });
+      const setStickFromEvent = (event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const radius = Math.max(24, Math.min(rect.width, rect.height) * 0.38);
+        let dx = (event.clientX - (rect.left + rect.width / 2)) / radius;
+        let dy = (event.clientY - (rect.top + rect.height / 2)) / radius;
+        const len = Math.hypot(dx, dy);
+        if (len > 1) { dx /= len; dy /= len; }
+        inputState.flightRollInput = dx;
+        inputState.flightPitchInput = -dy; // thumb up climbs, thumb down descends
+      };
+      const endStick = (event) => {
+        if (pointerRef.current.stickId !== event.pointerId) return;
+        pointerRef.current.stickId = null;
+        inputState.flightPitchInput = 0;
+        inputState.flightRollInput = 0;
+      };
+      const flightStickHandlers = {
+        onPointerDown: (event) => {
+          event.preventDefault();
+          pointerRef.current.stickId = event.pointerId;
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
+          setStickFromEvent(event);
+        },
+        onPointerMove: (event) => { if (pointerRef.current.stickId === event.pointerId) setStickFromEvent(event); },
+        onPointerUp: endStick,
+        onPointerCancel: endStick,
+        onLostPointerCapture: endStick,
+        onContextMenu: (event) => event.preventDefault(),
+      };
+      const setThrottleFromEvent = (event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        inputState.flightThrottleTarget = Math.max(0, Math.min(1, 1 - (event.clientY - rect.top) / rect.height));
+      };
+      const endThrottle = (event) => {
+        if (pointerRef.current.throttleId === event.pointerId) pointerRef.current.throttleId = null;
+      };
+      const flightThrottleHandlers = {
+        onPointerDown: (event) => {
+          event.preventDefault();
+          pointerRef.current.throttleId = event.pointerId;
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
+          setThrottleFromEvent(event);
+        },
+        onPointerMove: (event) => { if (pointerRef.current.throttleId === event.pointerId) setThrottleFromEvent(event); },
+        onPointerUp: endThrottle,
+        onPointerCancel: endThrottle,
+        onLostPointerCapture: endThrottle,
+        onContextMenu: (event) => event.preventDefault(),
+      };
       return (
         <div className="jet-interface">
           <button ref={driveRef} type="button" className="jet-drive-btn" style={{ display: "none" }} onPointerDown={queue("enter")} onClick={queue("enter")} aria-label="Drive the Warthog">
-            <strong>DRIVE</strong><small>WARTHOG · X 18 · Z 0</small>
+            <strong ref={driveLabelRef}>DRIVE</strong><small ref={driveSubRef}>WARTHOG · X 18 · Z 0</small>
           </button>
-          <div ref={flightRef} className="jet-flight" style={{ display: "none" }}>
-            <div ref={telemetryRef} className="jet-telemetry" role="status">ENGINE READY</div>
-            <div className="jet-flight-buttons">
-              <button type="button" {...hold(() => { inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease throttle">THR −</button>
-              <button type="button" {...hold(() => { inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase throttle">THR +</button>
-              <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold wheel brakes">BRK</button>
-              <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the Warthog">EXIT</button>
+          <div ref={flightRef} className="jet-flight aircraft-console" style={{ display: "none" }}>
+            <div className="aircraft-hud" aria-hidden="true">
+              <div className="aircraft-hud-top"><span ref={aircraftNameRef}>A-10C WARTHOG</span><b ref={headingRef}>HDG 000°</b><span ref={canopyRef}>CANOPY LATCHED</span></div>
+              <div className="aircraft-attitude">
+                <div ref={horizonRef} className="aircraft-horizon">
+                  <i className="aircraft-horizon-sky" /><i className="aircraft-horizon-ground" />
+                  <span className="aircraft-pitch-line is-plus-10" /><span className="aircraft-pitch-line is-zero" /><span className="aircraft-pitch-line is-minus-10" />
+                </div>
+                <div className="aircraft-fixed-symbol"><i /><b /><i /></div>
+                <div className="aircraft-roll-pointer" />
+              </div>
+              <div className="aircraft-readout is-left"><small>SPEED</small><b ref={speedRef}>0 KM/H</b><span ref={aoaGRef}>AOA 0.0° · 0.00 G</span></div>
+              <div className="aircraft-readout is-right"><small>ALTITUDE AGL</small><b ref={altRef}>0.0 M</b><span ref={vsiGearRef}>VS +0.0 M/S · GEAR DOWN</span></div>
             </div>
-            <div className="jet-flight-hint">LEFT STICK / WASD = PITCH + BANK · SHIFT/CTRL = THROTTLE · SPACE = BRAKE</div>
+            <div className="aircraft-touch-controls">
+              <div className="flight-stick" {...flightStickHandlers} role="slider" aria-label="Flight sway stick: drag up or down for pitch and sideways to bank" aria-valuemin="-100" aria-valuemax="100">
+                <span className="flight-stick-axis is-x" /><span className="flight-stick-axis is-y" />
+                <span ref={stickNubRef} className="flight-stick-nub" />
+                <label>SWAY STICK</label><small ref={stickValueRef}>P +00 · R +00</small>
+              </div>
+              <div className="aircraft-bottom-console">
+                <div ref={telemetryRef} className="jet-telemetry" role="status">ENGINE READY</div>
+                <div className="jet-flight-buttons">
+                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease throttle">THR −</button>
+                  <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase throttle">THR +</button>
+                  <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold wheel brakes">BRK</button>
+                  <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the aircraft">EXIT</button>
+                </div>
+                <div className="jet-flight-hint">SWAY STICK: PUSH UP = CLIMB · SIDEWAYS = BANK · SLIDE THR · WASD + SHIFT/CTRL ALSO WORK</div>
+              </div>
+              <div className="flight-throttle" {...flightThrottleHandlers} role="slider" aria-label="Throttle slider" aria-valuemin="0" aria-valuemax="100">
+                <span className="flight-throttle-track"><i ref={throttleFillRef} /></span>
+                <label>THR</label><small>SLIDE</small>
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -2677,7 +2813,7 @@
           <StageHitLayer />
           <ScopeOverlay />
           <TouchControls />
-          <JetInterface />
+          <AircraftInterface />
           <GameHUD />
           <BoundaryWarning />
           <OverlayRoot />

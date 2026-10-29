@@ -342,3 +342,19 @@ Real gameplay captures:
 - ![Mobile ADS scope](screenshots/mobile-ads-scope.png)
 
 Browser verification included: exactly three opening buttons; Multiplayer glitch; settings→resume with `cinematicActive=0`; Warthog DRIVE at X 11/Z 0, stopped EXIT to X 23/Z 0, re-enter, 165 km/h roll by Z −195, airborne at 182 km/h/2.1 m AGL by Z −245, safety rescues 0. Vercel remains **paused/unpublished**.
+
+## Supplied Warthog pack, animated canopy and aircraft HUD round
+
+- The low-poly placeholder airframe from the previous build has been replaced with the supplied **A-10C Warthog pack** (`game/src/aircraft/warthog.ts`). The game uses its Ghost Grey livery and standard loadout; after the cockpit additions it reports **10 parts / 255 meshes / 21,046 triangles**. The pack's nose-+Z authoring is adapted to the game's forward--Z flight model, with a measured +2.36 m gear offset so the torus tyres sit on the strip, and its PBR materials receive the same RoomEnvironment-style reflections used by the supplied viewer.
+- The canopy is now a rear-hinged moving assembly. **DRIVE** opens it before seating, it closes after the pilot is in, and a stopped **EXIT** opens it again before stepping out and latching behind the player. In first person only the glass is hidden; the bows, rails, glareshield, three MFDs, gauges, side consoles, pedestal, stick, throttle quadrant and HUD combiner remain visible.
+- `AircraftInterface` is deliberately airframe-agnostic. It reads generic `aircraftName`, pitch, roll, heading, vertical speed and control-deflection telemetry, so future aircraft can reuse the same artificial horizon, speed/altitude/AOA/G/gear readouts and canopy state without a Warthog-specific HUD branch.
+- Flight touch controls are mobile-first: a large **SWAY STICK** (push up to climb, down to descend, sideways to bank), an absolute **THR SLIDE**, plus THR − / THR + / BRK / EXIT. The world shapes the stick with a soft centre and exponential smoothing for easy small corrections while retaining full control at full throw. Its ground-steering authority fades out by 18 m/s, so a diagonal sway during the takeoff roll no longer drives the jet off the strip. WASD and Shift/Ctrl remain available on desktop.
+- Real browser verification on the Vite build: canopy opening captured at 47%, seated/closed cockpit, stopped EXIT and re-entry, desktop throttle target 0.947, sway input P +0.79/R +0.38, airborne at **228 km/h, 0.9 m AGL, heading 001°** near X 20/Z −435, and mobile touch at 844×390 with throttle target 0.935 and sway P +0.76/R +0.40. Safety rescues: **0**. Vercel remains **paused/unpublished**.
+
+Real gameplay captures from this round:
+
+- ![Supplied-pack Warthog DRIVE prompt](screenshots/warthog-drive.png)
+- ![Warthog canopy opening](screenshots/warthog-canopy-open.png)
+- ![Warthog cockpit and reusable aircraft HUD](screenshots/warthog-cockpit-hud.png)
+- ![Warthog airborne with sway-stick HUD](screenshots/warthog-airborne.png)
+- ![Warthog mobile touch flight controls](screenshots/warthog-mobile-touch.png)

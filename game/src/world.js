@@ -12,8 +12,10 @@
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep, rustSafetyReport } from "./wasm/ironveil-core.js";
 import { stepPhysicsBuffer } from "./physics.js";
+import { createWarthogAssembly, WARTHOG_SPECS } from "./aircraft/warthog.ts";
 
 // BVH-accelerated raycasts (three-mesh-bvh, MIT —github.com/gkjohnson/three-mesh-bvh):
 // shooting rays against 18k-triangle terrain chunks become a tree walk
@@ -48,6 +50,9 @@ export const inputState = {
   jetAction: null, // queued "enter" / "exit" from the Warthog DRIVE / EXIT buttons
   jetThrottleDelta: 0, // -1..1 held throttle input from the flight buttons
   jetBrake: false, // held wheel-brake input while seated in the Warthog
+  flightPitchInput: 0, // dedicated touch sway-stick elevator (-1..1, + climbs)
+  flightRollInput: 0, // dedicated touch sway-stick aileron (-1..1, + banks right)
+  flightThrottleTarget: null, // absolute 0..1 target from the touch throttle slider
   staminaBoost: null, // queued {amount,duration,regen,powerFloor} from soda/drugs/medicine
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
@@ -1925,72 +1930,58 @@ export function createWorld(canvas, hooks = {}, options = {}) {
 
     const jetGroup = new THREE.Group();
     jetGroup.rotation.order = "YXZ";
-    const jetGray = new THREE.MeshStandardMaterial({ color: 0x8d979e, roughness: 0.52, metalness: 0.38, flatShading: true });
-    const jetDark = new THREE.MeshStandardMaterial({ color: 0x30363a, roughness: 0.62, metalness: 0.42, flatShading: true });
-    const jetCanopy = new THREE.MeshStandardMaterial({ color: 0x10242e, roughness: 0.16, metalness: 0.22, emissive: 0x0c2838, emissiveIntensity: 0.7, flatShading: true });
-    const jetTire = new THREE.MeshStandardMaterial({ color: 0x111314, roughness: 0.92, metalness: 0.02 });
-    const jetOlive = new THREE.MeshStandardMaterial({ color: 0x59624f, roughness: 0.66, metalness: 0.24, flatShading: true });
-    const cylZ = (rBack, rFront, len, x, y, z, mat = jetGray, seg = 18) => {
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(rBack, rFront, len, seg), mat);
-      m.rotation.x = Math.PI / 2; m.position.set(x, y, z); jetGroup.add(m); return m;
-    };
-    const cylX = (r, len, x, y, z, mat = jetTire, seg = 16) => {
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
-      m.rotation.z = Math.PI / 2; m.position.set(x, y, z); jetGroup.add(m); return m;
-    };
-    cylZ(0.86, 0.72, 9.8, 0, 1.78, 0.45, jetGray, 20); // main fuselage
-    cylZ(0.72, 0.16, 3.4, 0, 1.7, -6.15, jetGray, 18); // tapered nose
-    cylZ(0.16, 0.1, 1.45, 0, 1.48, -8.05, jetDark, 10); // GAU-8 muzzle housing
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.72, 16, 10), jetCanopy);
-    canopy.scale.set(0.82, 0.62, 1.65); canopy.position.set(0, 2.42, -3.55); jetGroup.add(canopy);
-    addBox(jetGroup, 1.28, 0.34, 2.2, 0, 2.18, -3.45, jetGray); // cockpit tub
-    addBox(jetGroup, 17.5, 0.17, 2.45, 0, 1.48, -0.55, jetGray); // straight wing
-    addBox(jetGroup, 1.05, 0.5, 1.7, -8.42, 1.55, -0.55, jetDark);
-    addBox(jetGroup, 1.05, 0.5, 1.7, 8.42, 1.55, -0.55, jetDark);
-    const aileronL = addBox(jetGroup, 5.4, 0.09, 0.62, -5.7, 1.5, 0.78, jetDark);
-    const aileronR = addBox(jetGroup, 5.4, 0.09, 0.62, 5.7, 1.5, 0.78, jetDark);
-    addBox(jetGroup, 6.1, 0.15, 1.45, 0, 2.38, 6.15, jetGray); // tailplane
-    const elevator = addBox(jetGroup, 5.2, 0.08, 0.62, 0, 2.4, 6.95, jetDark);
-    addBox(jetGroup, 0.16, 1.9, 1.65, -1.62, 3.2, 6.05, jetGray); // twin fins
-    addBox(jetGroup, 0.16, 1.9, 1.65, 1.62, 3.2, 6.05, jetGray);
-    for (const sx of [-1.42, 1.42]) {
-      cylZ(0.64, 0.58, 3.35, sx, 3.02, 4.55, jetDark, 18); // high twin turbofans
-      cylZ(0.5, 0.5, 0.1, sx, 3.02, 2.87, jetTire, 18); // intake face
-      cylZ(0.44, 0.38, 0.34, sx, 3.02, 6.34, jetTire, 16); // exhaust
-      addBox(jetGroup, 0.52, 0.72, 1.55, sx, 2.37, 4.4, jetGray); // pylon
-    }
-    for (const sx of [-6.4, -4.5, -2.6, 2.6, 4.5, 6.4]) {
-      addBox(jetGroup, 0.28, 0.48, 1.1, sx, 1.18, -0.65, jetDark); // wing pylons
-      cylZ(0.19, 0.14, 1.55, sx, 0.88, -0.72, jetOlive, 10); // stores
-    }
-    const gear = new THREE.Group(); jetGroup.add(gear);
-    const gearBox = (w, h, d, x, y, z, mat = jetDark) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-      m.position.set(x, y, z); gear.add(m); return m;
-    };
-    gearBox(0.16, 1.1, 0.22, 0, 0.78, -4.65);
-    const noseWheel = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.31, 0.2, 16), jetTire);
-    noseWheel.rotation.z = Math.PI / 2; noseWheel.position.set(0, 0.31, -4.65); gear.add(noseWheel);
-    for (const sx of [-2.35, 2.35]) {
-      gearBox(0.54, 0.72, 1.65, sx, 0.94, 0.1, jetGray); // A-10 gear pods
-      gearBox(0.18, 0.75, 0.24, sx, 0.58, 0.1);
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.3, 18), jetTire);
-      wheel.rotation.z = Math.PI / 2; wheel.position.set(sx, 0.47, 0.1); gear.add(wheel);
-    }
+    // The player-supplied A-10C pack is the airframe now. Its authoring
+    // convention is nose +Z / wheels below origin; the flight model uses
+    // forward -Z with the tyre contact patch at local Y=0, so only the
+    // inner model gets the 180-degree yaw and the measured +2.36 m offset
+    // (main torus tyres: centre Y -1.78, outer radius 0.43 + 0.15).
+    const warthogAssembly = createWarthogAssembly("ghost", "standard");
+    const warthogModel = warthogAssembly.root;
+    warthogModel.rotation.y = Math.PI;
+    warthogModel.position.y = 2.36;
+    // The supplied viewer's realistic PBR read came from RoomEnvironment.
+    // Give only the airframe's standard/physical materials that environment
+    // so importing the model does not relight the whole game world.
+    const warthogPmrem = new THREE.PMREMGenerator(renderer);
+    const warthogEnvTex = warthogPmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    warthogPmrem.dispose();
+    const warthogEnvMats = new Set();
+    warthogModel.traverse((object) => {
+      if (!object.isMesh) return;
+      const mats = Array.isArray(object.material) ? object.material : [object.material];
+      for (const mat of mats) {
+        if (mat && mat.isMeshStandardMaterial && !warthogEnvMats.has(mat)) {
+          warthogEnvMats.add(mat);
+          mat.envMap = warthogEnvTex;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+    jetGroup.add(warthogModel);
+    const gearPart = warthogAssembly.parts.get("gear");
+    const gear = gearPart ? gearPart.group : new THREE.Group();
     const jetBlob = new THREE.Mesh(blobShadowGeometry, blobShadowMaterial);
     jetBlob.scale.set(9.6, 1, 9.6); jetBlob.position.y = 0.05; jetBlob.renderOrder = 1; jetGroup.add(jetBlob);
+    const warthogModelStats = warthogAssembly.getStats();
+    debugStats.warthogModelParts = warthogModelStats.parts;
+    debugStats.warthogModelMeshes = warthogModelStats.meshes;
+    debugStats.warthogModelTriangles = warthogModelStats.triangles;
 
     const parkY = groundSupportHeight(WORLD.warthog.x, WORLD.warthog.z, 4.2, "max") + 0.05;
     jetGroup.position.set(WORLD.warthog.x, parkY, WORLD.warthog.z);
     scene.add(jetGroup);
     warthog = {
-      group: jetGroup, gear, aileronL, aileronR, elevator,
+      group: jetGroup, gear, assembly: warthogAssembly,
+      aileronL: null, aileronR: null, elevator: null,
       yaw: 0, pitch: 0, roll: 0, throttle: 0, spool: 0,
       velocity: new THREE.Vector3(), airborne: false, occupied: false,
       gearDown: true, crashed: false, stall: false, aoaDeg: 0,
       speed: 0, verticalSpeed: 0, altitudeAgl: 0, nearDistance: 999,
-      // Loaded A-10-class bookkeeping, kept in SI units end to end.
-      massKg: 12000, wingAreaM2: 47, maxThrustN: 80600,
+      canopyOpen: 0, canopyTarget: 0, entryPhase: "parked",
+      controlPitch: 0, controlRoll: 0,
+      // Light ferry load above the pack's 11,321 kg empty mass, in SI units.
+      massKg: 12000, wingAreaM2: WARTHOG_SPECS.wingAreaM2,
+      maxThrustN: WARTHOG_SPECS.thrustKN * 1000,
     };
     debugStats.warthogVisible = 1;
   }
@@ -2420,21 +2411,40 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       terrainSurfaceHeight(x, z + 3.5), terrainSurfaceHeight(x, z - 3.5)
     ) + 0.05;
   }
+  function animateWarthogCanopy(j, dt) {
+    const step = Math.max(0, dt) / 0.85;
+    const delta = clamp(j.canopyTarget - j.canopyOpen, -step, step);
+    if (delta !== 0) j.canopyOpen = clamp(j.canopyOpen + delta, 0, 1);
+    j.assembly.setCanopyOpen(j.canopyOpen);
+  }
+  function seatPlayerInWarthog() {
+    const j = warthog;
+    j.occupied = true;
+    j.entryPhase = "closing-seated";
+    j.canopyTarget = 0;
+    j.assembly.setCockpitView(true);
+    inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
+    inputState.flightPitchInput = 0; inputState.flightRollInput = 0;
+    inputState.flightThrottleTarget = j.throttle;
+    player.yaw = j.yaw; player.pitch = j.pitch;
+    debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED" : "CANOPY CLOSING // ENGINE READY";
+  }
   function enterWarthog() {
     if (!warthog || warthog.occupied || warthog.nearDistance > 10.5) return;
-    warthog.occupied = true;
-    inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
-    player.yaw = warthog.yaw; player.pitch = warthog.pitch;
-    debugStats.jetMessage = warthog.crashed ? "AIRFRAME DAMAGED" : "ENGINE READY // THR +";
+    if (warthog.entryPhase === "opening") return;
+    warthog.entryPhase = "opening";
+    warthog.canopyTarget = 1;
+    warthog.assembly.setCockpitView(false);
+    debugStats.jetMessage = "OPENING CANOPY";
   }
-  function exitWarthog() {
-    if (!warthog || !warthog.occupied) return;
-    if (warthog.airborne || warthog.speed > 3) {
-      debugStats.jetMessage = "LAND AND STOP TO EXIT";
-      return;
-    }
+  function completeWarthogExit() {
     const j = warthog;
     j.occupied = false; j.throttle = 0; j.spool = 0; j.velocity.set(0, 0, 0); j.speed = 0;
+    j.entryPhase = "closing";
+    j.canopyTarget = 0;
+    j.assembly.setCockpitView(false);
+    inputState.flightPitchInput = 0; inputState.flightRollInput = 0;
+    inputState.flightThrottleTarget = null;
     const fx = -Math.sin(j.yaw), fz = -Math.cos(j.yaw);
     const rx = Math.cos(j.yaw), rz = -Math.sin(j.yaw);
     const ex = clamp(j.group.position.x + rx * 4.6 + fx * 0.5, -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
@@ -2444,6 +2454,19 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.yaw = j.yaw; player.pitch = -0.03;
     resetPhysics(ex, gy, ez);
     debugStats.jetMessage = "ON FOOT";
+  }
+  function exitWarthog() {
+    if (!warthog || !warthog.occupied || warthog.entryPhase === "exit-opening") return;
+    if (warthog.entryPhase !== "seated" && warthog.entryPhase !== "closing-seated") return;
+    if (warthog.airborne || warthog.speed > 3) {
+      debugStats.jetMessage = "LAND AND STOP TO EXIT";
+      return;
+    }
+    warthog.entryPhase = "exit-opening";
+    warthog.canopyTarget = 1;
+    warthog.throttle = 0;
+    warthog.assembly.setCockpitView(false);
+    debugStats.jetMessage = "OPENING CANOPY";
   }
   function updateWarthog(dt) {
     if (!warthog) return false;
@@ -2456,23 +2479,72 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     else if (inputState.jetAction === "exit") exitWarthog();
     inputState.jetAction = null;
     if (!j.occupied) {
+      if (j.entryPhase === "opening" && j.nearDistance > 13) {
+        j.entryPhase = "closing"; j.canopyTarget = 0;
+      }
+      animateWarthogCanopy(j, dt);
+      if (j.entryPhase === "opening" && j.canopyOpen >= 0.92) seatPlayerInWarthog();
+      else if (j.entryPhase === "closing" && j.canopyOpen <= 0.02) j.entryPhase = "parked";
       j.spool = Math.max(0, j.spool - dt * 0.5);
+      j.assembly.setGearDown(j.gearDown);
       debugStats.jetSpeedKmh = 0; debugStats.jetAltitudeM = 0;
       debugStats.jetThrottlePct = Math.round(j.throttle * 100);
       debugStats.jetAirborne = 0; debugStats.jetStall = 0;
-      if (!debugStats.jetMessage) debugStats.jetMessage = j.nearDistance <= 10.5 ? "WARTHOG IN REACH" : "WARTHOG PARKED X18 Z0";
-      return false;
+      debugStats.jetCanopyPct = Math.round(j.canopyOpen * 100);
+      debugStats.jetEntryPhase = j.entryPhase;
+      debugStats.aircraftName = "A-10C WARTHOG";
+      debugStats.aircraftPitchDeg = Math.round(j.pitch * 180 / Math.PI * 10) / 10;
+      debugStats.aircraftRollDeg = Math.round(j.roll * 180 / Math.PI * 10) / 10;
+      debugStats.aircraftHeadingDeg = Math.round(((-j.yaw * 180 / Math.PI) % 360 + 360) % 360) % 360;
+      debugStats.aircraftVerticalMps = 0;
+      if (j.occupied) {
+        // Fall through in the same frame after seating so the cockpit
+        // camera and HUD appear without a one-frame on-foot flash.
+      } else {
+        if (!debugStats.jetMessage) debugStats.jetMessage = j.nearDistance <= 10.5 ? "WARTHOG IN REACH" : "WARTHOG PARKED X18 Z0";
+        return false;
+      }
+    }
+
+    animateWarthogCanopy(j, dt);
+    if (j.entryPhase === "closing-seated" && j.canopyOpen <= 0.02) j.entryPhase = "seated";
+    if (j.entryPhase === "exit-opening") {
+      j.throttle = 0;
+      j.spool = Math.max(0, j.spool - dt);
+      j.group.rotation.set(j.pitch, j.yaw, -j.roll);
+      debugStats.jetCanopyPct = Math.round(j.canopyOpen * 100);
+      debugStats.jetEntryPhase = j.entryPhase;
+      if (j.canopyOpen >= 0.92) { completeWarthogExit(); return false; }
+      return true;
     }
 
     const k = inputState.keys;
     let throttleDelta = clamp(inputState.jetThrottleDelta || 0, -1, 1);
     if (k.has("ShiftLeft") || k.has("ShiftRight")) throttleDelta += 1;
     if (k.has("ControlLeft") || k.has("ControlRight")) throttleDelta -= 1;
-    j.throttle = clamp(j.throttle + throttleDelta * dt * 0.55, 0, 1);
+    if (inputState.flightThrottleTarget != null && throttleDelta === 0) {
+      const target = clamp(inputState.flightThrottleTarget, 0, 1);
+      const step = clamp(target - j.throttle, -dt * 1.4, dt * 1.4);
+      j.throttle = clamp(j.throttle + step, 0, 1);
+    } else {
+      j.throttle = clamp(j.throttle + throttleDelta * dt * 0.55, 0, 1);
+      if (throttleDelta !== 0) inputState.flightThrottleTarget = j.throttle;
+    }
     j.spool += (j.throttle - j.spool) * (1 - Math.exp(-dt / 1.05)); // turbofan lag
     if (j.crashed) { j.throttle = 0; j.spool = Math.max(0, j.spool - dt); }
-    let pitchInput = clamp(inputState.moveY + ((k.has("KeyW") || k.has("ArrowUp")) ? 1 : 0) - ((k.has("KeyS") || k.has("ArrowDown")) ? 1 : 0), -1, 1);
-    let rollInput = clamp(inputState.moveX + ((k.has("KeyD") || k.has("ArrowRight")) ? 1 : 0) - ((k.has("KeyA") || k.has("ArrowLeft")) ? 1 : 0), -1, 1);
+    let rawPitchInput = clamp((inputState.flightPitchInput || 0) + inputState.moveY + ((k.has("KeyW") || k.has("ArrowUp")) ? 1 : 0) - ((k.has("KeyS") || k.has("ArrowDown")) ? 1 : 0), -1, 1);
+    let rawRollInput = clamp((inputState.flightRollInput || 0) + inputState.moveX + ((k.has("KeyD") || k.has("ArrowRight")) ? 1 : 0) - ((k.has("KeyA") || k.has("ArrowLeft")) ? 1 : 0), -1, 1);
+    // Cubic-centred, exponentially smoothed stick: tiny thumb sways make
+    // gentle corrections, while a full deliberate throw still reaches the
+    // complete A-10 control authority already modelled below.
+    const shapeStick = (v) => v * (0.62 + 0.38 * v * v);
+    const stickBlend = 1 - Math.exp(-dt * 6.5);
+    j.controlPitch += (shapeStick(rawPitchInput) - j.controlPitch) * stickBlend;
+    j.controlRoll += (shapeStick(rawRollInput) - j.controlRoll) * stickBlend;
+    if (Math.abs(rawPitchInput) < 0.02 && Math.abs(j.controlPitch) < 0.012) j.controlPitch = 0;
+    if (Math.abs(rawRollInput) < 0.02 && Math.abs(j.controlRoll) < 0.012) j.controlRoll = 0;
+    let pitchInput = j.controlPitch;
+    let rollInput = j.controlRoll;
     const braking = !!(inputState.jetBrake || k.has("Space"));
     const weightN = j.massKg * 9.81;
     const substeps = clamp(Math.ceil(dt / (1 / 120)), 1, 6), sdt = dt / substeps;
@@ -2495,7 +2567,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const leftY = terrainSurfaceHeight(pos.x - rightHx * 5, pos.z - rightHz * 5);
         const groundRoll = -Math.atan2(rightY - leftY, 10);
         j.roll += (groundRoll - j.roll) * (1 - Math.exp(-sdt * 3.2));
-        j.yaw -= rollInput * clamp(speed0 / 16, 0, 1) * 0.5 * sdt; // nosewheel steering
+        // Stick roll is only a gentle taxi aid. Nosewheel authority fades
+        // out by 18 m/s so holding a fun diagonal sway during the takeoff
+        // roll cannot steer the jet off the strip like a car.
+        const steeringAuthority = clamp(speed0 / 8, 0, 1) * clamp((18 - speed0) / 8, 0, 1);
+        j.yaw -= rollInput * steeringAuthority * 0.32 * sdt;
         if (speed0 > 0.05) {
           const keep = Math.exp(-sdt * 4.5); // tires reject lateral slide
           j.velocity.x = j.velocity.x * keep + fwdHx * speed0 * (1 - keep);
@@ -2574,11 +2650,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     if (j.airborne && j.altitudeAgl > 14) j.gearDown = false;
     if (!j.airborne || j.altitudeAgl < 28 || j.speed < 78) j.gearDown = true;
-    j.gear.visible = j.gearDown;
+    j.assembly.setGearDown(j.gearDown);
     j.group.rotation.set(j.pitch, j.yaw, -j.roll);
-    j.elevator.rotation.x = -pitchInput * 0.32;
-    j.aileronL.rotation.x = rollInput * 0.3;
-    j.aileronR.rotation.x = -rollInput * 0.3;
+    if (j.elevator) j.elevator.rotation.x = -pitchInput * 0.32;
+    if (j.aileronL) j.aileronL.rotation.x = rollInput * 0.3;
+    if (j.aileronR) j.aileronR.rotation.x = -rollInput * 0.3;
     j.aoaDeg = Math.round(aoa * 180 / Math.PI * 10) / 10;
     debugStats.jetSpeedKmh = Math.round(j.speed * 3.6);
     debugStats.jetAltitudeM = Math.round(j.altitudeAgl * 10) / 10;
@@ -2592,6 +2668,17 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.jetVerticalMps = Math.round(j.verticalSpeed * 10) / 10;
     debugStats.jetLoadG = Math.round((liftN / weightN) * 100) / 100;
     debugStats.jetCanExit = !j.airborne && j.speed <= 3 ? 1 : 0;
+    debugStats.jetCanopyPct = Math.round(j.canopyOpen * 100);
+    debugStats.jetEntryPhase = j.entryPhase;
+    // Generic aircraft telemetry: future airframes can publish these same
+    // fields and reuse the React HUD without Warthog-specific branches.
+    debugStats.aircraftName = "A-10C WARTHOG";
+    debugStats.aircraftPitchDeg = Math.round(j.pitch * 180 / Math.PI * 10) / 10;
+    debugStats.aircraftRollDeg = Math.round(j.roll * 180 / Math.PI * 10) / 10;
+    debugStats.aircraftHeadingDeg = Math.round(((-j.yaw * 180 / Math.PI) % 360 + 360) % 360) % 360;
+    debugStats.aircraftVerticalMps = debugStats.jetVerticalMps;
+    debugStats.aircraftControlPitch = Math.round(j.controlPitch * 100) / 100;
+    debugStats.aircraftControlRoll = Math.round(j.controlRoll * 100) / 100;
     debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
       : j.stall ? "STALL // LOWER THE NOSE"
       : j.airborne ? "AIRBORNE"
@@ -2818,7 +2905,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (updateWarthog(dt)) {
       // Cockpit seat: the airframe owns position, velocity and camera until
       // the player lands, stops and exits beside it.
-      _v3.set(0, 2.62, -3.55);
+      _v3.set(0, 4.01, -2.95); // pack eye point (model Y 1.65/Z 2.95 + gear offset), 180° yaw
       warthog.group.localToWorld(_v3);
       camera.position.copy(_v3);
       camera.quaternion.copy(warthog.group.quaternion);
