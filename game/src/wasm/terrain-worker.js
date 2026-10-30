@@ -77,6 +77,14 @@ function terrainHeightFromRaw(raw, x, z) {
     const t = 1 - smoothstep(9, 34, ri.d);
     h = lerp(h, ri.bed, Math.pow(t, 1.35) * 0.94);
   }
+  const stripDx = Math.abs(x - (layout.stripX ?? 18));
+  if (stripDx < 38 && z < 34 && z > -560) {
+    const stripProfile = lerp(layout.stripSouthBase || 0, layout.stripNorthBase || 0, clamp((24 - z) / 544, 0, 1));
+    const stripBlend = (1 - smoothstep(14, 38, stripDx))
+      * (1 - smoothstep(18, 34, z))
+      * smoothstep(-560, -520, z);
+    h = lerp(h, stripProfile, stripBlend * 0.98);
+  }
   return h;
 }
 

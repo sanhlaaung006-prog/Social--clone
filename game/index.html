@@ -2077,7 +2077,6 @@
         linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.035) 34%, rgba(0,0,0,.28) 78%),
         linear-gradient(160deg, rgba(20,32,28,.88), rgba(4,9,8,.92));
       box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -14px 26px rgba(0,0,0,.46), 0 18px 38px rgba(0,0,0,.38);
-      backdrop-filter: blur(10px) saturate(1.25); -webkit-backdrop-filter: blur(10px) saturate(1.25);
       clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
     }
     .flight-tri-pad::before {
@@ -2110,8 +2109,8 @@
         linear-gradient(160deg, rgba(66,84,78,.96), rgba(12,20,17,.98));
       font-family: var(--mono); font-size: 14px; font-weight: 800; letter-spacing: .08em;
       text-shadow: 0 1px 3px rgba(0,0,0,.9);
-      filter: drop-shadow(0 8px 12px rgba(0,0,0,.42));
-      transition: transform 70ms ease, filter 110ms ease, background 110ms ease, color 110ms ease;
+      filter: none;
+      transition: none;
     }
     .flight-tri::before { position: absolute; z-index: 1; color: #d9ff7a; font-size: 17px; line-height: 1; text-shadow: 0 0 8px rgba(163,230,53,.55), 0 1px 3px rgba(0,0,0,.9); pointer-events: none; }
     .flight-tri::after {
@@ -2137,8 +2136,8 @@
       background:
         linear-gradient(115deg, rgba(255,255,255,.62), rgba(255,255,255,.12) 40%, rgba(55,92,10,.18) 78%),
         linear-gradient(150deg, #eaffb0, #84cc16);
-      color: #162006; text-shadow: none; transform: translateY(1px) scale(.975);
-      filter: drop-shadow(0 4px 8px rgba(0,0,0,.45));
+      color: #162006; text-shadow: none; transform: none;
+      filter: none;
     }
     .flight-tri:active::before, .flight-tri.is-active::before { color: #20320a; text-shadow: none; }
     .flight-tri-centre {
@@ -2165,7 +2164,6 @@
         linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.035) 36%, rgba(0,0,0,.28) 80%),
         linear-gradient(165deg, rgba(24,38,33,.9), rgba(5,10,8,.94));
       box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -12px 22px rgba(0,0,0,.44), 0 16px 34px rgba(0,0,0,.36);
-      backdrop-filter: blur(10px) saturate(1.25); -webkit-backdrop-filter: blur(10px) saturate(1.25);
       clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px), 0 12px);
     }
     .flight-throttle-track {
@@ -2199,6 +2197,80 @@
     body.aircraft-seated .weapon-slots,
     body.aircraft-seated .crosshair,
     body.aircraft-seated .hud-hints { display: none !important; }
+    /* M1A2 Abrams console: same machined-glass language as the aircraft
+       pads (it reuses .flight-tri rockers for drive/steer), with the same
+       no-backdrop-sampling / no-transition flicker rules. */
+    body.tank-seated .touch-controls { display: none !important; }
+    body.tank-seated .weapon-slots,
+    body.tank-seated .crosshair,
+    body.tank-seated .hud-hints,
+    body.tank-seated .jet-drive-btn { display: none !important; }
+    body.aircraft-seated .tank-drive-btn { display: none !important; }
+    .tank-drive-btn { bottom: calc(178px + var(--safe-bottom)); }
+    .tank-aim-surface {
+      position: absolute; top: 0; right: 0; width: 56%; height: 62%;
+      pointer-events: auto; touch-action: none;
+    }
+    .tank-reticle {
+      position: absolute; left: 50%; top: 50%; width: 54px; height: 54px;
+      transform: translate(-50%, -50%); pointer-events: none; color: #d9ff7a; opacity: .92;
+    }
+    .tank-reticle i, .tank-reticle b {
+      position: absolute; left: 50%; top: 50%; background: currentColor;
+      box-shadow: 0 0 6px rgba(163,230,53,.6), 0 1px 2px rgba(0,0,0,.8);
+    }
+    .tank-reticle i { width: 2px; height: 34px; transform: translate(-50%, -50%); }
+    .tank-reticle b { width: 34px; height: 2px; transform: translate(-50%, -50%); }
+    .tank-reticle::before {
+      content: ""; position: absolute; inset: 4px;
+      border: 1px solid rgba(217,255,122,.42); border-radius: 50%;
+    }
+    .tank-reticle span {
+      position: absolute; left: 6px; right: 6px; bottom: -8px; height: 3px;
+      background: rgba(255,255,255,.18); overflow: hidden;
+    }
+    .tank-reticle span em { display: block; height: 100%; background: #d9ff7a; transform: scaleX(1); transform-origin: left center; }
+    .tank-damage {
+      position: absolute; left: calc(14px + var(--safe-left)); top: calc(60px + var(--safe-top));
+      width: 128px; padding: 8px 9px; pointer-events: none; color: #eef5e8;
+      border: 1px solid rgba(214,255,222,.26);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.16), rgba(255,255,255,.03) 36%, rgba(0,0,0,.26) 80%),
+        linear-gradient(165deg, rgba(20,34,29,.86), rgba(4,9,8,.92));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 12px 28px rgba(0,0,0,.34);
+      clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+      font-family: var(--mono);
+    }
+    .tank-damage strong { display: block; font-size: 8px; letter-spacing: .16em; color: #d9ff7a; margin-bottom: 3px; }
+    .tank-damage-row {
+      display: grid; grid-template-columns: 1fr auto; gap: 1px 6px; align-items: center;
+      margin-top: 4px; font-size: 6.4px; letter-spacing: .08em;
+    }
+    .tank-damage-row span { white-space: nowrap; opacity: .92; }
+    .tank-damage-row b { font-size: 6.4px; color: #eef5e8; }
+    .tank-damage-row i { grid-column: 1 / -1; display: block; height: 3px; max-width: 100%; box-shadow: 0 0 5px rgba(0,0,0,.5); }
+    .tank-fire-btn {
+      position: absolute; right: calc(16px + var(--safe-right)); bottom: calc(88px + var(--safe-bottom));
+      width: 62px; height: 142px; pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+      border: 1px solid rgba(255,205,170,.4); padding: 8px 4px; box-sizing: border-box;
+      color: #fff2e8; font-family: var(--mono); text-shadow: 0 1px 3px rgba(0,0,0,.9);
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.34), rgba(255,255,255,.06) 40%, rgba(0,0,0,.26) 76%),
+        linear-gradient(165deg, rgba(96,44,24,.92), rgba(24,10,6,.96));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.28), inset 0 -14px 24px rgba(0,0,0,.5), 0 16px 34px rgba(0,0,0,.36);
+      clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px), 0 12px);
+      filter: none; transition: none;
+    }
+    .tank-fire-btn strong { font-size: 13px; letter-spacing: .12em; }
+    .tank-fire-btn small { color: #ffd9a8; font-size: 8px; letter-spacing: .1em; }
+    .tank-fire-btn span { font-size: 5.6px; letter-spacing: .12em; opacity: .75; }
+    .tank-fire-btn:active, .tank-fire-btn.is-active {
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.55), rgba(255,255,255,.12) 42%, rgba(124,45,8,.3) 78%),
+        linear-gradient(150deg, #ffe9b8, #f97316);
+      color: #2a1204; text-shadow: none; transform: none; filter: none;
+    }
     .jet-telemetry {
       position: absolute; left: 50%; bottom: calc(14px + var(--safe-bottom)); transform: translateX(-50%);
       max-width: min(520px, 44vw); padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -2207,7 +2279,6 @@
         linear-gradient(115deg, rgba(255,255,255,.16), rgba(255,255,255,.03) 42%, rgba(0,0,0,.22)),
         linear-gradient(160deg, rgba(15,27,22,.82), rgba(4,9,7,.9));
       box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 10px 24px rgba(0,0,0,.3);
-      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
       clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
       font-size: 8px; letter-spacing: .1em; text-shadow: 0 1px 3px rgba(0,0,0,.85);
     }
@@ -2225,17 +2296,25 @@
         linear-gradient(160deg, rgba(48,66,59,.94), rgba(9,16,13,.97));
       color: #edf7ea; pointer-events: auto; touch-action: none; cursor: pointer;
       box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -9px 16px rgba(0,0,0,.38), 0 10px 22px rgba(0,0,0,.32);
-      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
       clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
       font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .08em;
       text-shadow: 0 1px 3px rgba(0,0,0,.9);
-      transition: transform 70ms ease, background 110ms ease, color 110ms ease;
+      transition: none;
     }
-    .jet-flight-buttons button:active { transform: translateY(1px) scale(.98); }
+    .jet-flight-buttons button:active { transform: none; }
     .jet-flight-buttons button strong { font-size: 8.5px; line-height: 1; }
     .jet-flight-buttons button small { font-size: 5.6px; line-height: 1; opacity: .78; }
     .jet-flight-buttons button.is-assist { min-width: 78px; }
     .jet-flight-buttons button.is-blocked { opacity: .52; }
+    .jet-flight-buttons button.is-assist.is-autopilot {
+      border-color: rgba(186,255,201,.92);
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.5), rgba(255,255,255,.08) 42%, rgba(8,80,48,.18) 78%),
+        linear-gradient(150deg, #d9ffdf, #34d399);
+      color: #06251a; text-shadow: none;
+    }
+    .jet-flight-buttons button.is-gear.is-down { border-color: rgba(217,255,122,.72); }
+    .jet-flight-buttons button.is-gear.is-up { opacity: .78; }
     .jet-flight-buttons button.is-assist.is-on {
       background:
         linear-gradient(115deg, rgba(255,255,255,.58), rgba(255,255,255,.1) 42%, rgba(55,92,10,.16) 78%),
@@ -2301,12 +2380,11 @@
         linear-gradient(160deg, rgba(48,66,59,.94), rgba(9,16,13,.97));
       color: #edf7ea; pointer-events: auto; touch-action: none; cursor: pointer;
       box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -9px 16px rgba(0,0,0,.38), 0 10px 22px rgba(0,0,0,.32);
-      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
       font-family: var(--mono); letter-spacing: .08em; text-shadow: 0 1px 3px rgba(0,0,0,.9);
       clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
-      transition: transform 70ms ease, background 110ms ease, color 110ms ease;
+      transition: none;
     }
-    .jet-weapon-buttons button:active { transform: translateY(1px) scale(.98); }
+    .jet-weapon-buttons button:active { transform: none; }
     .jet-weapon-buttons button strong { font-size: 9px; line-height: 1; }
     .jet-weapon-buttons button small { font-size: 6px; opacity: .76; }
     .jet-weapon-buttons button.is-firing { background: linear-gradient(150deg, #eaffb0, #84cc16); color: #162006; text-shadow: none; }
@@ -2351,14 +2429,13 @@
           linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.025) 38%, rgba(0,0,0,.16) 80%),
           linear-gradient(160deg, rgba(18,30,26,.34), rgba(4,9,8,.46));
         box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -8px 16px rgba(0,0,0,.28), 0 8px 20px rgba(0,0,0,.24);
-        backdrop-filter: blur(2px) saturate(1.08); -webkit-backdrop-filter: blur(2px) saturate(1.08);
       }
       .flight-tri {
         width: 54px; height: 39px; font-size: 12px;
         background:
           linear-gradient(115deg, rgba(255,255,255,.3), rgba(255,255,255,.05) 42%, rgba(0,0,0,.16) 76%),
           linear-gradient(160deg, rgba(62,80,74,.46), rgba(10,18,15,.58));
-        filter: drop-shadow(0 4px 7px rgba(0,0,0,.3));
+        filter: none;
       }
       .flight-tri::before { font-size: 14px; }
       .flight-tri.is-w::before { top: 4px; }
@@ -2392,7 +2469,6 @@
           linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.025) 38%, rgba(0,0,0,.16) 80%),
           linear-gradient(165deg, rgba(20,34,29,.36), rgba(4,9,8,.48));
         box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -8px 15px rgba(0,0,0,.28), 0 8px 20px rgba(0,0,0,.24);
-        backdrop-filter: blur(2px) saturate(1.08); -webkit-backdrop-filter: blur(2px) saturate(1.08);
       }
       .flight-throttle-track { width: 22px; height: 72px; }
       .flight-throttle-track em { left: -6px; right: -6px; height: 11px; }
@@ -2404,7 +2480,6 @@
         font-size: 6.4px; background:
           linear-gradient(115deg, rgba(255,255,255,.1), rgba(255,255,255,.02) 45%, rgba(0,0,0,.14)),
           linear-gradient(160deg, rgba(12,23,19,.34), rgba(4,9,7,.46));
-        backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
       }
       .jet-flight-buttons {
         bottom: calc(27px + var(--safe-bottom)); flex-wrap: nowrap; gap: 4px;
@@ -2415,9 +2490,31 @@
           linear-gradient(115deg, rgba(255,255,255,.18), rgba(255,255,255,.03) 42%, rgba(0,0,0,.14) 78%),
           linear-gradient(160deg, rgba(42,58,52,.42), rgba(8,15,12,.56));
         box-shadow: inset 0 1px 0 rgba(255,255,255,.17), inset 0 -6px 10px rgba(0,0,0,.24), 0 5px 12px rgba(0,0,0,.2);
-        backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
       }
       .jet-flight-buttons button:nth-child(-n+2) { display: none; } /* gear quadrant already owns thrust on mobile */
+      /* The tank utility row starts with EXIT; the jet's thrust-button
+         hiding rule must not swallow it. */
+      .tank-console .jet-flight-buttons button:nth-child(-n+2) { display: flex; }
+      .tank-drive-btn { bottom: calc(148px + var(--safe-bottom)); }
+      .tank-fire-btn {
+        right: calc(8px + var(--safe-right)); bottom: calc(56px + var(--safe-bottom));
+        width: 50px; height: 116px; padding: 7px 4px 5px;
+        background:
+          linear-gradient(115deg, rgba(255,255,255,.22), rgba(255,255,255,.04) 42%, rgba(0,0,0,.18) 78%),
+          linear-gradient(165deg, rgba(96,44,24,.5), rgba(24,10,6,.58));
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.2), inset 0 -8px 15px rgba(0,0,0,.3), 0 8px 20px rgba(0,0,0,.24);
+      }
+      .tank-fire-btn strong { font-size: 11px; }
+      .tank-damage {
+        left: calc(8px + var(--safe-left)); top: calc(46px + var(--safe-top));
+        width: 104px; padding: 6px 7px;
+        background:
+          linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.02) 38%, rgba(0,0,0,.18) 80%),
+          linear-gradient(165deg, rgba(18,30,26,.4), rgba(4,9,8,.5));
+      }
+      .tank-damage-row { font-size: 5.6px; margin-top: 3px; }
+      .tank-reticle { width: 44px; height: 44px; }
+      .jet-flight-buttons button.is-gear { flex-basis: 50px; min-width: 50px; }
       .jet-flight-buttons button.is-assist { flex-basis: 54px; min-width: 54px; }
       .jet-flight-buttons button:last-child { flex-basis: 52px; min-width: 52px; }
       .jet-flight-buttons button strong { font-size: 7.6px; }
@@ -2438,10 +2535,22 @@
           linear-gradient(115deg, rgba(255,255,255,.18), rgba(255,255,255,.03) 42%, rgba(0,0,0,.14) 78%),
           linear-gradient(160deg, rgba(42,58,52,.42), rgba(8,15,12,.56));
         box-shadow: inset 0 1px 0 rgba(255,255,255,.17), inset 0 -6px 10px rgba(0,0,0,.24), 0 5px 12px rgba(0,0,0,.2);
-        backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
       }
       .jet-weapon-buttons button strong { font-size: 7.4px; }
       .jet-weapon-buttons button small { font-size: 5px; }
+    }
+    /* Coarse-pointer aircraft performance guard: no backdrop sampling or
+       animated filter layers over the live WebGL canvas. Solid/translucent
+       gradients keep the same silhouette without mobile GPU flicker. */
+    @media (pointer: coarse) {
+      .compass, .hud-panel, .hud-pause, .hud-coordinates, .jet-drive-btn,
+      .aircraft-camera-toggle, .flight-tri-pad, .flight-throttle,
+      .jet-telemetry, .jet-flight-buttons button, .jet-weapon-buttons button {
+        -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+      }
+      .flight-tri, .jet-flight-buttons button, .jet-weapon-buttons button {
+        filter: none !important; transition: none !important;
+      }
     }
 </style>
 </head>

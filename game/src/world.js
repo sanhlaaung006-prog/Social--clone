@@ -16,6 +16,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { rustCore, rustRawHeight, rustChunkTerrain, rustBuildChunkMesh, rustLocalScatter, rustAiBatch, rustFindPath, rustSkySample, setRustGroundProvider, rustPhysicsStep, rustSafetyReport } from "./wasm/ironveil-core.js";
 import { stepPhysicsBuffer } from "./physics.js";
 import { createWarthogAssembly, WARTHOG_SPECS } from "./aircraft/warthog.ts";
+import { createAbramsAssembly, TANK_SPECS } from "./vehicles/abrams.ts";
 import {
   AIRCRAFT_COMPONENTS,
   aircraftAdvisoryFor,
@@ -66,11 +67,17 @@ export const inputState = {
   flightRollInput: 0, // A/D triangle steering/aileron (-1..1, default D/+ is right)
   flightInvertPitch: false, // Settings > Controls: reverse W/S
   flightInvertRoll: false, // Settings > Controls: reverse A/D
-  flightAssist: true, // AI copilot: attitude-command balance, taxi/landing help (L or cockpit AI button)
+  flightAssist: true, // legacy mirror: true when BALANCE or AUTOPILOT is engaged
+  flightAssistLevel: 1, // 0 MANUAL, 1 AI BALANCE, 2 AI AUTOPILOT (L / cockpit AI button)
+  flightGearToggle: false, // one-shot manual landing-gear command from UI/keyboard
   flightThrottleTarget: null, // absolute 0..1 target from the manual thrust slider
   aircraftCameraMode: "cockpit", // "cockpit" first-person or "chase" third-person
   aircraftGunHeld: false, // held forward-gun trigger for aircraft that have one
   aircraftMissileLaunch: false, // one-shot missile launch queue
+  tankAction: null, // queued "enter" / "exit" from the Abrams DRIVE / EXIT buttons
+  tankDriveInput: 0, // held W/S drive rocker for the tank (-1 reverse .. 1 forward)
+  tankSteerInput: 0, // held A/D steer rocker for the tank (-1 left .. 1 right)
+  tankFireHeld: false, // held cannon trigger while crewing the tank
   staminaBoost: null, // queued {amount,duration,regen,powerFloor} from soda/drugs/medicine
   keys: new Set(),
   timeSkip: false, // set by the T key: jump the day/night cycle +3h
@@ -112,7 +119,7 @@ export const worldControl = {
   teleport: null, weather: null, season: null, rollWeather: false, safetyReports: [],
   // Generic external combat/test events. Explosives, artillery, launchers
   // and future aircraft can all write these without Warthog-specific code.
-  aircraftDamage: null, explodeAt: null, resetAircraft: false,
+  aircraftDamage: null, explodeAt: null, resetAircraft: false, autopilot: null, tankDamage: null,
 };
 
 // The opening orbit cinematic is a once-per-app-open flourish. It must not
@@ -228,6 +235,20 @@ let activePreset = getMapPreset(getSearchParam("map") || "survival");
 
 // Mutable active layout. Only one world exists at a time; createWorld()
 // reconfigures this before building its scene (menu mode switch = rebuild).
+// Fixed, allocation-free autopilot circuit around the dirt strip. Each
+// record is the end of a route leg: [x, z, target AGL m, target speed
+// m/s]. A wide rectangular circuit with long straights: the jet's
+// velocity vector skids in sustained turns, so each leg needs straight
+// distance to realign and regain energy before the next turn. The base
+// leg ends ~0.8 km east of the centreline, where AUTO LAND starts a
+// capped-angle intercept onto a ~1.9 km final.
+const AUTOPILOT_WAYPOINTS = Object.freeze([
+  Object.freeze([18, -1200, 160, 66]), // climb straight ahead
+  Object.freeze([1800, -1200, 160, 66]), // crosswind
+  Object.freeze([1800, 1800, 150, 64]), // downwind
+  Object.freeze([800, 1800, 150, 60]), // base, then AUTO LAND intercept
+]);
+
 export const WORLD = {
   size: activePreset.size,
   half: activePreset.half,
@@ -238,8 +259,9 @@ export const WORLD = {
   spawn: { x: 0, z: 0 },
   relay: { x: 0, z: 0 },
   warthog: { x: 18, z: 0, heading: 0 }, // parked at the south end of the dirt strip, facing north (-Z)
+  tank: { x: -14, z: 12, heading: 0 }, // M1A2 parked just west of spawn, facing north (-Z)
 };
-let relayBase = 0, spawnBase = 0;
+let relayBase = 0, spawnBase = 0, stripSouthBase = 0, stripNorthBase = 0;
 let RIVER = { samples: [], grid: new Map(), cellSize: 50, control: [] };
 
 export const SEA_LEVEL = 0.25;
@@ -454,12 +476,20 @@ export function configureWorldLayout(presetId = activePreset.id, seed = sessionW
   WORLD.playableRadius = activePreset.half;
   WORLD.spawn.x = 0; WORLD.spawn.z = 0;
   WORLD.warthog = { x: 18, z: 0, heading: 0 };
+  WORLD.tank = { x: -14, z: 12, heading: 0 };
   debugStats.warthogX = WORLD.warthog.x;
   debugStats.warthogZ = WORLD.warthog.z;
+  debugStats.tankSpawnX = WORLD.tank.x;
+  debugStats.tankSpawnZ = WORLD.tank.z;
   RIVER = buildRiver(sessionWorldSeed, activePreset);
   WORLD.relay = chooseRelay(sessionWorldSeed, activePreset);
   spawnBase = rawHeight(WORLD.spawn.x, WORLD.spawn.z);
   relayBase = rawHeight(WORLD.relay.x, WORLD.relay.z);
+  // A usable dirt strip is graded earth, not a line painted over random
+  // bumps. Cap its longitudinal fall to about 1.1% so takeoff and the
+  // landing rollout do not depend on the session terrain seed.
+  stripSouthBase = rawHeight(WORLD.warthog.x, 24);
+  stripNorthBase = stripSouthBase + clamp(rawHeight(WORLD.warthog.x, -520) - stripSouthBase, -6, 6);
   debugStats.mapMode = activePreset.id;
   debugStats.mapSizeM = activePreset.size;
   debugStats.worldSeed = sessionWorldSeed;
@@ -489,6 +519,14 @@ function terrainHeightFromRaw(raw, x, z) {
     const target = lerp(ri.bed, bank, smoothstep(6.5, 19, ri.d));
     const blend = (1 - smoothstep(38, 58, ri.d)) * 0.94;
     h = lerp(h, target, blend);
+  }
+  const stripDx = Math.abs(x - WORLD.warthog.x);
+  if (stripDx < 38 && z < 34 && z > -560) {
+    const stripProfile = lerp(stripSouthBase, stripNorthBase, clamp((24 - z) / 544, 0, 1));
+    const stripBlend = (1 - smoothstep(14, 38, stripDx))
+      * (1 - smoothstep(18, 34, z))
+      * smoothstep(-560, -520, z);
+    h = lerp(h, stripProfile, stripBlend * 0.98);
   }
   return h;
 }
@@ -718,7 +756,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           noiseSeed: NOISE_SEED, half: mapPreset.half, rimStart: mapPreset.rimStart,
           spawnX: WORLD.spawn.x, spawnZ: WORLD.spawn.z,
           relayX: WORLD.relay.x, relayZ: WORLD.relay.z,
-          spawnBase, relayBase, cellSize: RIVER.cellSize, samples: workerSamples,
+          spawnBase, relayBase, stripX: WORLD.warthog.x, stripSouthBase, stripNorthBase, cellSize: RIVER.cellSize, samples: workerSamples,
         },
       }, [workerSamples.buffer]);
     } catch (e) { disableWorker(); }
@@ -1223,9 +1261,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.bvhPending = bvhQueue.length;
     if (chunkQueue.length || !bvhQueue.length) return;
     // BVH construction is atomic. During live play it is admitted only
-    // on alternate, healthy frames; menus/title can use the spare time.
+    // on occasional healthy frames; menus/title can use the spare time.
     bvhPumpFlip = !bvhPumpFlip;
-    if (playing && (bvhPumpFlip || debugStats.frameMs > 22)) {
+    if (playing && (bvhPumpFlip || debugStats.frameMs > 19)) {
       debugStats.bvhDeferred = (debugStats.bvhDeferred || 0) + 1;
       return;
     }
@@ -1709,7 +1747,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   const localObstacles = new Float32Array(MAX_LOCAL_OBSTACLES * 4); // x,z,radius,topY
   let localObstacleCount = 0;
   let aircraftSelfObstacleCount = 0;
+  let tankObstacleStart = 0, tankObstacleCount = 0; // tank's own discs inside localObstacles
   let warthog = null; // assigned below once the airframe is built
+  let tank = null; // assigned below once the Abrams is built
   function addLocalObstacle(x, z, radius, topY) {
     if (localObstacleCount >= MAX_LOCAL_OBSTACLES) return;
     const o = localObstacleCount++ * 4;
@@ -1736,6 +1776,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         // These three discs stop the on-foot player walking through the
         // parked jet; the aircraft's own kinetic solver must skip them.
         aircraftSelfObstacleCount = localObstacleCount;
+      }
+    }
+    tankObstacleStart = 0;
+    tankObstacleCount = 0;
+    if (tank && !tank.occupied) {
+      const p = tank.holder.position;
+      if (Math.hypot(p.x - cx, p.z - cz) < CULL_MID_M) {
+        const fx = -Math.sin(tank.yaw), fz = -Math.cos(tank.yaw);
+        tankObstacleStart = localObstacleCount;
+        addLocalObstacle(p.x, p.z, 2.05, p.y + 2.6);
+        addLocalObstacle(p.x + fx * 2.6, p.z + fz * 2.6, 1.85, p.y + 2.2);
+        addLocalObstacle(p.x - fx * 2.6, p.z - fz * 2.6, 1.85, p.y + 2.4);
+        // Same contract as the jet discs: they block the on-foot player
+        // (and a taxiing jet), but the tank's own drive solver skips
+        // exactly this index range.
+        tankObstacleCount = localObstacleCount - tankObstacleStart;
       }
     }
     let rockN = 0, blobN = 0, grassN = 0, pebbleN = 0, farTrees = 0;
@@ -2254,6 +2310,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       groundShadow: aircraftGroundShadow, groundShadowMaterial: aircraftShadowMaterial,
       assistPitchTarget: 0, assistRollTarget: 0, assistMode: "AI TAXI",
       assistPitchCmd: 0, assistRollCmd: 0, assistKeyWasDown: false,
+      assistLevelWas: 1,
+      autopilotPhase: "AUTO STANDBY", autopilotWaypoint: 0,
+      autopilotTargetAlt: 120, autopilotTargetSpeed: 74, autopilotTargetYaw: 0,
+      autopilotThrottleTarget: 0, autopilotBrake: false, autopilotStopTimer: 0, autopilotRolloutFromLanding: false,
+      gearManualOverride: false, gearManualDemand: 0, gearDemand: 1,
+      gearDemandTimer: 0, gearMode: "AUTO", gearKeyWasDown: false,
+      gearToggleQueued: false,
       pitchRateVel: 0, rollRateVel: 0,
       gunAmmo: aircraftConfig.weapons.gun ? aircraftConfig.weapons.gun.ammo : 0,
       missilesLeft: aircraftConfig.weapons.missiles ? aircraftConfig.weapons.missiles.count : 0,
@@ -2265,6 +2328,70 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       interactKeyWasDown: false, missileKeyWasDown: false,
     };
     debugStats.warthogVisible = 1;
+  }
+
+  // ----- M1A2 Abrams main battle tank (drivable, parked west of spawn) -----
+  {
+    const tankAssembly = createAbramsAssembly("olive", "combat");
+    // Optimisation: the factory attaches a hidden EdgesGeometry line set to
+    // almost every mesh for its blueprint viewer mode. They are invisible
+    // in game but would still cost scene-graph and matrix time every
+    // frame, so strip and dispose them once at build.
+    const tankEdgeLines = [];
+    tankAssembly.root.traverse((object) => { if (object.isLineSegments) tankEdgeLines.push(object); });
+    for (const line of tankEdgeLines) {
+      if (line.parent) line.parent.remove(line);
+      line.geometry.dispose();
+    }
+    debugStats.tankEdgeLinesRemoved = tankEdgeLines.length;
+    const tankBuildStats = tankAssembly.getStats();
+    debugStats.tankMeshes = tankBuildStats.meshes;
+    debugStats.tankTriangles = tankBuildStats.triangles;
+    debugStats.tankPartCount = tankBuildStats.parts;
+    // Bullet targets: tag sizeable structural meshes with their factory
+    // part id (mapped to damage components in resolveTankPartFromSpec).
+    // MeshBasicMaterial pieces (muzzle flash, smoke, decals) never block.
+    const tankHitMeshes = [], tankHitMeshSet = new Set();
+    for (const [partId, record] of tankAssembly.parts) {
+      record.group.traverse((object) => {
+        if (!object.isMesh || tankHitMeshSet.has(object)) return;
+        const material = Array.isArray(object.material) ? object.material[0] : object.material;
+        if (!material || material.isMeshBasicMaterial) return;
+        if (!object.geometry.boundingSphere) object.geometry.computeBoundingSphere();
+        if (!object.geometry.boundingSphere || object.geometry.boundingSphere.radius < 0.22) return;
+        object.userData.tankPartId = partId;
+        tankHitMeshes.push(object);
+        tankHitMeshSet.add(object);
+      });
+    }
+    debugStats.tankHitMeshes = tankHitMeshes.length;
+    // The model faces +Z; the game faces -Z. A fixed half-turn inside a
+    // game-oriented holder keeps every yaw formula identical to the jet.
+    tankAssembly.root.rotation.y = Math.PI;
+    const tankHolder = new THREE.Group();
+    tankHolder.rotation.order = "YXZ";
+    tankHolder.add(tankAssembly.root);
+    scene.add(tankHolder);
+    tankHolder.updateMatrixWorld(true);
+    const tankBox = new THREE.Box3().setFromObject(tankHolder);
+    tank = {
+      holder: tankHolder, assembly: tankAssembly,
+      hitMeshes: tankHitMeshes, hitMeshSet: tankHitMeshSet,
+      yaw: WORLD.tank.heading || 0, speed: 0,
+      aimYaw: WORLD.tank.heading || 0, aimPitch: 0.05, turretDeg: 0, gunDeg: 0,
+      occupied: false, nearDistance: 999, destroyed: false,
+      reloadT: 0, ammo: TANK_SPECS.ammoRounds, shellsFired: 0,
+      components: { hull: 1, turret: 1, gun: 1, engine: 1, "track-port": 1, "track-starboard": 1, ammo: 1 },
+      powerFactor: 1, trackFactorPort: 1, trackFactorStarboard: 1,
+      slopePitch: 0, slopeRoll: 0, baseY: tankBox.min.y, groundOffset: -tankBox.min.y,
+      fireAcc: 0, damageSeq: 0, interactKeyWasDown: false, lastCollisionAt: -99,
+      camPos: new THREE.Vector3(), camReady: false,
+    };
+    tank.holder.position.set(WORLD.tank.x, 0, WORLD.tank.z);
+    placeTankOnTerrain(0, true);
+    publishTankDamage();
+    debugStats.tankVisible = 1;
+    debugStats.tankMessage = "M1A2 PARKED";
   }
 
   // ----- hostile drones -----
@@ -2888,7 +3015,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         }
       }
     }
-    if (!options.ignorePlayer && !(warthog && warthog.occupied)) {
+    if (tank && !options.ignoreTank && !tank.destroyed) {
+      // Armour shrugs off most blast splash; a direct cannon hit is the
+      // real threat. Part centres are holder-local heights above the
+      // track bottoms, matching TANK_PART_CENTERS.
+      const splashFactor = source === "tank-cannon" ? 0.55 : 0.3;
+      for (const part of TANK_PART_CENTERS) {
+        _tankPoint.set(part.x, part.y + tank.baseY, part.z);
+        tank.holder.localToWorld(_tankPoint);
+        const distance = _tankPoint.distanceTo(point);
+        const falloff = clamp(1 - distance / (radius + 5), 0, 1);
+        if (falloff > 0.03) {
+          damageTank(part.id, power * falloff * splashFactor, source, _tankPoint.clone());
+          if (tank.destroyed) break;
+        }
+      }
+    }
+    if (!options.ignorePlayer && !(warthog && warthog.occupied) && !(tank && tank.occupied)) {
       const distance = player.pos.distanceTo(point);
       if (distance < radius + 2) {
         const falloff = clamp(1 - distance / (radius + 2), 0, 1);
@@ -2986,6 +3129,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     j.velocity.set(0, 0, 0);
     j.speed = 0; j.signedSpeed = 0; j.verticalSpeed = 0; j.altitudeAgl = 0;
     j.gearDown = true;
+    j.gearManualOverride = false; j.gearManualDemand = 0; j.gearDemand = 1;
+    j.gearDemandTimer = 0; j.gearMode = "AUTO"; j.gearToggleQueued = false;
+    j.autopilotPhase = "AUTO STANDBY"; j.autopilotWaypoint = 0;
+    j.autopilotThrottleTarget = 0; j.autopilotBrake = false; j.autopilotStopTimer = 0; j.autopilotRolloutFromLanding = false;
     j.gunAmmo = j.config.weapons.gun ? j.config.weapons.gun.ammo : 0;
     j.missilesLeft = j.config.weapons.missiles ? j.config.weapons.missiles.count : 0;
     j.gunAccumulator = 0; j.missileCooldown = 0;
@@ -3107,6 +3254,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
             killDrone(drone);
             hit = true;
             break;
+          }
+        }
+        if (!hit && tank && !tank.destroyed) {
+          _tankPoint.copy(pos);
+          tank.holder.worldToLocal(_tankPoint);
+          const localH = _tankPoint.y - tank.baseY;
+          if (Math.abs(_tankPoint.x) < 2.0 && localH > -0.2 && localH < 2.9 && Math.abs(_tankPoint.z) < 4.7) {
+            burst(pos, 10, 3);
+            damageTank(tankPartIdAtLocal(_tankPoint), shell.damage * 0.55, "aircraft-gun", pos.clone());
+            hit = true;
           }
         }
         if (!hit && pos.y <= terrainSurfaceHeight(pos.x, pos.z) + 0.06) {
@@ -3297,9 +3454,57 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // turns, stall break, rolling resistance, brakes and gear drag. It is a
   // game model, but the airplane has to accelerate, rotate, climb, stall,
   // descend and land for physical reasons — there is no hover/fly-up key.
-  const _jetFwd = new THREE.Vector3(), _jetRight = new THREE.Vector3(), _jetUp = new THREE.Vector3();
+  const _jetFwd = new THREE.Vector3(), _jetRight = new THREE.Vector3(), _jetUp = new THREE.Vector3(), _jetLift = new THREE.Vector3();
   const _jetDir = new THREE.Vector3(), _jetForce = new THREE.Vector3();
   const wrapJetAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  function normalizedFlightAssistLevel() {
+    const raw = Number.isFinite(inputState.flightAssistLevel)
+      ? Math.round(inputState.flightAssistLevel)
+      : (inputState.flightAssist ? 1 : 0);
+    const level = clamp(raw, 0, 2);
+    inputState.flightAssistLevel = level;
+    inputState.flightAssist = level > 0;
+    return level;
+  }
+  function desiredYawTo(x, z, targetX, targetZ) {
+    return Math.atan2(-(targetX - x), -(targetZ - z));
+  }
+  function nearestAutopilotWaypoint(j) {
+    let best = 0, bestD2 = Infinity;
+    for (let i = 0; i < AUTOPILOT_WAYPOINTS.length; i++) {
+      const wp = AUTOPILOT_WAYPOINTS[i];
+      const dx = wp[0] - j.group.position.x, dz = wp[1] - j.group.position.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) { bestD2 = d2; best = i; }
+    }
+    // If AUTO is engaged already inside the capture bubble, fly the next
+    // leg instead of reversing course to touch the point just passed.
+    if (bestD2 < 180 * 180 && best < AUTOPILOT_WAYPOINTS.length - 1) best++;
+    return best;
+  }
+  const _autopilotSegment = { x: 0, z: 0, remaining: 0, crossTrack: 0 };
+  function autopilotSegmentTarget(pos, index) {
+    const idx = clamp(Math.round(index || 0), 0, AUTOPILOT_WAYPOINTS.length - 1);
+    const wp = AUTOPILOT_WAYPOINTS[idx];
+    const prevX = idx === 0 ? WORLD.warthog.x : AUTOPILOT_WAYPOINTS[idx - 1][0];
+    const prevZ = idx === 0 ? WORLD.warthog.z : AUTOPILOT_WAYPOINTS[idx - 1][1];
+    const segX = wp[0] - prevX, segZ = wp[1] - prevZ;
+    const length = Math.max(1, Math.hypot(segX, segZ));
+    const ux = segX / length, uz = segZ / length;
+    const relX = pos.x - prevX, relZ = pos.z - prevZ;
+    const along = relX * ux + relZ * uz;
+    const crossTrack = relX * uz - relZ * ux;
+    // A jet at circuit speed has a several-hundred-metre turn radius.
+    // Pursuing a point ahead on the desired leg gives a bounded
+    // intercept angle and rejoins the route after an overshoot.
+    const lookahead = clamp(300 + Math.abs(crossTrack) * 0.75, 300, 780);
+    const targetAlong = clamp(along + lookahead, 0, length);
+    _autopilotSegment.x = prevX + ux * targetAlong;
+    _autopilotSegment.z = prevZ + uz * targetAlong;
+    _autopilotSegment.remaining = length - along;
+    _autopilotSegment.crossTrack = crossTrack;
+    return _autopilotSegment;
+  }
   function warthogGroundY(x, z) {
     return Math.max(
       terrainSurfaceHeight(x, z),
@@ -3380,12 +3585,14 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     j.assembly.setCockpitView(inputState.aircraftCameraMode !== "chase");
     inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
     inputState.flightPitchInput = 0; inputState.flightRollInput = 0;
+    inputState.flightGearToggle = false; j.gearToggleQueued = false;
     inputState.flightThrottleTarget = j.throttle;
     player.yaw = j.yaw; player.pitch = j.pitch;
     debugStats.jetMessage = j.crashed ? "AIRFRAME DAMAGED" : "CANOPY CLOSING // ENGINE READY";
   }
   function enterWarthog() {
     if (!warthog || warthog.occupied || warthog.exploded || ejection.active || warthog.nearDistance > 10.5) return;
+    if (tank && tank.occupied) return; // already crewing the tank this frame
     if (warthog.entryPhase === "opening") return;
     warthog.entryPhase = "opening";
     warthog.canopyTarget = 1;
@@ -3399,6 +3606,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     j.canopyTarget = 0;
     j.assembly.setCockpitView(false);
     inputState.flightPitchInput = 0; inputState.flightRollInput = 0;
+    inputState.flightGearToggle = false; j.gearToggleQueued = false;
     inputState.flightThrottleTarget = null;
     const fx = -Math.sin(j.yaw), fz = -Math.cos(j.yaw);
     const rx = Math.cos(j.yaw), rz = -Math.sin(j.yaw);
@@ -3451,10 +3659,20 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     }
     j.cameraKeyWasDown = cameraKey;
     const assistKey = inputState.keys.has("KeyL");
-    if (assistKey && !j.assistKeyWasDown && j.occupied) inputState.flightAssist = !inputState.flightAssist;
+    let currentAssistLevel = normalizedFlightAssistLevel();
+    if (assistKey && !j.assistKeyWasDown && j.occupied) {
+      currentAssistLevel = (currentAssistLevel + 1) % 3;
+      inputState.flightAssistLevel = currentAssistLevel;
+      inputState.flightAssist = currentAssistLevel > 0;
+    }
     j.assistKeyWasDown = assistKey;
-    debugStats.aircraftAssist = inputState.flightAssist ? 1 : 0;
-    debugStats.aircraftAssistMode = inputState.flightAssist ? (j.assistMode || "AI BALANCE") : "MANUAL";
+    const gearKey = inputState.keys.has("KeyB");
+    if (j.occupied && (inputState.flightGearToggle || (gearKey && !j.gearKeyWasDown))) j.gearToggleQueued = true;
+    inputState.flightGearToggle = false;
+    j.gearKeyWasDown = gearKey;
+    debugStats.aircraftAssist = currentAssistLevel > 0 ? 1 : 0;
+    debugStats.aircraftAssistLevel = currentAssistLevel;
+    debugStats.aircraftAssistMode = currentAssistLevel > 0 ? (j.assistMode || "AI BALANCE") : "MANUAL";
     debugStats.jetOccupied = j.occupied ? 1 : 0;
     debugStats.aircraftCameraMode = inputState.aircraftCameraMode;
     // A stopped wreck is scenery/debris, not a perpetual flight-model job:
@@ -3514,7 +3732,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (k.has("ShiftLeft") || k.has("ShiftRight")) throttleDelta += 1;
     if (k.has("ControlLeft") || k.has("ControlRight")) throttleDelta -= 1;
     if (!j.occupied) throttleDelta = 0;
-    if (j.occupied && inputState.flightThrottleTarget != null && throttleDelta === 0) {
+    const autopilotThrottleEngaged = currentAssistLevel === 2 && j.occupied && !j.crashed && !j.exploded;
+    if (autopilotThrottleEngaged) {
+      const target = clamp(j.autopilotThrottleTarget || 0, 0, 1);
+      const step = clamp(target - j.throttle, -dt * 1.15, dt * 1.15);
+      j.throttle = clamp(j.throttle + step, 0, 1);
+      inputState.flightThrottleTarget = j.throttle; // keep the quadrant honest on disengage
+    } else if (j.occupied && inputState.flightThrottleTarget != null && throttleDelta === 0) {
       const target = clamp(inputState.flightThrottleTarget, 0, 1);
       const step = clamp(target - j.throttle, -dt * 1.4, dt * 1.4);
       j.throttle = clamp(j.throttle + step, 0, 1);
@@ -3545,39 +3769,352 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     const pilotRollInput = j.controlRoll;
     let pitchInput = pilotPitchInput;
     let rollInput = pilotRollInput;
-    const braking = !!j.occupied && !!(inputState.jetBrake || k.has("Space"));
+    // A deliberate stick/rocker input is the pilot taking the jet back.
+    // Drop only to BALANCE (not raw MANUAL) so the hand-back is gentle.
+    if (currentAssistLevel === 2 && j.occupied && (Math.abs(rawPitchInput) > 0.48 || Math.abs(rawRollInput) > 0.48)) {
+      currentAssistLevel = 1;
+      inputState.flightAssistLevel = 1;
+      inputState.flightAssist = true;
+      j.autopilotPhase = "AUTO STANDBY";
+      j.autopilotThrottleTarget = j.throttle;
+      j.autopilotBrake = false;
+      inputState.flightThrottleTarget = j.throttle;
+    }
+    let braking = !!j.occupied && !!(inputState.jetBrake || k.has("Space"));
     const perf = j.performance || deriveAircraftPerformance(j.components);
     const weightN = j.massKg * 9.81;
     // ---- AI copilot / stability augmentation ---------------------------
-    // This is an attitude-command outer loop around the existing rate
-    // solver, not a second physics model. With ASSIST on (default), the
-    // pilot's rocker pads request a safe pitch/bank and the AI moves to and
-    // holds it: wings level on release, vertical-speed hold in cruise,
-    // a stabilized flare near the ground, stall/terrain recovery and
-    // automatic compensation for asymmetric wing/engine damage. It never
-    // starts the engines or rotates by itself: thrust stays manual and W
-    // is still required for takeoff. ASSIST off returns the original free
-    // continuous pitch/roll handling for aerobatics.
-    const assistEnabled = !!inputState.flightAssist && j.occupied && !j.crashed && !j.exploded;
+    // BALANCE is an attitude-command outer loop around the existing rate
+    // solver: rockers request a safe pitch/bank and the AI holds it. It
+    // never starts a takeoff by itself. AUTOPILOT is the next layer up:
+    // it owns autothrottle/brakes, taxis to the strip, rotates, flies the
+    // fixed circuit at altitude/speed targets, returns to final, lands and
+    // rolls out to a stop. A deliberate rocker input hands the aircraft
+    // back to BALANCE. Manual mode keeps the original free aerobatics.
+    const assistEnabled = currentAssistLevel > 0 && j.occupied && !j.crashed && !j.exploded;
+    const autopilotEnabled = currentAssistLevel === 2 && j.occupied && !j.crashed && !j.exploded;
+    if (autopilotEnabled && j.assistLevelWas !== 2) {
+      j.autopilotWaypoint = nearestAutopilotWaypoint(j);
+      j.autopilotPhase = j.airborne ? (j.altitudeAgl < 70 ? "AUTO CLIMB" : "AUTO NAV") : "AUTO TAXI";
+      j.autopilotStopTimer = 0;
+      j.autopilotRolloutFromLanding = false;
+      j.autopilotThrottleTarget = j.throttle;
+      j.autopilotBrake = false;
+    }
+    if (!autopilotEnabled) {
+      j.autopilotBrake = false;
+      if (j.autopilotPhase !== "AUTO COMPLETE") j.autopilotPhase = "AUTO STANDBY";
+    }
+    j.assistLevelWas = currentAssistLevel;
     j.assistPitchCmd = pitchInput;
     j.assistRollCmd = rollInput;
     if (assistEnabled) {
       const assistSpeed = j.velocity.length();
       if (!j.airborne) {
-        j.assistMode = assistSpeed > 38 ? "AI ROTATE" : "AI TAXI";
-        j.assistPitchTarget = pilotPitchInput > 0.22 && assistSpeed > 38 ? 0.21 : 0;
-        j.assistRollTarget = 0;
-        // Taxi-game ground feel: steering stays direct at parking speed and
-        // is progressively calmed as the roll builds, while a held W gets a
-        // positive, repeatable rotation instead of a twitchy nose spike.
-        rollInput = clamp(pilotRollInput * (1 - clamp(Math.abs(j.signedSpeed) / 70, 0, 1) * 0.35), -1, 1);
-        if (pilotPitchInput > 0.22 && assistSpeed > 38) pitchInput = Math.max(pitchInput, 0.72);
+        if (autopilotEnabled) {
+          const stripX = WORLD.warthog.x;
+          const parkZ = WORLD.warthog.z;
+          if (j.autopilotPhase === "AUTO CLIMB" && assistSpeed > 35) {
+            // A shallow bounce in the first seconds is another rotation,
+            // not a landing rollout.
+            j.autopilotPhase = "AUTO TAKEOFF";
+          } else if (j.autopilotPhase === "AUTO LAND" || j.autopilotPhase === "AUTO NAV" || j.autopilotPhase === "AUTO CLIMB") {
+            j.autopilotRolloutFromLanding = j.autopilotPhase === "AUTO LAND";
+            j.autopilotPhase = "AUTO ROLLOUT";
+          } else if (j.autopilotPhase === "AUTO STANDBY") {
+            j.autopilotPhase = "AUTO TAXI";
+          }
+          let desiredYaw = j.yaw;
+          let targetSpeed = 0;
+          pitchInput = 0;
+          rollInput = 0;
+          j.autopilotTargetAlt = 0;
+          if (j.autopilotPhase === "AUTO COMPLETE") {
+            j.autopilotThrottleTarget = 0;
+            braking = assistSpeed > 0.25;
+          } else if (j.autopilotPhase === "AUTO ROLLOUT") {
+            j.autopilotThrottleTarget = 0;
+            braking = assistSpeed > 0.3;
+            if (assistSpeed > 2) {
+              const fwdZ = -Math.cos(j.yaw);
+              desiredYaw = desiredYawTo(pos.x, pos.z, stripX, pos.z + fwdZ * 90);
+              rollInput = clamp(-wrapJetAngle(desiredYaw - j.yaw) * 1.1, -1, 1);
+            }
+            if (assistSpeed < 0.35) {
+              j.autopilotStopTimer += dt;
+              if (j.autopilotStopTimer > 1.0) {
+                // An off-strip precautionary touchdown is not a completed
+                // circuit: taxi back to the strip and try again.
+                const stoppedOnStrip = Math.abs(pos.x - stripX) < 60 && pos.z < 80 && pos.z > -700;
+                j.autopilotPhase = j.autopilotRolloutFromLanding && stoppedOnStrip ? "AUTO COMPLETE" : "AUTO TAXI";
+                j.autopilotStopTimer = 0;
+              }
+            } else {
+              j.autopilotStopTimer = 0;
+            }
+          } else if (j.autopilotPhase === "AUTO TAKEOFF") {
+            targetSpeed = 62;
+            j.autopilotThrottleTarget = 1;
+            braking = false;
+            desiredYaw = desiredYawTo(pos.x, pos.z, stripX, pos.z - 150);
+            rollInput = clamp(-wrapJetAngle(desiredYaw - j.yaw) * 1.15, -1, 1);
+            pitchInput = (assistSpeed >= 48 || (assistSpeed > 42 && pos.z < -390)) ? 1 : 0;
+          } else {
+            j.autopilotPhase = "AUTO TAXI";
+            const targetX = stripX, targetZ = parkZ + 4;
+            const distanceToPark = Math.hypot(targetX - pos.x, targetZ - pos.z);
+            const northError = wrapJetAngle(0 - j.yaw);
+            const alignedAtPark = distanceToPark < 8 && Math.abs(northError) < 0.18;
+            const rollingTakeoff = assistSpeed > 14 && Math.abs(pos.x - stripX) < 12 && Math.abs(northError) < 0.28 && pos.z < 24;
+            if (alignedAtPark || rollingTakeoff) {
+              j.autopilotPhase = "AUTO TAKEOFF";
+              targetSpeed = 62;
+              j.autopilotThrottleTarget = 1;
+              braking = false;
+              desiredYaw = desiredYawTo(pos.x, pos.z, stripX, pos.z - 150);
+              rollInput = clamp(-wrapJetAngle(desiredYaw - j.yaw) * 1.15, -1, 1);
+              pitchInput = (assistSpeed >= 48 || (assistSpeed > 42 && pos.z < -390)) ? 1 : 0;
+            } else {
+              desiredYaw = distanceToPark < 7 ? 0 : desiredYawTo(pos.x, pos.z, targetX, targetZ);
+              const headingError = wrapJetAngle(desiredYaw - j.yaw);
+              targetSpeed = distanceToPark < 7 ? 3.2 : clamp(distanceToPark * 0.16, 3, 8);
+              if (Math.abs(headingError) > 1.2) targetSpeed = Math.min(targetSpeed, 3.2);
+              const signed = j.signedSpeed || 0;
+              j.autopilotThrottleTarget = signed < targetSpeed
+                ? clamp(0.18 + (targetSpeed - signed) * 0.07, 0, 0.5)
+                : 0.02;
+              braking = signed > targetSpeed + 1.6;
+              rollInput = clamp(-headingError * 1.45, -1, 1);
+            }
+          }
+          j.autopilotTargetSpeed = targetSpeed;
+          j.autopilotTargetYaw = desiredYaw;
+          j.autopilotBrake = braking;
+          j.assistPitchTarget = j.autopilotPhase === "AUTO TAKEOFF" && pitchInput > 0 ? 0.21 : 0;
+          j.assistRollTarget = 0;
+          j.assistMode = j.autopilotPhase;
+        } else {
+          j.assistMode = assistSpeed > 38 ? "AI ROTATE" : "AI TAXI";
+          j.assistPitchTarget = pilotPitchInput > 0.22 && assistSpeed > 38 ? 0.21 : 0;
+          j.assistRollTarget = 0;
+          // Taxi-game ground feel: steering stays direct at parking speed and
+          // is progressively calmed as the roll builds, while a held W gets a
+          // positive, repeatable rotation instead of a twitchy nose spike.
+          rollInput = clamp(pilotRollInput * (1 - clamp(Math.abs(j.signedSpeed) / 70, 0, 1) * 0.35), -1, 1);
+          if (pilotPitchInput > 0.22 && assistSpeed > 38) pitchInput = Math.max(pitchInput, 0.72);
+        }
       } else {
-        let assistMode = "AI BALANCE";
-        const maxBank = (j.altitudeAgl < 18 ? 0.48 : 0.92) * clamp(perf.rollAuthority, 0.35, 1);
+        let assistMode = autopilotEnabled ? (j.autopilotPhase || "AUTO NAV") : "AI BALANCE";
+        const maxBank = autopilotEnabled
+          ? ((j.autopilotPhase === "AUTO LAND"
+            ? (j.altitudeAgl >= 45 ? 0.66 : 0.38)
+            : (j.altitudeAgl >= 70 ? 0.62 : j.altitudeAgl >= 55 ? 0.58 : j.altitudeAgl >= 35 ? 0.5 : j.altitudeAgl >= 18 ? 0.42 : 0.38))
+            * clamp(perf.rollAuthority, 0.35, 1))
+          : ((j.altitudeAgl < 18 ? 0.48 : 0.92) * clamp(perf.rollAuthority, 0.35, 1));
         let desiredRollTarget = Math.abs(pilotRollInput) > 0.05 ? pilotRollInput * maxBank : 0;
         let desiredPitchTarget = j.assistPitchTarget || 0;
-        if (Math.abs(pilotPitchInput) > 0.05) {
+        if (autopilotEnabled) {
+          const stripX = WORLD.warthog.x;
+          const touchdownZ = -110;
+          if (j.autopilotPhase !== "AUTO CLIMB" && j.autopilotPhase !== "AUTO NAV" && j.autopilotPhase !== "AUTO LAND") {
+            j.autopilotPhase = j.altitudeAgl < 70 ? "AUTO CLIMB" : "AUTO NAV";
+          }
+          let targetX = AUTOPILOT_WAYPOINTS[0][0], targetZ = AUTOPILOT_WAYPOINTS[0][1], targetAlt = AUTOPILOT_WAYPOINTS[0][2], targetSpeed = AUTOPILOT_WAYPOINTS[0][3], desiredVs = 0;
+          let finalIntercept = false;
+          if (j.autopilotPhase === "AUTO CLIMB") {
+            j.autopilotWaypoint = 0;
+            let wp = AUTOPILOT_WAYPOINTS[0];
+            let segment = autopilotSegmentTarget(pos, 0);
+            const climbGateCaptured = segment.remaining < 160;
+            if (j.altitudeAgl >= 128 || climbGateCaptured) {
+              j.autopilotPhase = "AUTO NAV";
+              if (climbGateCaptured) {
+                j.autopilotWaypoint = 1;
+                wp = AUTOPILOT_WAYPOINTS[1];
+                segment = autopilotSegmentTarget(pos, 1);
+              }
+            }
+            targetX = segment.x; targetZ = segment.z; targetAlt = wp[2]; targetSpeed = wp[3];
+            desiredVs = clamp((targetAlt - j.altitudeAgl) * 0.2, -4, 8.5);
+          } else if (j.autopilotPhase === "AUTO NAV") {
+            let waypointIndex = clamp(Math.round(j.autopilotWaypoint || 0), 0, AUTOPILOT_WAYPOINTS.length - 1);
+            let wp = AUTOPILOT_WAYPOINTS[waypointIndex];
+            let segment = autopilotSegmentTarget(pos, waypointIndex);
+            const finalLeg = waypointIndex >= AUTOPILOT_WAYPOINTS.length - 1;
+            // Rectangular corners need several hundred metres of turn
+            // anticipation at circuit speed; the base-to-final switch
+            // stays late so the base leg is genuinely flown westbound.
+            const turnAnticipation = finalLeg
+              ? clamp(assistSpeed * 1.8, 100, 150)
+              : clamp(assistSpeed * 8, 480, 700);
+            // Judge base-leg readiness by velocity course, not nose yaw:
+            // in the skidding turn onto base the nose can lag the actual
+            // westbound track by 40+ degrees, which used to delay the
+            // final switch until the jet had blown through the turn gate.
+            const prevWp = waypointIndex > 0 ? AUTOPILOT_WAYPOINTS[waypointIndex - 1] : null;
+            const segmentCourseYaw = prevWp ? desiredYawTo(prevWp[0], prevWp[1], wp[0], wp[1]) : j.yaw;
+            const velocityCourseYaw = Math.atan2(-j.velocity.x, -j.velocity.z);
+            const readyForFinal = !finalLeg
+              || segment.remaining < -250
+              || (Math.abs(segment.crossTrack) < 200
+                && Math.abs(wrapJetAngle(velocityCourseYaw - segmentCourseYaw)) < 0.7);
+            if (segment.remaining < turnAnticipation
+              && Math.abs(segment.crossTrack) < (finalLeg ? 170 : 320)
+              && readyForFinal) {
+              if (waypointIndex >= AUTOPILOT_WAYPOINTS.length - 1) {
+                j.autopilotPhase = "AUTO LAND";
+              } else {
+                waypointIndex++;
+                j.autopilotWaypoint = waypointIndex;
+                wp = AUTOPILOT_WAYPOINTS[waypointIndex];
+                segment = autopilotSegmentTarget(pos, waypointIndex);
+              }
+            }
+            if (j.autopilotPhase === "AUTO NAV") {
+              targetX = segment.x; targetZ = segment.z; targetAlt = wp[2]; targetSpeed = wp[3];
+              desiredVs = clamp((targetAlt - j.altitudeAgl) * 0.18, -3.5, 8.5);
+            }
+          }
+          if (j.autopilotPhase === "AUTO LAND") {
+            const finalDistance = Math.max(0, pos.z - touchdownZ);
+            const glideAlt = finalDistance <= 260
+              ? finalDistance * 0.07
+              : 18.2 + (finalDistance - 260) * 0.052;
+            const crossTrack = Math.abs(pos.x - stripX);
+            // Establishment is judged on the velocity course, not the
+            // nose: in a skid the nose can point north while the jet is
+            // still travelling northwest across the centreline.
+            const finalCourseError = Math.abs(wrapJetAngle(Math.atan2(-j.velocity.x, -j.velocity.z)));
+            const establishedFinal = finalDistance > 100 && crossTrack < 58 && finalCourseError < 0.55;
+            const unstableFinal = pos.z < touchdownZ - 35
+              || (finalDistance < 300 && !establishedFinal)
+              || (crossTrack > 1500 && !establishedFinal)
+              || (finalDistance < 250 && (j.altitudeAgl > glideAlt + 25 || assistSpeed > 84));
+            if (unstableFinal) {
+              j.autopilotPhase = "AUTO CLIMB";
+              j.autopilotWaypoint = 0;
+              const wp = AUTOPILOT_WAYPOINTS[0];
+              targetX = wp[0]; targetZ = wp[1]; targetAlt = wp[2]; targetSpeed = wp[3];
+              desiredVs = 8.0;
+              assistMode = "AUTO GO-AROUND";
+            } else if (!establishedFinal) {
+              // Base-to-final intercept: fly a capped-angle course
+              // toward the extended centreline (never more than ~43
+              // degrees off final) and hold a safe height until the
+              // velocity course is actually established. Chasing an
+              // abeam point on the line makes the jet cross final
+              // broadside, skid sideways and orbit the intercept
+              // forever; descending on Z-distance alone lands in the
+              // field beside the strip.
+              const desiredCourseYaw = clamp(Math.atan2(pos.x - stripX, 1200), -0.75, 0.75);
+              targetX = pos.x - Math.sin(desiredCourseYaw) * 1600;
+              targetZ = pos.z - Math.cos(desiredCourseYaw) * 1600;
+              finalIntercept = true;
+              targetAlt = clamp(Math.max(glideAlt, 90), 0, 120);
+              targetSpeed = 58;
+              desiredVs = clamp((targetAlt - j.altitudeAgl) * 0.3, -3, 6);
+            } else {
+              targetX = stripX; targetZ = touchdownZ;
+              targetAlt = clamp(glideAlt, 0, 54);
+              targetSpeed = j.altitudeAgl < 10 ? 50 : j.altitudeAgl < 25 ? 54 : 64;
+              desiredVs = clamp((targetAlt - j.altitudeAgl) * 0.5, j.altitudeAgl < 8 ? -1.2 : -3.4, 2.5);
+            }
+          }
+          if (j.autopilotPhase !== "AUTO LAND" && assistMode !== "AUTO GO-AROUND") assistMode = j.autopilotPhase;
+          if (j.autopilotPhase === "AUTO LAND") assistMode = "AUTO LAND";
+          const desiredYaw = desiredYawTo(pos.x, pos.z, targetX, targetZ);
+          // Steer the velocity course, not just the nose. In this flight
+          // model the velocity vector can skid 20-40 degrees away from
+          // the nose in a sustained turn; banking on nose heading alone
+          // keeps feeding that skid, kills AoA and widens every turn.
+          const velocityYaw = Math.atan2(-j.velocity.x, -j.velocity.z);
+          const courseOffset = clamp(wrapJetAngle(velocityYaw - j.yaw), -0.7, 0.7);
+          const headingError = wrapJetAngle(desiredYaw - (j.yaw + courseOffset * 0.85));
+          if (j.autopilotPhase !== "AUTO LAND" && Math.abs(headingError) > 1.05) {
+            targetSpeed = Math.min(targetSpeed, 66);
+          }
+          let bankLimit = maxBank;
+          if ((j.autopilotPhase !== "AUTO LAND" || finalIntercept) && j.altitudeAgl < 55) {
+            // Terrain clearance outranks the next turn: a steep bank at
+            // low level spends too much lift sideways and lets rising
+            // ground catch the jet before the waypoint altitude is made.
+            desiredVs = Math.max(desiredVs, 6.5);
+            bankLimit = Math.min(bankLimit, j.altitudeAgl < 25 ? 0.38 : 0.5);
+          }
+          if (finalIntercept && j.altitudeAgl >= 55) {
+            bankLimit = Math.max(bankLimit, 0.62 * clamp(perf.rollAuthority, 0.35, 1));
+          }
+          desiredRollTarget = clamp(-headingError * 0.9, -bankLimit, bankLimit);
+          // Never trade altitude for a turn: a banked descent steepens
+          // on its own in this model and the recovery arrives a turn
+          // too late. Descend wings-level only; the established
+          // final is excepted because it flies the glidepath.
+          if ((j.autopilotPhase !== "AUTO LAND" || finalIntercept) && Math.abs(desiredRollTarget) > 0.3) {
+            desiredVs = Math.max(desiredVs, 0);
+          }
+          desiredPitchTarget = clamp(
+            Math.asin(clamp(desiredVs / Math.max(48, assistSpeed), -0.22, 0.25)) + 0.09
+              + clamp((desiredVs - j.verticalSpeed) * 0.018, -0.06, 0.16)
+              // A banked turn needs load-factor lift, not just flight-path
+              // angle: add up to ~4 degrees in a steep circuit turn.
+              + clamp((1 / Math.cos(Math.min(Math.abs(desiredRollTarget), 0.75)) - 1) * 0.16, 0, 0.07),
+            -0.2, 0.34
+          );
+          if (finalIntercept && j.verticalSpeed < desiredVs - 2) {
+            desiredPitchTarget = Math.min(0.34, desiredPitchTarget + 0.04);
+          }
+          if (assistSpeed < targetSpeed - 10) {
+            desiredPitchTarget = Math.min(desiredPitchTarget, j.altitudeAgl < 35 ? 0.19 : 0.12);
+          }
+          if (assistSpeed < 50) desiredPitchTarget = Math.min(desiredPitchTarget, 0.07);
+          // Rotation speed is not cruise speed: the first climb still
+          // needs the same positive attitude the BALANCE layer uses, or
+          // the jet settles back onto the strip while accelerating.
+          if (j.autopilotPhase === "AUTO CLIMB" && j.altitudeAgl < 35 && assistSpeed >= 48) {
+            desiredPitchTarget = clamp(desiredPitchTarget, 0.22, 0.27);
+          }
+          // Thrust acts along the nose, so the autothrottle must regulate
+          // forward (signed) speed, not total velocity: in a skidding
+          // turn total speed can read 77 m/s while only 62 m/s is along
+          // the nose, and cutting thrust then starves AoA and climb.
+          const throttleSpeed = Number.isFinite(j.signedSpeed) ? Math.max(0, j.signedSpeed) : assistSpeed;
+          const throttleBase = j.autopilotPhase === "AUTO LAND" ? 0.3 : 0.42;
+          j.autopilotThrottleTarget = clamp(
+            throttleBase + (targetSpeed - throttleSpeed) * 0.03 + desiredVs * 0.014,
+            j.autopilotPhase === "AUTO LAND" ? 0.08 : 0.16,
+            1
+          );
+          const excessSpeed = throttleSpeed > targetSpeed + 12;
+          if (finalIntercept) {
+            // Excess speed outranks the sink floor: at 78 m/s the turn
+            // radius doubles and no intercept geometry can close.
+            // Only add power for a genuine sink once speed is sane,
+            // and keep that floor modest — a high floor just fights
+            // the airbrake to a fast equilibrium above target speed.
+            if (throttleSpeed > targetSpeed + 8) {
+              j.autopilotThrottleTarget = Math.min(j.autopilotThrottleTarget, 0.18);
+            } else if (j.verticalSpeed < desiredVs - 3) {
+              j.autopilotThrottleTarget = Math.max(j.autopilotThrottleTarget, 0.45);
+            }
+          }
+          if (!excessSpeed && j.autopilotPhase !== "AUTO LAND" && Math.abs(desiredRollTarget) > 0.45 && j.verticalSpeed < desiredVs - 1.5) {
+            j.autopilotThrottleTarget = Math.max(j.autopilotThrottleTarget, 0.62);
+          }
+          if (!excessSpeed && j.autopilotPhase !== "AUTO LAND" && j.altitudeAgl < 18) {
+            j.autopilotThrottleTarget = 1;
+          } else if (!excessSpeed && j.autopilotPhase !== "AUTO LAND" && j.altitudeAgl < 55) {
+            j.autopilotThrottleTarget = Math.max(j.autopilotThrottleTarget, 0.82);
+          } else if (!excessSpeed && j.autopilotPhase !== "AUTO LAND" && targetAlt - j.altitudeAgl > 45 && j.verticalSpeed < desiredVs - 2.5) {
+            j.autopilotThrottleTarget = Math.max(j.autopilotThrottleTarget, 0.68);
+          }
+          j.autopilotBrake = j.autopilotPhase === "AUTO LAND"
+            ? throttleSpeed > targetSpeed + 10
+            : throttleSpeed > targetSpeed + 12;
+          braking = braking || j.autopilotBrake;
+          j.autopilotTargetAlt = targetAlt;
+          j.autopilotTargetSpeed = targetSpeed;
+          j.autopilotTargetYaw = desiredYaw;
+        } else if (Math.abs(pilotPitchInput) > 0.05) {
           desiredPitchTarget = pilotPitchInput > 0 ? pilotPitchInput * 0.31 : pilotPitchInput * 0.26;
           assistMode = pilotPitchInput > 0 ? "AI CLIMB" : "AI DESCEND";
         } else {
@@ -3602,11 +4139,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         if (j.stall || (j.aoaDeg || 0) > 13) {
           desiredPitchTarget = -0.14;
           desiredRollTarget *= 0.35;
-          assistMode = "AI RECOVER";
-        } else if (j.altitudeAgl < 16 && j.verticalSpeed < -4) {
+          if (autopilotEnabled) j.autopilotThrottleTarget = 1;
+          assistMode = autopilotEnabled ? "AUTO RECOVER" : "AI RECOVER";
+        } else if (j.altitudeAgl < 16 && j.verticalSpeed < -4 && j.autopilotPhase !== "AUTO LAND") {
           desiredPitchTarget = Math.max(desiredPitchTarget, 0.17);
           desiredRollTarget *= 0.45;
-          assistMode = "AI PULL-UP";
+          assistMode = autopilotEnabled ? "AUTO PULL-UP" : "AI PULL-UP";
         }
         if (assistSpeed < 48) desiredPitchTarget = Math.min(desiredPitchTarget, 0.08);
         desiredPitchTarget = clamp(desiredPitchTarget, -0.3, 0.34);
@@ -3632,7 +4170,13 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       j.assistRollTarget = clamp(wrapJetAngle(j.roll), -1.0, 1.0);
     }
     debugStats.aircraftAssist = assistEnabled ? 1 : 0;
+    debugStats.aircraftAssistLevel = currentAssistLevel;
     debugStats.aircraftAssistMode = assistEnabled ? j.assistMode : "MANUAL";
+    debugStats.aircraftAutopilotPhase = autopilotEnabled ? j.autopilotPhase : "OFF";
+    debugStats.aircraftAutopilotWaypoint = j.autopilotWaypoint || 0;
+    debugStats.aircraftAutopilotTargetAlt = Math.round((j.autopilotTargetAlt || 0) * 10) / 10;
+    debugStats.aircraftAutopilotTargetSpeedKmh = Math.round((j.autopilotTargetSpeed || 0) * 3.6);
+    debugStats.aircraftAutopilotTargetHeadingDeg = Math.round((((-j.autopilotTargetYaw || 0) * 180 / Math.PI) % 360 + 360) % 360) % 360;
     debugStats.aircraftAssistPitchDeg = Math.round((j.assistPitchTarget || 0) * 180 / Math.PI * 10) / 10;
     debugStats.aircraftAssistRollDeg = Math.round((j.assistRollTarget || 0) * 180 / Math.PI * 10) / 10;
     debugStats.aircraftAssistPitchCmd = Math.round((j.assistPitchCmd || 0) * 100) / 100;
@@ -3712,9 +4256,16 @@ export function createWorld(canvas, hooks = {}, options = {}) {
           j.roll = wrapJetAngle(j.roll + wrapJetAngle(-j.roll) * (1 - Math.exp(-sdt * 0.55)));
         }
         // Banked-turn yaw from the horizontal lift component, plus the
-        // yaw moment of asymmetric engine damage. Sin/cos stays finite
-        // at knife-edge and inverted attitudes (no tan blow-up).
-        j.yaw = wrapJetAngle(j.yaw - (9.81 * Math.sin(j.roll) * Math.cos(j.pitch)) / Math.max(speed0, 28) * sdt + perf.asymmetricYaw * j.spool * sdt);
+        // yaw moment of asymmetric engine damage. The rate uses last
+        // frame's actual specific lift, not a fixed 1 g: with a fixed
+        // rate, nose and velocity turn at different rates whenever
+        // load differs from 1 g, the jet settles into a 30-55 degree
+        // skid, body AoA dilutes and pitch stops producing climb in
+        // sustained turns. Yawing the nose at the rate the lift
+        // really turns the velocity keeps the turn coordinated.
+        // Sin/cos stays finite at knife-edge and inverted attitudes.
+        const turnLiftAccel = clamp(Number.isFinite(j.liftAccel) ? j.liftAccel : 9.81, -30, 40);
+        j.yaw = wrapJetAngle(j.yaw - (turnLiftAccel * Math.sin(j.roll) * Math.cos(j.pitch)) / Math.max(speed0, 28) * sdt + perf.asymmetricYaw * j.spool * sdt);
         pitchTarget = j.pitch;
       }
       const cp = Math.cos(j.pitch);
@@ -3737,14 +4288,25 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       const rho = 1.225 * Math.exp(-Math.max(0, pos.y) / 8500);
       const q = 0.5 * rho * speed * speed;
       liftN = q * j.wingAreaM2 * cl * perf.liftFactor * groundEffect;
+      j.liftAccel = liftN / j.massKg; // next frame's coordinated-turn yaw rate
       const dragN = q * j.wingAreaM2 * cd;
       const thrustN = j.crashed || j.exploded ? 0 : j.maxThrustN * j.spool * perf.thrustFactor * (0.72 + 0.28 * (rho / 1.225));
+      // Lift acts perpendicular to the relative wind, not along
+      // body-up: project body-up onto the plane normal to the
+      // velocity. Along body-up, a skidded turn spends its lift
+      // sideways along the motion, the velocity never follows the
+      // nose around, and pitch stops producing climb (the jet
+      // crabbed ~57 degrees and sank through every sustained turn).
+      // Perpendicular-to-velocity lift coordinates turns the way a
+      // real airframe does and leaves aligned flight unchanged.
+      _jetLift.copy(rolledUp).addScaledVector(_jetDir, -_jetDir.dot(rolledUp));
+      if (_jetLift.lengthSq() < 1e-4) _jetLift.copy(rolledUp); else _jetLift.normalize();
       _jetForce.set(0, -weightN, 0)
         .addScaledVector(_jetFwd, thrustN)
-        .addScaledVector(rolledUp, liftN)
+        .addScaledVector(_jetLift, liftN)
         .addScaledVector(_jetDir, -dragN);
       if (onGround) {
-        const normalN = Math.max(0, weightN - liftN * rolledUp.y - thrustN * _jetFwd.y);
+        const normalN = Math.max(0, weightN - liftN * _jetLift.y - thrustN * _jetFwd.y);
         // S on the ground is not "pitch down": it brakes a forward roll,
         // then becomes a very slow pushback/reverse taxi at low thrust.
         const reverseHeld = pitchInput < -0.25;
@@ -3869,10 +4431,84 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         j.fireMesh.material.opacity = j.exploded ? 0.62 : 0.42;
       }
     }
-    if (j.airborne && j.altitudeAgl > 14) j.gearDown = false;
-    if (!j.airborne || j.altitudeAgl < 28 || j.speed < 78) j.gearDown = true;
-    if (j.performance.gearFactor <= 0) j.gearDown = false;
-    j.assembly.setGearDown(j.gearDown);
+    // Landing-gear state machine. AUTO retracts only after a positive
+    // climb is established and extends for a landing/autopilot final. A
+    // manual B/GEAR command wins immediately in the air and stays in
+    // charge until the flight-phase demand changes; very low on final,
+    // the safety extension still puts the gear down for touchdown. The
+    // old speed<78 test reopened the gear through most of the climb.
+    {
+      const gearFunctional = j.performance.gearFactor > 0;
+      let gearDemand = 0; // -1 up, 0 leave alone, +1 down
+      const landingDemand = j.airborne && (
+        j.autopilotPhase === "AUTO LAND"
+        || (j.altitudeAgl < 42 && j.verticalSpeed < 0.6 && (j.speed < 74 || j.throttle < 0.62))
+      );
+      if (!j.airborne) gearDemand = 1;
+      else if (landingDemand) gearDemand = 1;
+      else if (j.altitudeAgl > 10 && j.verticalSpeed > 0.8) gearDemand = -1;
+      else if (j.altitudeAgl > 70 && j.verticalSpeed > -1) gearDemand = -1;
+
+      if (j.gearToggleQueued) {
+        j.gearToggleQueued = false;
+        if (gearFunctional && j.airborne) {
+          j.gearDown = !j.gearDown;
+          j.gearManualOverride = true;
+          j.gearManualDemand = gearDemand;
+          j.gearMode = "MAN";
+        } else if (gearFunctional) {
+          // Weight-on-wheels: a parked/taxiing aircraft cannot retract its
+          // legs from under itself. AUTO will close them after liftoff.
+          j.gearDown = true;
+          j.gearManualOverride = false;
+          j.gearMode = "AUTO";
+        }
+      }
+
+      if (!gearFunctional) {
+        j.gearDown = false;
+        j.gearManualOverride = false;
+        j.gearMode = "AUTO";
+        j.gearDemandTimer = 0;
+      } else if (!j.airborne) {
+        j.gearDown = true;
+        j.gearManualOverride = false;
+        j.gearMode = "AUTO";
+        j.gearDemandTimer = 0;
+      } else {
+        const finalSafety = j.altitudeAgl < 7 && j.verticalSpeed < 0.5 && j.speed < 88;
+        if (finalSafety) {
+          j.gearDown = true;
+          j.gearManualOverride = false;
+          j.gearMode = "AUTO";
+          j.gearDemandTimer = 0;
+        } else {
+          const manualPositionDemand = j.gearDown ? 1 : -1;
+          const phaseDemandChanged = gearDemand !== 0 && (
+            (j.gearManualDemand !== 0 && gearDemand !== j.gearManualDemand)
+            || (j.gearManualDemand === 0 && gearDemand === manualPositionDemand)
+          );
+          if (j.gearManualOverride && phaseDemandChanged) {
+            j.gearManualOverride = false;
+            j.gearMode = "AUTO";
+            j.gearDemandTimer = 0;
+          }
+          if (!j.gearManualOverride && gearDemand !== 0) {
+            if (j.gearDemand === gearDemand) j.gearDemandTimer += dt;
+            else j.gearDemandTimer = 0;
+            const demandDelay = gearDemand < 0 ? 0.55 : 0.3;
+            if (j.gearDemandTimer >= demandDelay) j.gearDown = gearDemand > 0;
+          } else if (gearDemand === 0) {
+            j.gearDemandTimer = 0;
+          }
+          if (!j.gearManualOverride) j.gearMode = "AUTO";
+        }
+      }
+      j.gearDemand = gearDemand;
+      debugStats.aircraftGearDemand = gearDemand;
+      debugStats.aircraftGearMode = gearFunctional ? j.gearMode : "AUTO";
+      j.assembly.setGearDown(j.gearDown && gearFunctional);
+    }
     j.group.rotation.set(j.pitch, j.yaw, -j.roll);
     if (j.elevator) j.elevator.rotation.x = -pitchInput * 0.32;
     if (j.aileronL) j.aileronL.rotation.x = rollInput * 0.3;
@@ -3950,6 +4586,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.jetMessage = j.exploded ? "AIRCRAFT DESTROYED" : advisory.level === "warning" ? advisory.text : j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
       : j.stall ? "STALL // S = NOSE DOWN"
       : j.airborne ? (braking ? "AIRBORNE // AIRBRAKE" : assistEnabled ? `AIRBORNE // ${j.assistMode}` : "AIRBORNE // MANUAL FREE PITCH + ROLL")
+      : autopilotEnabled ? `${j.autopilotPhase} // AI DRIVING`
       : j.signedSpeed < -0.3 ? "REVERSE TAXI // VERY SLOW"
       : j.speed > 38 ? (pitchInput > 0.22 ? "ROTATE // W HELD" : "HOLD W ▲ TO TAKE OFF")
       : j.speed > 1 ? "TAXI // A-D STEER · S BRAKE/REVERSE"
@@ -4002,7 +4639,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     player.reloadT = player.reloadDur;
   }
   function shoot() {
-    if (!playing || (warthog && warthog.occupied) || ejection.active) return;
+    if (!playing || (warthog && warthog.occupied) || (tank && tank.occupied) || ejection.active) return;
     player.recoil = 1;
     player.shotsFired += 1;
     player.lastShotAt = performance.now() / 1000;
@@ -4050,6 +4687,22 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       }
     }
     debugStats.aircraftRaycastTargets = aircraftRaycastTargets;
+    let tankRaycastTargets = 0;
+    if (tank && !tank.occupied) {
+      // Same broadphase contract as the jet: the tank's tagged structural
+      // meshes are only raycast when the shot passes its bounding sphere.
+      _aircraftRayCenter.copy(tank.holder.position);
+      _aircraftRayCenter.y += 1.4;
+      _aircraftRayTmp.subVectors(_aircraftRayCenter, raycaster.ray.origin);
+      const alongRayT = _aircraftRayTmp.dot(raycaster.ray.direction);
+      const closest2T = _aircraftRayTmp.lengthSq() - alongRayT * alongRayT;
+      if (alongRayT > -8 && closest2T <= 64) {
+        for (const mesh of tank.hitMeshes) {
+          if (mesh.visible) { targets.push(mesh); tankRaycastTargets++; }
+        }
+      }
+    }
+    debugStats.tankRaycastTargets = tankRaycastTargets;
     const hits = raycaster.intersectObjects(targets, false);
     muzzle.getWorldPosition(_muzzleWorld);
     if (hits.length) {
@@ -4068,6 +4721,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
         const weaponDamage = inputState.weaponId === "dmr7" ? 11 : inputState.weaponId === "vp70" ? 3 : 5;
         debugStats.lastShotAircraftPart = partId;
         damageAircraft(partId, weaponDamage, "gun", hit.point.clone());
+      } else if (tank && tank.hitMeshSet.has(hit.object)) {
+        const partId = resolveTankPartFromSpec(hit.object.userData.tankPartId, hit.point);
+        const weaponDamage = inputState.weaponId === "dmr7" ? 11 : inputState.weaponId === "vp70" ? 3 : 5;
+        debugStats.lastShotTankPart = partId;
+        damageTank(partId, weaponDamage * 0.8, "gun", hit.point.clone());
       }
     } else {
       raycaster.ray.at(320, _far);
@@ -4080,9 +4738,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   // even when a menu button/slider still has focus, when an IME or a
   // non-US layout reports an unfamiliar code, or when the game runs in a
   // preview iframe that only just received focus.
-  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyC", "KeyE", "KeyF", "KeyG", "KeyV", "ControlLeft", "ControlRight"];
+  const MOVE_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space", "KeyB", "KeyC", "KeyE", "KeyF", "KeyG", "KeyL", "KeyV", "ControlLeft", "ControlRight"];
   const KEY_FALLBACK = {
-    w: "KeyW", a: "KeyA", s: "KeyS", d: "KeyD", c: "KeyC", e: "KeyE", f: "KeyF", g: "KeyG", v: "KeyV",
+    w: "KeyW", a: "KeyA", s: "KeyS", d: "KeyD", b: "KeyB", c: "KeyC", e: "KeyE", f: "KeyF", g: "KeyG", l: "KeyL", v: "KeyV",
     arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
     " ": "Space", spacebar: "Space", shift: "ShiftLeft", control: "ControlLeft",
   };
@@ -4112,9 +4770,15 @@ export function createWorld(canvas, hooks = {}, options = {}) {
   window.addEventListener("focus", onFocus);
 
   let resizeTimers = [];
+  let resizeFrame = 0;
   const applyViewportSize = () => {
     const { w, h } = viewportSize();
-    renderDpr = nativePixelRatio(); // re-lock native DPR on every resize/rotation
+    const nextDpr = nativePixelRatio(); // re-lock native DPR on every real resize/rotation
+    // Mobile visualViewport can emit resize bursts while browser chrome
+    // moves. Reallocating the WebGL backbuffer for an identical size is
+    // pure lag/flicker, so identical reports are now a no-op.
+    if (w === debugStats.cssWidth && h === debugStats.cssHeight && Math.abs(nextDpr - renderDpr) < 0.001) return;
+    renderDpr = nextDpr;
     renderer.setPixelRatio(renderDpr);
     renderer.setSize(w, h, false);
     renderer.domElement.style.width = w + "px";
@@ -4127,18 +4791,23 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.cssHeight = h;
   };
   const onResize = () => {
-    applyViewportSize();
-    // Mobile browsers report intermediate sizes while rotating; re-apply
-    // once the rotation settles so the backbuffer and aspect land exact.
+    // Coalesce a burst of rotation/browser-chrome reports into one real
+    // backbuffer change, then one settle check for the final aspect.
+    if (!resizeFrame) {
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        applyViewportSize();
+      });
+    }
     for (const t of resizeTimers) clearTimeout(t);
-    resizeTimers = [80, 250, 600].map((ms) => setTimeout(applyViewportSize, ms));
+    resizeTimers = [250].map((ms) => setTimeout(applyViewportSize, ms));
   };
   window.addEventListener("resize", onResize);
   window.addEventListener("orientationchange", onResize);
   if (window.visualViewport) window.visualViewport.addEventListener("resize", onResize);
 
   // ----- HUD hook caches -----
-  let lastHeading = -1, lastDist = -1, lastBearing = -1;
+  let lastHeading = -1, lastDist = -1, lastBearing = -1, hudTick = 0;
   function pushHud() {
     camera.getWorldDirection(_v1);
     const heading = Math.round(((Math.atan2(_v1.x, -_v1.z) * 180) / Math.PI + 360) % 360);
@@ -4146,8 +4815,12 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.playerX = Math.round(player.pos.x * 10) / 10;
     debugStats.playerY = Math.round(player.pos.y * 10) / 10;
     debugStats.playerZ = Math.round(player.pos.z * 10) / 10;
-    debugStats.groundY = Math.round(terrainSurfaceHeight(player.pos.x, player.pos.z) * 10) / 10;
     if (heading !== lastHeading) { lastHeading = heading; if (hooks.onHeading) hooks.onHeading(heading); }
+    // Objective distance/bearing and the debug ground sample are integer
+    // HUD values; 12 Hz is indistinguishable to the player and avoids an
+    // extra terrain query on every rendered frame.
+    if ((hudTick++ % 5) !== 0 && lastDist >= 0) return;
+    debugStats.groundY = Math.round(terrainSurfaceHeight(player.pos.x, player.pos.z) * 10) / 10;
     const dx = WORLD.relay.x - player.pos.x, dz = WORLD.relay.z - player.pos.z;
     const dist = Math.round(Math.hypot(dx, dz));
     const bearing = Math.round(((Math.atan2(dx, -dz) * 180) / Math.PI + 360) % 360);
@@ -4193,7 +4866,402 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.fov = Math.round(camera.fov * 10) / 10;
   }
 
+  // ----- M1A2 Abrams: drive / turret / cannon / damage -----
+  // Holder-local part centres, heights above the track bottoms. Holder
+  // forward is -Z (game convention); the model inside is half-turned.
+  const TANK_PART_CENTERS = Object.freeze([
+    Object.freeze({ id: "hull", x: 0, y: 1.05, z: 0.3 }),
+    Object.freeze({ id: "turret", x: 0, y: 2.15, z: 0.2 }),
+    Object.freeze({ id: "gun", x: 0, y: 2.1, z: -2.8 }),
+    Object.freeze({ id: "engine", x: 0, y: 1.2, z: 3.0 }),
+    Object.freeze({ id: "track-port", x: -1.55, y: 0.55, z: 0 }),
+    Object.freeze({ id: "track-starboard", x: 1.55, y: 0.55, z: 0 }),
+    Object.freeze({ id: "ammo", x: 0, y: 1.95, z: 1.3 }),
+  ]);
+  const TANK_RELOAD_S = 3.2, TANK_SHELL_SPEED = 620;
+  const _tankPoint = new THREE.Vector3(), _tankDir = new THREE.Vector3();
+  const tankShells = [];
+  let tankShellsActiveCount = 0;
+  {
+    const shellGeo = new THREE.BoxGeometry(0.13, 0.13, 2.4);
+    const shellMat = new THREE.MeshBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.95 });
+    for (let i = 0; i < 8; i++) {
+      const mesh = new THREE.Mesh(shellGeo, shellMat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      tankShells.push({ mesh, active: false, vel: new THREE.Vector3(), life: 0, traveled: 0 });
+    }
+  }
+  function tankPartIdAtLocal(local) {
+    const h = local.y - tank.baseY;
+    if (h > 1.65) {
+      if (local.z < -1.6) return "gun";
+      if (local.z > 1.0) return "ammo"; // turret bustle sits over the ready rack
+      return "turret";
+    }
+    if (Math.abs(local.x) > 1.15 && h < 1.15) return local.x > 0 ? "track-starboard" : "track-port";
+    if (local.z > 1.7) return "engine";
+    return "hull";
+  }
+  function resolveTankPartFromSpec(specId, worldPoint) {
+    switch (specId) {
+      case "turret": case "optics": case "crew": case "defensive": return "turret";
+      case "cannon": return "gun";
+      case "powerpack": return "engine";
+      case "running-gear": {
+        if (worldPoint && tank) {
+          _tankPoint.copy(worldPoint);
+          tank.holder.worldToLocal(_tankPoint);
+          return _tankPoint.x > 0 ? "track-starboard" : "track-port";
+        }
+        return "track-port";
+      }
+      default: return "hull"; // hull / armour / stowage
+    }
+  }
+  function publishTankDamage() {
+    if (!tank) return;
+    const t = tank, c = t.components;
+    t.powerFactor = c.engine <= 0.01 ? 0 : 0.35 + 0.65 * c.engine;
+    t.trackFactorPort = c["track-port"] <= 0.01 ? 0 : 0.4 + 0.6 * c["track-port"];
+    t.trackFactorStarboard = c["track-starboard"] <= 0.01 ? 0 : 0.4 + 0.6 * c["track-starboard"];
+    t.damageSeq += 1;
+    debugStats.tankComponents = { ...c };
+    debugStats.tankDamageSeq = t.damageSeq;
+    let worstId = "hull", worstPct = 1;
+    for (const id in c) if (c[id] < worstPct) { worstPct = c[id]; worstId = id; }
+    debugStats.tankWorstPart = worstId;
+    debugStats.tankWorstPct = Math.round(worstPct * 100);
+    debugStats.tankIntegrityPct = Math.round(
+      (c.hull * 0.45 + c.turret * 0.2 + c.engine * 0.2 + ((c["track-port"] + c["track-starboard"]) / 2) * 0.15) * 100
+    );
+    debugStats.tankDestroyed = t.destroyed ? 1 : 0;
+    debugStats.tankPowerPct = Math.round(t.powerFactor * 100);
+  }
+  function explodeTank(reason = "TANK DESTROYED") {
+    if (!tank || tank.destroyed) return;
+    const t = tank;
+    const wasOccupied = t.occupied;
+    t.destroyed = true;
+    t.occupied = false;
+    t.speed = 0;
+    t.components.hull = 0;
+    t.assembly.setDriveSpeed(0);
+    t.assembly.setExplode(0.5); // factory exploded view doubles as the wreck
+    _tankPoint.copy(t.holder.position);
+    _tankPoint.y += 1.8;
+    burst(_tankPoint, 90, 13);
+    burst(_tankPoint, 60, 19);
+    if (hooks.onExplosion) hooks.onExplosion(1.5, _tankPoint.clone());
+    explodeAt(_tankPoint.clone(), 13, 200, "tank-explosion", { ignoreTank: true, ignorePlayer: wasOccupied });
+    publishTankDamage();
+    debugStats.tankMessage = reason;
+    if (wasOccupied) killPlayerNow(reason);
+  }
+  function damageTank(partId, amount, source = "gun", point = null) {
+    if (!tank || tank.destroyed || !(amount > 0)) return;
+    const t = tank;
+    const id = t.components[partId] !== undefined ? partId : "hull";
+    // Shared hit-point scale: explodeAt powers run 150-220 for a kill.
+    t.components[id] = clamp(t.components[id] - amount / 220, 0, 1);
+    if (id !== "hull") t.components.hull = clamp(t.components.hull - (amount / 220) * 0.25, 0, 1);
+    if (point) burst(point, 8, 3);
+    debugStats.tankLastDamagePart = id;
+    debugStats.tankLastDamageSource = source;
+    publishTankDamage();
+    if (t.components.ammo <= 0) explodeTank("AMMO COOK-OFF");
+    else if (t.components.hull <= 0) explodeTank("TANK DESTROYED");
+  }
+  function placeTankOnTerrain(dt, snap) {
+    if (!tank) return;
+    const t = tank, p = t.holder.position;
+    const fx = -Math.sin(t.yaw), fz = -Math.cos(t.yaw);
+    const rx = Math.cos(t.yaw), rz = -Math.sin(t.yaw);
+    const hFL = terrainSurfaceHeight(p.x + fx * 2.7 - rx * 1.35, p.z + fz * 2.7 - rz * 1.35);
+    const hFR = terrainSurfaceHeight(p.x + fx * 2.7 + rx * 1.35, p.z + fz * 2.7 + rz * 1.35);
+    const hBL = terrainSurfaceHeight(p.x - fx * 2.7 - rx * 1.35, p.z - fz * 2.7 - rz * 1.35);
+    const hBR = terrainSurfaceHeight(p.x - fx * 2.7 + rx * 1.35, p.z - fz * 2.7 + rz * 1.35);
+    const hF = (hFL + hFR) / 2, hB = (hBL + hBR) / 2, hR = (hFR + hBR) / 2, hL = (hFL + hBL) / 2;
+    const targetY = (hF + hB) / 2 + t.groundOffset;
+    const targetPitch = Math.atan2(hF - hB, 5.4);
+    const targetRoll = Math.atan2(hR - hL, 2.7);
+    if (snap) {
+      p.y = targetY; t.slopePitch = targetPitch; t.slopeRoll = targetRoll;
+    } else {
+      const k = 1 - Math.exp(-Math.min(dt, 0.05) * 8);
+      p.y += (targetY - p.y) * k;
+      t.slopePitch += (targetPitch - t.slopePitch) * k;
+      t.slopeRoll += (targetRoll - t.slopeRoll) * k;
+    }
+    t.holder.rotation.set(t.slopePitch, t.yaw, t.slopeRoll);
+  }
+  function collideTankObstacles(incomingSpeed) {
+    const t = tank, p = t.holder.position;
+    const fx = -Math.sin(t.yaw), fz = -Math.cos(t.yaw);
+    let pushed = 0;
+    const pushCircleOut = (ox, oz, orad, topY) => {
+      if (topY < p.y + 0.25) return; // low stumps the tracks simply roll over
+      for (let c = 0; c < 3; c++) {
+        const along = c === 0 ? 0 : c === 1 ? 2.5 : -2.5;
+        const radius = c === 0 ? 2.25 : 1.95;
+        const cxp = p.x + fx * along, czp = p.z + fz * along;
+        const minD = orad + radius;
+        const dx = cxp - ox, dz = czp - oz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= minD * minD) continue;
+        const d = Math.sqrt(d2) || 0.001;
+        const push = minD - d;
+        p.x += (dx / d) * push;
+        p.z += (dz / d) * push;
+        if (push > pushed) pushed = push;
+      }
+    };
+    for (let i = 0; i < localObstacleCount; i++) {
+      if (i >= tankObstacleStart && i < tankObstacleStart + tankObstacleCount) continue; // own discs
+      const o = i * 4;
+      pushCircleOut(localObstacles[o], localObstacles[o + 1], localObstacles[o + 2], localObstacles[o + 3]);
+    }
+    // The jet is a live obstacle even while it is crewed/taxiing.
+    if (warthog && !warthog.exploded) {
+      const jp = warthog.group.position;
+      if (Math.abs(jp.x - p.x) < 26 && Math.abs(jp.z - p.z) < 26) {
+        const jfx = -Math.sin(warthog.yaw), jfz = -Math.cos(warthog.yaw);
+        pushCircleOut(jp.x, jp.z, 2.1, jp.y + 3.2);
+        pushCircleOut(jp.x + jfx * 4.6, jp.z + jfz * 4.6, 1.55, jp.y + 2.7);
+        pushCircleOut(jp.x - jfx * 4.6, jp.z - jfz * 4.6, 1.7, jp.y + 3.4);
+      }
+    }
+    if (pushed > 0.02) {
+      const impact = Math.abs(incomingSpeed);
+      const nowS = performance.now() / 1000;
+      if (pushed > 0.35 && impact > 6.5 && nowS - t.lastCollisionAt > 0.5) {
+        t.lastCollisionAt = nowS;
+        damageTank(incomingSpeed >= 0 ? "hull" : "engine", (impact - 6) * 7, "collision", null);
+        burst(p, 16, 4);
+      }
+      t.speed *= pushed > 0.35 ? 0.2 : 0.6;
+    }
+  }
+  function enterTank() {
+    if (!tank || tank.occupied || ejection.active) return;
+    if (warthog && warthog.occupied) return;
+    if (tank.nearDistance > 7) return;
+    // If both vehicles are in reach, the nearer one wins the E key.
+    if (warthog && warthog.nearDistance <= 10.5 && warthog.nearDistance < tank.nearDistance) return;
+    const t = tank;
+    if (t.destroyed) { debugStats.tankMessage = "WRECK // NOT DRIVEABLE"; return; }
+    t.occupied = true;
+    t.camReady = false;
+    t.aimYaw = t.yaw;
+    t.aimPitch = 0.05;
+    inputState.ads = false; inputState.adsHeld = false; inputState.firing = false;
+    inputState.tankDriveInput = 0; inputState.tankSteerInput = 0; inputState.tankFireHeld = false;
+    debugStats.tankMessage = "M1A2 // CREWED";
+  }
+  function exitTank() {
+    if (!tank || !tank.occupied) return;
+    const t = tank;
+    if (Math.abs(t.speed) > 0.4) { debugStats.tankMessage = "STOP TO EXIT"; return; }
+    t.occupied = false;
+    t.speed = 0;
+    t.assembly.setDriveSpeed(0);
+    inputState.tankDriveInput = 0; inputState.tankSteerInput = 0; inputState.tankFireHeld = false;
+    if (warthog) warthog.interactKeyWasDown = true; // swallow this E edge; it must not instantly board the jet
+    const rx = Math.cos(t.yaw), rz = -Math.sin(t.yaw);
+    const ex = clamp(t.holder.position.x + rx * 3.4, -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+    const ez = clamp(t.holder.position.z + rz * 3.4, -mapPreset.hardClamp + 2, mapPreset.hardClamp - 2);
+    const gy = groundHeightWithBridge(ex, ez);
+    player.pos.set(ex, gy + player.eyeHeight, ez);
+    player.yaw = t.yaw; player.pitch = -0.03;
+    resetPhysics(ex, gy, ez);
+    debugStats.tankMessage = "ON FOOT";
+  }
+  function fireTankCannon() {
+    const t = tank;
+    if (!t || t.destroyed || t.reloadT > 0 || t.ammo <= 0 || t.components.gun <= 0.05) return;
+    const shell = tankShells.find((item) => !item.active);
+    if (!shell) return;
+    t.ammo -= 1;
+    t.reloadT = TANK_RELOAD_S;
+    t.shellsFired += 1;
+    t.assembly.fire(); // recoil + muzzle flash/smoke in the model
+    const muzzle = t.assembly.rig.muzzle;
+    muzzle.getWorldPosition(shell.mesh.position);
+    muzzle.getWorldDirection(_tankDir); // model +Z is the gun line
+    shell.vel.copy(_tankDir).multiplyScalar(TANK_SHELL_SPEED);
+    shell.vel.x += -Math.sin(t.yaw) * t.speed;
+    shell.vel.z += -Math.cos(t.yaw) * t.speed;
+    shell.active = true;
+    shell.life = 7;
+    shell.traveled = 0;
+    shell.mesh.visible = true;
+    _tankPoint.copy(shell.mesh.position).add(_tankDir);
+    shell.mesh.lookAt(_tankPoint);
+    if (hooks.onExplosion) hooks.onExplosion(0.3, shell.mesh.position.clone());
+    debugStats.tankShotsFired = t.shellsFired;
+  }
+  function updateTankShells(dt) {
+    let active = 0;
+    for (const shell of tankShells) {
+      if (!shell.active) continue;
+      shell.life -= dt;
+      if (shell.life <= 0) { shell.active = false; shell.mesh.visible = false; continue; }
+      let hit = false;
+      const steps = 6, stepDt = dt / steps;
+      for (let step = 0; step < steps && !hit; step++) {
+        shell.vel.y -= 9.81 * stepDt;
+        shell.mesh.position.addScaledVector(shell.vel, stepDt);
+        shell.traveled += shell.vel.length() * stepDt;
+        const pos = shell.mesh.position;
+        if (shell.traveled > 9) { // let the round clear its own tank first
+          for (const drone of drones) {
+            if (drone.alive && drone.group.position.distanceToSquared(pos) < 4) { hit = true; break; }
+          }
+          if (!hit && warthog && !warthog.exploded) {
+            _tankPoint.copy(warthog.group.position); _tankPoint.y += 2.2;
+            if (_tankPoint.distanceToSquared(pos) < 30) hit = true;
+          }
+        }
+        if (!hit && pos.y <= terrainSurfaceHeight(pos.x, pos.z) + 0.05) hit = true;
+        if (hit) explodeAt(pos.clone(), 9, 190, "tank-cannon");
+      }
+      if (hit) { shell.active = false; shell.mesh.visible = false; }
+      else {
+        _tankPoint.copy(shell.mesh.position).add(shell.vel);
+        shell.mesh.lookAt(_tankPoint);
+        active++;
+      }
+    }
+    tankShellsActiveCount = active;
+  }
+  function updateTank(dt) {
+    if (!tank) return false;
+    const t = tank, pos = t.holder.position;
+    t.nearDistance = Math.hypot(player.pos.x - pos.x, player.pos.z - pos.z);
+    debugStats.tankNear = !t.occupied && !t.destroyed && !(warthog && warthog.occupied) && !ejection.active && t.nearDistance <= 7 ? 1 : 0;
+    debugStats.tankDistance = Math.round(t.nearDistance * 10) / 10;
+    debugStats.tankOccupied = t.occupied ? 1 : 0;
+    debugStats.tankX = Math.round(pos.x * 10) / 10;
+    debugStats.tankY = Math.round(pos.y * 10) / 10;
+    debugStats.tankZ = Math.round(pos.z * 10) / 10;
+    debugStats.tankYawDeg = Math.round((((-t.yaw * 180) / Math.PI) % 360 + 360) % 360);
+    debugStats.tankSpeedKmh = Math.round(t.speed * 3.6);
+    debugStats.tankSpeedMps = Math.round(t.speed * 10) / 10;
+    debugStats.tankAmmo = t.ammo;
+    debugStats.tankReloadPct = t.reloadT > 0 ? Math.round((1 - t.reloadT / TANK_RELOAD_S) * 100) : 100;
+    debugStats.tankTurretDeg = Math.round(t.turretDeg);
+    debugStats.tankGunDeg = Math.round(t.gunDeg);
+    debugStats.tankAimYawDeg = Math.round((((-t.aimYaw * 180) / Math.PI) % 360 + 360) % 360);
+    debugStats.tankShellsActive = tankShellsActiveCount;
+    if (!debugStats.tankComponents) publishTankDamage();
+    if (tankShellsActiveCount > 0) updateTankShells(dt);
+    if (inputState.tankAction === "enter") enterTank();
+    else if (inputState.tankAction === "exit") exitTank();
+    inputState.tankAction = null;
+    const interactKey = inputState.keys.has("KeyE");
+    if (interactKey && !t.interactKeyWasDown) {
+      if (t.occupied) exitTank();
+      else if (!ejection.active && !(warthog && warthog.occupied)) enterTank();
+    }
+    t.interactKeyWasDown = interactKey;
+    // Fire & smoke: a hurt powerpack burns and spreads; a wreck smoulders.
+    const burning = !t.destroyed && (t.components.engine < 0.32 || t.components.hull < 0.22);
+    if (burning || t.destroyed) {
+      t.fireAcc -= dt;
+      if (t.fireAcc <= 0) {
+        t.fireAcc = t.destroyed ? 0.22 : 0.085;
+        _tankPoint.set((rand() - 0.5) * 1.2, 1.55 + t.baseY, 2.7 + (rand() - 0.5) * 0.8);
+        t.holder.localToWorld(_tankPoint);
+        burst(_tankPoint, t.destroyed ? 3 : 6, t.destroyed ? 1.6 : 2.6);
+      }
+    }
+    if (burning) {
+      t.components.engine = clamp(t.components.engine - dt * 0.006, 0, 1);
+      t.components.hull = clamp(t.components.hull - dt * 0.004, 0, 1);
+      t.burnPublishAcc = (t.burnPublishAcc || 0) - dt;
+      if (t.burnPublishAcc <= 0) { t.burnPublishAcc = 0.25; publishTankDamage(); }
+      if (t.components.hull <= 0) { explodeTank("TANK BURNED OUT"); return false; }
+    }
+    // Model animation only earns its cost near the camera (or crewed).
+    const camDist2 = camera.position.distanceToSquared(pos);
+    if (t.occupied || camDist2 < 250000) t.assembly.update(Math.min(dt, 0.05));
+    if (t.destroyed) return false;
+    if (!t.occupied) {
+      placeTankOnTerrain(dt, false);
+      if (t.speed !== 0) { t.speed = 0; t.assembly.setDriveSpeed(0); }
+      return false;
+    }
+    // ---- crewed: aim, drive, fire ----
+    const sdt = Math.min(dt, 0.05);
+    const lookScale = clamp(inputState.sensitivity || 0.55, 0.15, 1.5);
+    t.aimYaw = wrapJetAngle(t.aimYaw - inputState.lookDX * 0.0024 * lookScale - inputState.aimX * 1.55 * lookScale * sdt);
+    t.aimPitch = clamp(t.aimPitch - inputState.lookDY * 0.0024 * lookScale - inputState.aimY * 1.15 * lookScale * sdt, -0.32, 0.62);
+    inputState.lookDX = 0; inputState.lookDY = 0; inputState.jump = false;
+    let driveIn = clamp(inputState.tankDriveInput || 0, -1, 1);
+    let steerIn = clamp(inputState.tankSteerInput || 0, -1, 1);
+    const keyDrive = (inputState.keys.has("KeyW") || inputState.keys.has("ArrowUp") ? 1 : 0)
+      - (inputState.keys.has("KeyS") || inputState.keys.has("ArrowDown") ? 1 : 0);
+    const keySteer = (inputState.keys.has("KeyD") || inputState.keys.has("ArrowRight") ? 1 : 0)
+      - (inputState.keys.has("KeyA") || inputState.keys.has("ArrowLeft") ? 1 : 0);
+    if (keyDrive !== 0) driveIn = keyDrive;
+    if (keySteer !== 0) steerIn = keySteer;
+    const trackAvg = (t.trackFactorPort + t.trackFactorStarboard) / 2;
+    const immobile = t.powerFactor <= 0.01 || (t.trackFactorPort <= 0.01 && t.trackFactorStarboard <= 0.01);
+    const maxFwd = 18.6 * t.powerFactor * Math.max(0.25, trackAvg); // 67 km/h spec
+    const maxRev = 8.0 * t.powerFactor * Math.max(0.25, trackAvg);
+    const targetSpeed = immobile ? 0 : driveIn >= 0 ? driveIn * maxFwd : driveIn * maxRev;
+    let accel;
+    if (driveIn === 0 || immobile) accel = 2.2 + Math.abs(t.speed) * 0.12; // rolling drag
+    else if (Math.sign(t.speed) !== 0 && Math.sign(targetSpeed) !== Math.sign(t.speed)) accel = 8.5; // braking
+    else accel = 4.2 * (0.35 + 0.65 * t.powerFactor);
+    t.speed += clamp(targetSpeed - t.speed, -accel * sdt, accel * sdt);
+    t.speed = clamp(t.speed - Math.sin(t.slopePitch) * 9.81 * 0.55 * sdt, -10, 21); // slope gravity
+    if (driveIn === 0 && Math.abs(t.speed) < 0.08) t.speed = 0;
+    const moving = Math.abs(t.speed) > 0.35;
+    let yawRate = 0;
+    if (!immobile && steerIn !== 0) {
+      if (moving) yawRate = steerIn * (0.62 / (1 + Math.abs(t.speed) * 0.085)) * (t.speed < 0 ? -1 : 1);
+      else if (driveIn === 0) yawRate = steerIn * 0.52 * (Math.min(t.trackFactorPort, t.trackFactorStarboard) > 0.01 ? 1 : 0.45); // neutral pivot
+      else yawRate = steerIn * 0.3;
+    }
+    t.yaw = wrapJetAngle(t.yaw - yawRate * sdt);
+    if (moving) {
+      // A damaged track drags the hull toward its own side.
+      t.yaw = wrapJetAngle(t.yaw + (t.trackFactorStarboard - t.trackFactorPort) * t.speed * 0.010 * sdt);
+    }
+    const prevSpeed = t.speed;
+    const fx = -Math.sin(t.yaw), fz = -Math.cos(t.yaw);
+    pos.x = clamp(pos.x + fx * t.speed * sdt, -mapPreset.hardClamp + 4, mapPreset.hardClamp - 4);
+    pos.z = clamp(pos.z + fz * t.speed * sdt, -mapPreset.hardClamp + 4, mapPreset.hardClamp - 4);
+    collideTankObstacles(prevSpeed);
+    if (t.destroyed) return false; // collision may have finished it
+    placeTankOnTerrain(sdt, false);
+    t.assembly.setDriveSpeed(t.speed);
+    if (t.components.turret > 0.05) {
+      const relRad = wrapJetAngle(t.aimYaw - t.yaw);
+      t.assembly.setTurret((relRad * 180) / Math.PI);
+      t.assembly.setGun(clamp(((t.aimPitch - t.slopePitch * Math.cos(relRad)) * 180) / Math.PI, -8, 20));
+    }
+    const rigState = t.assembly.getRig();
+    t.turretDeg = rigState.turret;
+    t.gunDeg = rigState.gun;
+    t.reloadT = Math.max(0, t.reloadT - dt);
+    if (inputState.tankFireHeld || inputState.keys.has("Space")) fireTankCannon();
+    debugStats.tankGearLabel = immobile ? "X" : t.speed > 0.3 ? "D" : t.speed < -0.3 ? "R" : driveIn > 0 ? "D" : driveIn < 0 ? "R" : "N";
+    debugStats.tankDriveInputDbg = driveIn;
+    debugStats.tankSteerInputDbg = steerIn;
+    if (t.components.engine <= 0.01) debugStats.tankMessage = "ENGINE DESTROYED";
+    else if (immobile) debugStats.tankMessage = "TRACKS DESTROYED // IMMOBILE";
+    else if (t.components.gun <= 0.05) debugStats.tankMessage = "CANNON DESTROYED";
+    else if (t.ammo <= 0) debugStats.tankMessage = "NO AMMO";
+    else if (t.reloadT > 0) debugStats.tankMessage = `RELOADING ${Math.ceil(t.reloadT * 10) / 10}S`;
+    else debugStats.tankMessage = burning ? "FIRE // POWERPACK BURNING" : "M1A2 // READY";
+    return true;
+  }
+
   function updatePlayer(dt) {
+    const inTank = updateTank(dt);
     if (updateWarthog(dt)) {
       // The airframe owns the pilot's physical position in both camera
       // modes. COCKPIT is the pack eye point; CHASE is a damped external
@@ -4229,6 +5297,39 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       setCameraFov(clamp(inputState.fov || 71, 55, 100) + clamp(warthog.speed / 190, 0, 1) * 8, dt, 5);
       inputState.lookDX = 0; inputState.lookDY = 0; inputState.jump = false;
       debugStats.speed = Math.round(warthog.speed * 10) / 10;
+      return;
+    }
+    if (inTank) {
+      // The tank owns the driver's physical position. The camera orbits
+      // behind the AIM direction (drag to aim; the turret chases it), so
+      // hull and gun can point different ways like a real crew vehicle.
+      const t = tank;
+      _v3.copy(t.holder.position);
+      _v3.y += 2.3;
+      player.pos.copy(_v3);
+      const cp = Math.cos(t.aimPitch);
+      _tankDir.set(-Math.sin(t.aimYaw) * cp, Math.sin(t.aimPitch), -Math.cos(t.aimYaw) * cp);
+      _v3.copy(t.holder.position);
+      _v3.y += 2.9;
+      _v1.copy(_v3).addScaledVector(_tankDir, -10.5);
+      const camMinY = terrainSurfaceHeight(_v1.x, _v1.z) + 0.6;
+      if (_v1.y < camMinY) _v1.y = camMinY;
+      if (!t.camReady) { t.camPos.copy(_v1); t.camReady = true; }
+      t.camPos.lerp(_v1, 1 - Math.exp(-dt * 10));
+      camera.up.set(0, 1, 0);
+      camera.position.copy(t.camPos);
+      _v3.addScaledVector(_tankDir, 40);
+      camera.lookAt(_v3);
+      player.vel.set(-Math.sin(t.yaw) * t.speed, 0, -Math.cos(t.yaw) * t.speed);
+      player.yaw = t.aimYaw;
+      player.pitch = t.aimPitch;
+      physBuf[31] = Math.abs(t.speed);
+      gun.visible = false;
+      playerBlobShadow.visible = false;
+      setCameraFov(clamp(inputState.fov || 71, 55, 100), dt, 5);
+      inputState.lookDX = 0; inputState.lookDY = 0; inputState.jump = false;
+      debugStats.speed = Math.round(Math.abs(t.speed) * 10) / 10;
+      debugStats.tankCameraMode = "orbit";
       return;
     }
     if (ejection.active) {
@@ -5128,7 +6229,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     resetPhysics(safe.x, safe.y, safe.z);
   }
   function safetySweep(dt) {
-    if (playing && !(warthog && warthog.occupied) && !ejection.active) {
+    if (playing && !(warthog && warthog.occupied) && !(tank && tank.occupied) && !ejection.active) {
       const feetY = physBuf[1];
       const groundY = groundHeightWithBridge(player.pos.x, player.pos.z);
       const bad = !Number.isFinite(feetY) || !Number.isFinite(player.pos.x) || !Number.isFinite(player.pos.z)
@@ -5326,10 +6427,28 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       worldControl.resetAircraft = false;
       resetAircraftToSpawn();
     }
+    if (worldControl.autopilot) {
+      const request = worldControl.autopilot;
+      worldControl.autopilot = null;
+      if (warthog) {
+        if (request.phase) warthog.autopilotPhase = String(request.phase);
+        if (Number.isFinite(request.waypoint)) warthog.autopilotWaypoint = clamp(Math.round(request.waypoint), 0, AUTOPILOT_WAYPOINTS.length - 1);
+        if (Number.isFinite(request.level)) {
+          inputState.flightAssistLevel = clamp(Math.round(request.level), 0, 2);
+          inputState.flightAssist = inputState.flightAssistLevel > 0;
+          warthog.assistLevelWas = inputState.flightAssistLevel;
+        }
+      }
+    }
     if (worldControl.aircraftDamage) {
       const request = worldControl.aircraftDamage;
       worldControl.aircraftDamage = null;
       damageAircraft(request.part || "fuselage", request.amount || 0, request.source || "external", request.point || null);
+    }
+    if (worldControl.tankDamage) {
+      const request = worldControl.tankDamage;
+      worldControl.tankDamage = null;
+      damageTank(request.part || "hull", request.amount || 0, request.source || "external", request.point || null);
     }
     if (worldControl.explodeAt) {
       const request = worldControl.explodeAt;
@@ -5361,7 +6480,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       updateCinematic(elapsed); // opening backdrop, once per app-open
     } else {
       snapToPlayerCamera(); // paused on the exact player view — no cinematic on resume
-      gun.visible = !(warthog && warthog.occupied);
+      gun.visible = !(warthog && warthog.occupied) && !(tank && tank.occupied);
       playerBlobShadow.visible = false;
     }
     debugStats.cinematicActive = !playing && !introCinematicPlayed ? 1 : 0;
@@ -5377,7 +6496,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     safetySweep(dt);
     updateFx(dt);
     updateSky(dt);
-    updateAircraftGroundShadow();
+    // The projected planform needs eight terrain samples. Thirty Hz is
+    // visually continuous at aircraft speeds and halves that cost.
+    if ((frameSerial & 1) === 0) updateAircraftGroundShadow();
     pushHud();
     scatterCullAcc += dt;
     if (scatterCullAcc >= 0.2) {
@@ -5403,7 +6524,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     // Time-sliced chunk work remains capped so terrain streaming does
     // not hitch movement. Live play gets a smaller slice under load;
     // title/menu preload can spend more without affecting controls.
-    pumpChunkJobs(playing ? (debugStats.frameMs > 22 ? 1.4 : 2.6) : 4.5);
+    pumpChunkJobs(playing ? (debugStats.frameMs > 24 ? 0.6 : debugStats.frameMs > 18 ? 1.0 : 1.8) : 4.5);
     pumpBvh();
     const renderStart = frameProfile.enabled ? performance.now() : 0;
     renderer.render(scene, camera);
@@ -5456,6 +6577,8 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     if (terrainWorker) { terrainWorker.terminate(); terrainWorker = null; }
     setRustGroundProvider(null);
     cancelAnimationFrame(raf);
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    for (const t of resizeTimers) clearTimeout(t);
     window.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("keyup", onKeyUp, true);
     window.removeEventListener("blur", onBlur);
