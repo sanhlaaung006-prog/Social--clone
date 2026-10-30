@@ -5214,10 +5214,10 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     let accel;
     if (driveIn === 0 || immobile) accel = 2.2 + Math.abs(t.speed) * 0.12; // rolling drag
     else if (Math.sign(t.speed) !== 0 && Math.sign(targetSpeed) !== Math.sign(t.speed)) accel = 8.5; // braking
-    else accel = 4.2 * (0.35 + 0.65 * t.powerFactor);
+    else accel = 5.2 * (0.35 + 0.65 * t.powerFactor); // low-end torque: out-pulls slope gravity on any drivable grade
     t.speed += clamp(targetSpeed - t.speed, -accel * sdt, accel * sdt);
-    t.speed = clamp(t.speed - Math.sin(t.slopePitch) * 9.81 * 0.55 * sdt, -10, 21); // slope gravity
-    if (driveIn === 0 && Math.abs(t.speed) < 0.08) t.speed = 0;
+    t.speed = clamp(t.speed - Math.sin(t.slopePitch) * 9.81 * 0.5 * sdt, -10, 21); // slope gravity
+    if (driveIn === 0 && Math.abs(t.speed) < 0.35) t.speed = 0; // parking brake holds the hull on grades
     const moving = Math.abs(t.speed) > 0.35;
     let yawRate = 0;
     if (!immobile && steerIn !== 0) {
