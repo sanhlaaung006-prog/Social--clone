@@ -17,7 +17,7 @@ optimization pass.
 
 | Layer | File(s) | Owns | Resource rule |
 |---|---|---|---|
-| HTML/CSS shell | `game/index.html` | All CSS, mobile HUD/aircraft console layout, safe areas, heavy machined-glass aircraft rocker pads | No webfont/network dependency; system condensed/monospace stacks only |
+| HTML/CSS shell | `game/index.html` | All CSS, mobile HUD/aircraft console layout, safe areas, slim edge-stretched translucent machined-glass aircraft rocker pads | No webfont/network dependency; system condensed/monospace stacks only |
 | React UI/store | `game/src/ironveil.jsx` | Zustand game state, menus, HUD, touch controls, aircraft console, death/respawn | High-frequency values are painted through refs; hidden aircraft HUD polls at about 10 Hz |
 | Three.js world | `game/src/world.js` | Renderer, terrain streaming, player, drones, scatter, sky/climate, FX, aircraft simulation/weapons, cameras | One RAF owner; pooled FX/projectiles; adaptive chunk/BVH budgets |
 | Reusable aircraft model | `game/src/aircraft/aircraft-core.js` | Component IDs, health/armor, derived lift/thrust/control/drag, kinetic-energy collision damage, fire/advisories | No Three.js or Warthog geometry dependency |
@@ -34,8 +34,8 @@ Current production build (`npm --prefix game run build`):
 
 | Asset | Size |
 |---|---:|
-| Main JS | 1,025.00 kB / 294.73 kB gzip |
-| HTML + inline CSS | 111.33 kB / 22.51 kB gzip |
+| Main JS | 1,025.00 kB / 294.71 kB gzip |
+| HTML + inline CSS | 114.48 kB / 22.98 kB gzip |
 | Terrain Worker JS | 6.77 kB |
 | Rust WASM | 112,916 bytes, local/offline |
 | Recorded rifle WAV | about 44 kB, loaded only after audio unlock |
@@ -274,3 +274,10 @@ removal of hot-path full-subtree matrix updates/allocations.
   rotation at 190 km/h, hands-off wings-level climb through 24.3 m,
   bounded bank/release-to-level, chase camera, no application page errors
   and zero safety rescues. Captures are `screenshots/aircraft-assist-*.png`.
+- Slim dogfight-layout follow-up at 844×390: pitch pad x=8/w=68, roll pad
+  x=616/w=160, throttle x=786/w=50 (ends x=836), utility row y=334/h=29,
+  telemetry y=367/h≈19, weapon stack x=618, permanent hint height 0, and
+  attitude display 168×94. Final translucent-control capture rotated at
+  198 km/h, climbed hands-off through 18.3 m, reached chase view at
+  31.1 m / 266 km/h, and again reported no application page errors and
+  zero safety rescues.

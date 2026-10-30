@@ -439,7 +439,7 @@ Real gameplay captures from this round:
 - ![Aircraft systems — ejection and parachute descent](screenshots/aircraft-systems-parachute.png)
 - ![Aircraft systems — death and respawn overlay](screenshots/aircraft-systems-death.png)
 
-## AI flight assist, heavy glass controls and projected-shadow round
+## AI flight assist, slim glass dogfight controls and projected-shadow round
 
 - **The fake aircraft disc is gone.** The old circular `jetBlob` was parented
   to the Warthog at local Y=0.05, so it travelled with the airframe instead
@@ -449,7 +449,7 @@ Real gameplay captures from this round:
   the quad is laid on the local terrain slope, and its opacity/spread follow
   altitude (fully faded by about 88 m). There is no shadow-map render target
   and no dark circle attached underneath the jet in flight.
-- **AI copilot is on by default.** The cockpit **AI ASSIST** button (or the
+- **AI copilot is on by default.** The compact cockpit **AI** button (or the
   `L` key) toggles it. On the ground it behaves like a taxi-game stability
   layer: steering is direct at parking speed, progressively calmer as the
   roll builds, and a held W produces a repeatable rotation — but it never
@@ -467,6 +467,18 @@ Real gameplay captures from this round:
   moving metal handle. The bottom weapons/flight console uses the same
   smoked-glass/metal treatment, and the left hub now reads the live AI mode
   (`AI TAXI`, `AI ROTATE`, `AI CLIMB`, `AI BALANCE`, `AI LAND`, or `MANUAL`).
+- **Mobile dogfight spacing pass:** the heavy hardware was slimmed and
+  stretched away from the centre instead of sitting as one fat console.
+  W/S now hugs the far-left edge, A/D and the GUN/MSL/EJECT stack sit under
+  the right thumb, and the narrower gear quadrant hugs the far-right edge.
+  On short landscape screens the permanent hint and duplicate THR −/+ keys
+  are hidden (the quadrant already owns thrust), leaving only compact
+  BRK / AI / EXIT keys and a one-line telemetry strip against the bottom
+  edge. The attitude display was reduced to 168×94 px, and the housings use
+  lower-alpha smoked glass with only 2 px backdrop blur so terrain and
+  targets remain readable through them. At 844×390 the measured pitch pad
+  starts at x=8, the roll pad starts at x=616, the throttle ends at x=836,
+  the utility row does not begin until y=334, and telemetry sits at y=367.
 - **Browser verification:** parked projected-shadow opacity 0.375; AI
   button toggled MANUAL and back; thrust alone reached 146 km/h without
   liftoff; held W rotated at 190 km/h without a stall; after the climb was
@@ -474,11 +486,14 @@ Real gameplay captures from this round:
   climbing through 24.3 m at +9.0 m/s; a D command produced a bounded
   51.2° bank target and release returned roll below 10°; chase camera and
   the redesigned console remained error-free with zero safety rescues.
-  Vercel remains **paused/unpublished**.
+  The final slim-layout capture then repeated the edge/centre geometry
+  checks, rotated at 198 km/h, reached 18.3 m hands-off in AI CLIMB, and
+  continued to 31.1 m / 266 km/h in chase view with no page errors or
+  safety rescues. Vercel remains **paused/unpublished**.
 
 Real gameplay captures from this round:
 
 - ![Projected Warthog shadow on the strip](screenshots/aircraft-assist-shadow-external.png)
-- ![Heavy glass flight controls parked](screenshots/aircraft-assist-controls-parked.png)
-- ![AI climb with heavy glass flight controls](screenshots/aircraft-assist-controls-airborne.png)
+- ![Slim edge-spread glass flight controls parked](screenshots/aircraft-assist-controls-parked.png)
+- ![AI climb with slim edge-spread glass flight controls](screenshots/aircraft-assist-controls-airborne.png)
 - ![AI balance in chase view without an attached shadow disc](screenshots/aircraft-assist-shadow-chase.png)

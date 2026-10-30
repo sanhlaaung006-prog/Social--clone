@@ -1145,7 +1145,7 @@
           writeText(throttleValueRef, `${Math.round(telemetry.throttle)}%`);
           const assistOn = (d.aircraftAssist ?? (inputState.flightAssist ? 1 : 0)) ? true : false;
           if (assistButtonRef.current) assistButtonRef.current.classList.toggle("is-on", assistOn);
-          writeText(assistStateRef, assistOn ? "ON · BALANCE" : "OFF · MANUAL");
+          writeText(assistStateRef, assistOn ? "BALANCE" : "MANUAL");
           writeText(assistModeRef, assistOn ? (d.aircraftAssistMode || "AI BALANCE") : "MANUAL");
           writeText(modeRef, `MODE ${d.aircraftMode || d.jetGroundMode || (d.jetAirborne ? "AIR" : "TAXI")}`);
           writeText(spoolRef, `THR ${Math.round(telemetry.throttle)}% · SPOOL ${Math.round(d.jetSpoolPct || 0)}% · STEER ${Math.round(d.jetSteerDeg || 0)}°`);
@@ -1184,7 +1184,8 @@
           }
           writeText(missileValueRef, !d.aircraftMissilesOperational ? "OFFLINE" : `${d.aircraftMissiles || 0} READY`);
           writeText(telemetryRef, `${d.jetMessage || telemetry.name} · ${telemetry.speed} KM/H · ALT ${telemetry.altitude} M · THR ${telemetry.throttle}% · AOA ${telemetry.aoa}°`);
-          writeText(exitRef, d.jetCanExit ? "EXIT" : "EXIT · STOP FIRST");
+          writeText(exitRef, "EXIT");
+          if (exitRef.current) exitRef.current.classList.toggle("is-blocked", !d.jetCanExit);
           raf = window.requestAnimationFrame(paint);
         };
         paint();
@@ -1290,12 +1291,12 @@
                   <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease thrust">THR −</button>
                   <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase thrust">THR +</button>
                   <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold brakes on the ground or airbrake in flight">BRK</button>
-                  <button ref={assistButtonRef} type="button" className="is-assist is-on" onPointerDown={toggleAssist} aria-label="Toggle AI flight assist"><strong>AI ASSIST</strong><small ref={assistStateRef}>ON · BALANCE</small></button>
+                  <button ref={assistButtonRef} type="button" className="is-assist is-on" onPointerDown={toggleAssist} aria-label="Toggle AI flight assist"><strong>AI</strong><small ref={assistStateRef}>BALANCE</small></button>
                   <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the aircraft">EXIT</button>
                 </div>
                 <div className="jet-weapon-buttons">
                   <button ref={gunButtonRef} type="button" {...hold(() => { inputState.aircraftGunHeld = true; }, () => { inputState.aircraftGunHeld = false; })} aria-label="Hold to fire the installed forward gun"><strong>GUN</strong><small ref={gunValueRef}>1174 RDS</small></button>
-                  <button ref={missileButtonRef} type="button" onPointerDown={launchMissile} onClick={launchMissile} aria-label="Launch a guided missile"><strong>MISSILE</strong><small ref={missileValueRef}>2 READY</small></button>
+                  <button ref={missileButtonRef} type="button" onPointerDown={launchMissile} onClick={launchMissile} aria-label="Launch a guided missile"><strong>MSL</strong><small ref={missileValueRef}>2 READY</small></button>
                   <button type="button" className="is-eject" onPointerDown={queue("eject")} onClick={queue("eject")} aria-label="Eject from the aircraft"><strong>EJECT</strong><small>ESCAPE</small></button>
                 </div>
                 <div className="jet-flight-hint">AI: SET THRUST · A/D STEER · HOLD W · RELEASE = LEVEL · AI OFF = MANUAL</div>
