@@ -5093,6 +5093,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     shell.vel.x += -Math.sin(t.yaw) * t.speed;
     shell.vel.z += -Math.cos(t.yaw) * t.speed;
     shell.active = true;
+    tankShellsActiveCount += 1; // updateTank only steps shells while the count is nonzero
     shell.life = 7;
     shell.traveled = 0;
     shell.mesh.visible = true;
