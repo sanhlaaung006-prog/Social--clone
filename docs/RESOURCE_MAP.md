@@ -281,3 +281,19 @@ removal of hot-path full-subtree matrix updates/allocations.
   198 km/h, climbed hands-off through 18.3 m, reached chase view at
   31.1 m / 266 km/h, and again reported no application page errors and
   zero safety rescues.
+
+## M1A2 Abrams resource ownership (added with the tank)
+
+| Piece | Owner | Notes |
+|---|---|---|
+| Model factory | `game/src/vehicles/abrams.ts` | Single assembly instance; `dispose()` frees geometries/materials. Blueprint edge `LineSegments` (733) are stripped at build in `world.js`, never rendered. |
+| Sim + damage | `game/src/world.js` (`updateTank` & friends) | Runs only while playing; `assembly.update` gated to occupied or camera < 500 m. Shell pool of 8 with one shared geometry; steps only while a round is active. |
+| HUD/controls | `game/src/ironveil.jsx` (`TankInterface`) + `.tank-*` CSS in `game/index.html` | Cached paint at 30 Hz occupied / 10 Hz idle, same anti-flicker path as the aircraft console; unmount zeroes drive inputs. |
+| Collision | shared scatter-disc array | Tank contributes its own discs (skipped for itself via `[tankObstacleStart, +count)`), hull tested as 3 circles. |
+| Telemetry | `debugStats.tank*` (`?profile=1`) | Position/speed/ammo/reload/turret/gun/components published per frame while playing; `worldControl.tankDamage` is the test hook. |
+
+Lag/flicker fixes in the same round: idempotent native-DPR resize (no
+per-frame canvas realloc), no `backdrop-filter` sampling on coarse
+pointers, seated interfaces (jet + tank) repaint from cached refs at
+30 Hz instead of every React tick, throttled shadow/HUD updates, and
+tighter per-frame chunk/BVH budgets.

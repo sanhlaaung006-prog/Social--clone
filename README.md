@@ -497,3 +497,42 @@ Real gameplay captures from this round:
 - ![Slim edge-spread glass flight controls parked](screenshots/aircraft-assist-controls-parked.png)
 - ![AI climb with slim edge-spread glass flight controls](screenshots/aircraft-assist-controls-airborne.png)
 - ![AI balance in chase view without an attached shadow disc](screenshots/aircraft-assist-shadow-chase.png)
+
+## Vehicles: A-10C Warthog + M1A2 Abrams
+
+Two fully crewed vehicles share the same occupancy, damage and explosion
+systems:
+
+- **A-10C Warthog** (parked on the graded strip at X=18, Z=0): reusable
+  component damage model, forward gun + missiles, cockpit/chase cameras,
+  ejection/parachute, and a 3-level flight AI — `MANUAL` / `BALANCE`
+  (default, taxi-game-easy smoothing) / `AUTOPILOT` (flies a full circuit
+  hands-off; any strong stick input hands control back). Landing gear is
+  automatic (closes after takeoff, opens for landing) but never locked:
+  the GEAR button / `KeyB` overrides it at any time and the manual choice
+  latches until the flight phase truly reverses.
+- **M1A2 Abrams** (parked near spawn at X=-14, Z=12): board with the DRIVE
+  button (or `E`). Drive physics include acceleration/braking/reverse,
+  neutral pivot turns, terrain pitch/roll alignment, obstacle collision
+  with impact damage, a parking-brake hill hold, and a damaged track
+  dragging the hull toward its side. Aiming is direct drag (no aim
+  joystick); the turret and 120 mm cannon chase the aim point and fire
+  physical HE shells (620 m/s, 3.2 s reload, 42 rounds) into the shared
+  explosion system. Component damage (hull / turret / gun / engine /
+  tracks / ammo) degrades power and mobility, can burn down, and an ammo
+  hit cooks off. Rifle fire, the A-10's gun and blast splash can all hurt
+  it; the seated driver is blast-protected. Performance gates: the model
+  only animates when crewed or within 500 m, and its 733 decorative
+  blueprint edge-lines are stripped at build (779 meshes / ~24.4k
+  triangles remain, 342 of them hit-testable).
+
+Anti-lag / anti-flicker pass: seated interfaces paint from cached state
+at 30 Hz (10 Hz idle) instead of re-rendering every frame, coarse-pointer
+devices skip backdrop sampling, canvas resize is idempotent at native
+DPR, and per-frame budgets for chunk/BVH work were tightened. Verified
+with `?profile=1` telemetry: 22/22 tank behaviour checks pass headless
+(drive/steer/pivot/reverse, turret slew, cannon + downrange detonation,
+damage model, destruction, jet boarding regression).
+
+Screenshots: `screenshots/tank-parked-spawn.png`,
+`screenshots/tank-driving.png`, `screenshots/tank-firing.png`.
