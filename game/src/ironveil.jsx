@@ -1054,7 +1054,11 @@
       const altRef = React.useRef(null);
       const vsiGearRef = React.useRef(null);
       const throttleFillRef = React.useRef(null);
+      const throttleHandleRef = React.useRef(null);
       const throttleValueRef = React.useRef(null);
+      const assistButtonRef = React.useRef(null);
+      const assistStateRef = React.useRef(null);
+      const assistModeRef = React.useRef(null);
       const modeRef = React.useRef(null);
       const spoolRef = React.useRef(null);
       const pitchRollRef = React.useRef(null);
@@ -1135,8 +1139,14 @@
           writeText(aoaGRef, `AOA ${Number(telemetry.aoa).toFixed(1)}° · ${Number(telemetry.loadG).toFixed(2)} G`);
           writeText(altRef, `${Number(telemetry.altitude).toFixed(1)} M`);
           writeText(vsiGearRef, `VS ${telemetry.vertical >= 0 ? "+" : ""}${Number(telemetry.vertical).toFixed(1)} M/S · GEAR ${d.jetGearDown ? "DOWN" : "UP"}`);
-          if (throttleFillRef.current) throttleFillRef.current.style.height = `${Math.max(0, Math.min(100, telemetry.throttle))}%`;
+          const throttlePct = Math.max(0, Math.min(100, telemetry.throttle));
+          if (throttleFillRef.current) throttleFillRef.current.style.height = `${throttlePct}%`;
+          if (throttleHandleRef.current) throttleHandleRef.current.style.bottom = `${throttlePct}%`;
           writeText(throttleValueRef, `${Math.round(telemetry.throttle)}%`);
+          const assistOn = (d.aircraftAssist ?? (inputState.flightAssist ? 1 : 0)) ? true : false;
+          if (assistButtonRef.current) assistButtonRef.current.classList.toggle("is-on", assistOn);
+          writeText(assistStateRef, assistOn ? "ON · BALANCE" : "OFF · MANUAL");
+          writeText(assistModeRef, assistOn ? (d.aircraftAssistMode || "AI BALANCE") : "MANUAL");
           writeText(modeRef, `MODE ${d.aircraftMode || d.jetGroundMode || (d.jetAirborne ? "AIR" : "TAXI")}`);
           writeText(spoolRef, `THR ${Math.round(telemetry.throttle)}% · SPOOL ${Math.round(d.jetSpoolPct || 0)}% · STEER ${Math.round(d.jetSteerDeg || 0)}°`);
           writeText(pitchRollRef, `PITCH ${telemetry.pitch >= 0 ? "+" : ""}${Number(telemetry.pitch).toFixed(0)}° · ROLL ${telemetry.roll >= 0 ? "+" : ""}${Number(telemetry.roll).toFixed(0)}°`);
@@ -1201,6 +1211,11 @@
         event.preventDefault();
         inputState.aircraftMissileLaunch = true;
       };
+      const toggleAssist = (event) => {
+        event.preventDefault();
+        inputState.flightAssist = !inputState.flightAssist;
+        if (assistButtonRef.current) assistButtonRef.current.classList.toggle("is-on", !!inputState.flightAssist);
+      };
       const hold = (set, clear) => ({
         onPointerDown: (event) => { event.preventDefault(); set(); },
         onPointerUp: clear, onPointerLeave: clear, onPointerCancel: clear,
@@ -1264,10 +1279,10 @@
               <div className="aircraft-readout is-right"><small>ALTITUDE AGL</small><b ref={altRef}>0.0 M</b><span ref={vsiGearRef}>VS +0.0 M/S · GEAR DOWN</span><span ref={pitchRollRef}>PITCH +0° · ROLL +0°</span></div>
             </div>
             <div className="aircraft-touch-controls">
-              <div className="flight-tri-pad is-pitch" aria-label="W and S pitch triangles">
-                <button ref={triWRef} type="button" className="flight-tri is-w" {...axisHold("flightPitchInput", 1)} aria-label="W: pitch up on the ground to take off; pitch up in the air"><span>W</span></button>
-                <div className="flight-tri-centre"><small ref={controlValueRef}>P +00 · R +00</small><label>PITCH</label></div>
-                <button ref={triSRef} type="button" className="flight-tri is-s" {...axisHold("flightPitchInput", -1)} aria-label="S: brake then slow reverse on the ground; nose down in the air"><span>S</span></button>
+              <div className="flight-tri-pad is-pitch" aria-label="W and S pitch rocker">
+                <button ref={triWRef} type="button" className="flight-tri is-w" {...axisHold("flightPitchInput", 1)} aria-label="W rocker: pitch up on the ground to take off; climb in the air"><span>W</span></button>
+                <div className="flight-tri-centre"><small ref={controlValueRef}>P +00 · R +00</small><label>PITCH</label><small ref={assistModeRef}>AI BALANCE</small></div>
+                <button ref={triSRef} type="button" className="flight-tri is-s" {...axisHold("flightPitchInput", -1)} aria-label="S rocker: brake then slow reverse on the ground; nose down in the air"><span>S</span></button>
               </div>
               <div className="aircraft-bottom-console">
                 <div ref={telemetryRef} className="jet-telemetry" role="status">ENGINE READY</div>
@@ -1275,6 +1290,7 @@
                   <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = -1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Decrease thrust">THR −</button>
                   <button type="button" {...hold(() => { inputState.flightThrottleTarget = null; inputState.jetThrottleDelta = 1; }, () => { inputState.jetThrottleDelta = 0; })} aria-label="Increase thrust">THR +</button>
                   <button type="button" {...hold(() => { inputState.jetBrake = true; }, () => { inputState.jetBrake = false; })} aria-label="Hold brakes on the ground or airbrake in flight">BRK</button>
+                  <button ref={assistButtonRef} type="button" className="is-assist is-on" onPointerDown={toggleAssist} aria-label="Toggle AI flight assist"><strong>AI ASSIST</strong><small ref={assistStateRef}>ON · BALANCE</small></button>
                   <button ref={exitRef} type="button" onPointerDown={queue("exit")} onClick={queue("exit")} aria-label="Exit the aircraft">EXIT</button>
                 </div>
                 <div className="jet-weapon-buttons">
@@ -1282,16 +1298,16 @@
                   <button ref={missileButtonRef} type="button" onPointerDown={launchMissile} onClick={launchMissile} aria-label="Launch a guided missile"><strong>MISSILE</strong><small ref={missileValueRef}>2 READY</small></button>
                   <button type="button" className="is-eject" onPointerDown={queue("eject")} onClick={queue("eject")} aria-label="Eject from the aircraft"><strong>EJECT</strong><small>ESCAPE</small></button>
                 </div>
-                <div className="jet-flight-hint">GROUND: SET THRUST · A/D STEER · S BRAKE→PUSHBACK · HOLD W AT SPEED TO TAKE OFF — AIR: W/S PITCH · A/D ROLL · BRK AIRBRAKE · GUN/MSL · EJECT BEFORE EXPLOSION</div>
+                <div className="jet-flight-hint">AI: SET THRUST · A/D STEER · HOLD W · RELEASE = LEVEL · AI OFF = MANUAL</div>
               </div>
-              <div className="flight-tri-pad is-roll" aria-label="A and D steering and roll triangles">
-                <button ref={triARef} type="button" className="flight-tri is-a" {...axisHold("flightRollInput", -1)} aria-label="A: steer left on the ground; roll left in the air"><span>A</span></button>
-                <div className="flight-tri-centre"><label>STEER · ROLL</label></div>
-                <button ref={triDRef} type="button" className="flight-tri is-d" {...axisHold("flightRollInput", 1)} aria-label="D: steer right on the ground; roll right in the air"><span>D</span></button>
+              <div className="flight-tri-pad is-roll" aria-label="A and D steering and roll rocker">
+                <button ref={triARef} type="button" className="flight-tri is-a" {...axisHold("flightRollInput", -1)} aria-label="A rocker: steer left on the ground; bank left in the air"><span>A</span></button>
+                <div className="flight-tri-centre"><label>STEER · BANK</label><small>AI COORD</small></div>
+                <button ref={triDRef} type="button" className="flight-tri is-d" {...axisHold("flightRollInput", 1)} aria-label="D rocker: steer right on the ground; bank right in the air"><span>D</span></button>
               </div>
               <div className="flight-throttle" {...flightThrottleHandlers} role="slider" aria-label="Manual thrust slider: set the power level and leave it there" aria-valuemin="0" aria-valuemax="100">
-                <span className="flight-throttle-track"><i ref={throttleFillRef} /></span>
-                <label>THRUST</label><b ref={throttleValueRef}>0%</b><small>SET + LEAVE</small>
+                <span className="flight-throttle-track"><i ref={throttleFillRef} /><em ref={throttleHandleRef} /></span>
+                <label>THRUST</label><b ref={throttleValueRef}>0%</b><small>GEAR QUADRANT</small>
               </div>
             </div>
           </div>
@@ -2488,11 +2504,12 @@
                       <div className="keybind-row"><span>RELOAD</span><span><kbd>RLD</kbd></span></div>
                       <div className="keybind-row"><span>CROUCH</span><span><kbd>CRCH</kbd></span></div>
                       <div className="keybind-row"><span>JUMP</span><span><kbd>JUMP</kbd></span></div>
-                      <SettingToggle label="REVERSE AIRCRAFT W/S" hint="Swap the left W/S triangles and keys: W pitches down (ground: brake/reverse), S pitches up and takes off." value={settings.flightInvertPitch} onChange={(value) => update("flightInvertPitch", value)} />
-                      <SettingToggle label="REVERSE AIRCRAFT A/D" hint="Swap the right A/D triangles and keys for ground steering and airborne roll." value={settings.flightInvertRoll} onChange={(value) => update("flightInvertRoll", value)} />
+                      <SettingToggle label="REVERSE AIRCRAFT W/S" hint="Swap the left W/S rocker and keys: W pitches down (ground: brake/reverse), S pitches up and takes off." value={settings.flightInvertPitch} onChange={(value) => update("flightInvertPitch", value)} />
+                      <SettingToggle label="REVERSE AIRCRAFT A/D" hint="Swap the right A/D rocker and keys for ground steering and airborne roll." value={settings.flightInvertRoll} onChange={(value) => update("flightInvertRoll", value)} />
                       <div className="keybind-row"><span>AIRCRAFT PITCH / TAKE OFF</span><span><kbd>W ▲</kbd><kbd>S ▼</kbd></span></div>
                       <div className="keybind-row"><span>AIRCRAFT STEER / ROLL</span><span><kbd>A ◀</kbd><kbd>D ▶</kbd></span></div>
-                      <div className="keybind-row"><span>AIRCRAFT THRUST</span><span><kbd>THRUST SLIDER</kbd></span></div>
+                      <div className="keybind-row"><span>AIRCRAFT THRUST</span><span><kbd>GEAR QUADRANT</kbd></span></div>
+                      <div className="keybind-row"><span>AI FLIGHT ASSIST</span><span><kbd>L</kbd><kbd>AI BUTTON</kbd></span></div>
                       <div className="keybind-row"><span>F3 DEBUG OVERLAY</span><span><kbd>F3 CHIP</kbd></span></div>
                       <div className="keybind-row"><span>COMMAND MENU</span><span><kbd>❚❚</kbd></span></div>
                     </div>

@@ -438,3 +438,47 @@ Real gameplay captures from this round:
 - ![Aircraft systems — engine fire advisory](screenshots/aircraft-systems-engine-fire.png)
 - ![Aircraft systems — ejection and parachute descent](screenshots/aircraft-systems-parachute.png)
 - ![Aircraft systems — death and respawn overlay](screenshots/aircraft-systems-death.png)
+
+## AI flight assist, heavy glass controls and projected-shadow round
+
+- **The fake aircraft disc is gone.** The old circular `jetBlob` was parented
+  to the Warthog at local Y=0.05, so it travelled with the airframe instead
+  of behaving like light on terrain. It has been replaced by one separate
+  soft A-10 planform quad: each frame the aircraft centre is projected along
+  the live sun/moon direction, terrain is re-sampled at the landing point,
+  the quad is laid on the local terrain slope, and its opacity/spread follow
+  altitude (fully faded by about 88 m). There is no shadow-map render target
+  and no dark circle attached underneath the jet in flight.
+- **AI copilot is on by default.** The cockpit **AI ASSIST** button (or the
+  `L` key) toggles it. On the ground it behaves like a taxi-game stability
+  layer: steering is direct at parking speed, progressively calmer as the
+  roll builds, and a held W produces a repeatable rotation — but it never
+  starts the engine or takes off by itself; thrust remains manual and W is
+  still required. In the air the rockers become attitude commands: W/S ask
+  for a safe pitch, A/D ask for a bounded bank, releasing them returns to
+  wings-level/vertical-speed hold, and the AI adds initial-climb obstacle
+  clearance, landing flare targets, terrain pull-up, stall recovery and
+  compensation inside the existing damage-derived authority limits. Turning
+  AI off restores the previous free continuous pitch/roll manual handling.
+- **Controls were rewritten as heavy cockpit hardware.** The bare white
+  triangles are replaced by machined dark housings with corner fasteners,
+  smoked-glass W/S and A/D rocker paddles, illuminated direction arrows,
+  octagonal status hubs, and a detented thrust **gear quadrant** with a
+  moving metal handle. The bottom weapons/flight console uses the same
+  smoked-glass/metal treatment, and the left hub now reads the live AI mode
+  (`AI TAXI`, `AI ROTATE`, `AI CLIMB`, `AI BALANCE`, `AI LAND`, or `MANUAL`).
+- **Browser verification:** parked projected-shadow opacity 0.375; AI
+  button toggled MANUAL and back; thrust alone reached 146 km/h without
+  liftoff; held W rotated at 190 km/h without a stall; after the climb was
+  established the rockers were released and the AI held roll 0° while
+  climbing through 24.3 m at +9.0 m/s; a D command produced a bounded
+  51.2° bank target and release returned roll below 10°; chase camera and
+  the redesigned console remained error-free with zero safety rescues.
+  Vercel remains **paused/unpublished**.
+
+Real gameplay captures from this round:
+
+- ![Projected Warthog shadow on the strip](screenshots/aircraft-assist-shadow-external.png)
+- ![Heavy glass flight controls parked](screenshots/aircraft-assist-controls-parked.png)
+- ![AI climb with heavy glass flight controls](screenshots/aircraft-assist-controls-airborne.png)
+- ![AI balance in chase view without an attached shadow disc](screenshots/aircraft-assist-shadow-chase.png)

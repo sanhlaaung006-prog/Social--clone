@@ -17,7 +17,7 @@ optimization pass.
 
 | Layer | File(s) | Owns | Resource rule |
 |---|---|---|---|
-| HTML/CSS shell | `game/index.html` | All CSS, mobile HUD/aircraft console layout, safe areas, angular anti-PS2 triangle pads | No webfont/network dependency; system condensed/monospace stacks only |
+| HTML/CSS shell | `game/index.html` | All CSS, mobile HUD/aircraft console layout, safe areas, heavy machined-glass aircraft rocker pads | No webfont/network dependency; system condensed/monospace stacks only |
 | React UI/store | `game/src/ironveil.jsx` | Zustand game state, menus, HUD, touch controls, aircraft console, death/respawn | High-frequency values are painted through refs; hidden aircraft HUD polls at about 10 Hz |
 | Three.js world | `game/src/world.js` | Renderer, terrain streaming, player, drones, scatter, sky/climate, FX, aircraft simulation/weapons, cameras | One RAF owner; pooled FX/projectiles; adaptive chunk/BVH budgets |
 | Reusable aircraft model | `game/src/aircraft/aircraft-core.js` | Component IDs, health/armor, derived lift/thrust/control/drag, kinetic-energy collision damage, fire/advisories | No Three.js or Warthog geometry dependency |
@@ -34,8 +34,8 @@ Current production build (`npm --prefix game run build`):
 
 | Asset | Size |
 |---|---:|
-| Main JS | 1,019.32 kB / 292.91 kB gzip |
-| HTML + inline CSS | 104.42 kB / 21.25 kB gzip |
+| Main JS | 1,025.00 kB / 294.73 kB gzip |
+| HTML + inline CSS | 111.33 kB / 22.51 kB gzip |
 | Terrain Worker JS | 6.77 kB |
 | Rust WASM | 112,916 bytes, local/offline |
 | Recorded rifle WAV | about 44 kB, loaded only after audio unlock |
@@ -110,6 +110,9 @@ aircraft's own kinetic collision solver.
   grounding uses blob shadows.
 - Sky resources are fixed: one shader dome, 1,700 star points and three
   256×256 galaxy canvas sprites.
+- The aircraft ground shadow adds one 256×256 canvas texture and one quad.
+  It is projected along the live sun/moon direction and terrain-conformed
+  on the CPU; there is no shadow-map render target or extra scene pass.
 - FX pools are fixed: 300 impact points, 180 splash points, 5 rifle tracers.
 - Aircraft weapon pools are fixed: 42 visible cannon shells and 8 missile
   objects (the A-10 configuration stores only 2 missiles). Explosions reuse
@@ -266,3 +269,8 @@ removal of hot-path full-subtree matrix updates/allocations.
   movement. Safety rescues remained 0 and no application page errors were
   reported.
 - Real screenshots are committed under `screenshots/aircraft-systems-*.png`.
+- Assist/shadow follow-up browser run: terrain-projected shadow active,
+  AI button MANUAL↔ASSIST toggle, no self-takeoff at 146 km/h, assisted
+  rotation at 190 km/h, hands-off wings-level climb through 24.3 m,
+  bounded bank/release-to-level, chase camera, no application page errors
+  and zero safety rescues. Captures are `screenshots/aircraft-assist-*.png`.

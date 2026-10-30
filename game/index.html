@@ -1686,12 +1686,16 @@
        Decorative meta/intel rows yield; actions stay one thumb away. */
     @media (max-width: 700px) {
       .aircraft-touch-controls { gap: 6px; }
-      .flight-tri { width: 54px; height: 48px; font-size: 12px; }
-      .flight-tri.is-a, .flight-tri.is-d { width: 48px; height: 54px; }
-      .flight-tri-pad.is-pitch { width: 62px; }
-      .flight-tri-pad.is-roll { width: 154px; }
-      .flight-tri-centre { min-width: 44px; }
-      .jet-flight-buttons button { min-width: 52px; padding: 7px 7px; }
+      .flight-tri-pad { padding: 7px; gap: 5px; }
+      .flight-tri { width: 58px; height: 44px; font-size: 12px; }
+      .flight-tri.is-a, .flight-tri.is-d { width: 50px; height: 56px; }
+      .flight-tri-pad.is-pitch { width: 74px; }
+      .flight-tri-pad.is-roll { width: 176px; }
+      .flight-tri-centre { min-width: 48px; min-height: 36px; padding: 4px; }
+      .flight-tri-pad.is-roll .flight-tri-centre { min-width: 52px; }
+      .flight-throttle { width: 58px; padding-left: 5px; padding-right: 5px; }
+      .jet-flight-buttons button { min-width: 50px; padding: 6px 6px; }
+      .jet-flight-buttons button.is-assist { min-width: 62px; }
     }
     @media (max-height: 500px) {
       .console-header { min-height: 40px; }
@@ -2064,43 +2068,126 @@
       display: flex; align-items: flex-end; justify-content: space-between;
       padding: 0 calc(14px + var(--safe-left)) 0 calc(14px + var(--safe-right)); gap: 10px;
     }
-    .flight-tri-pad { position: relative; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 7px; pointer-events: none; }
-    .flight-tri-pad.is-pitch { flex-direction: column; width: 88px; margin-bottom: 22px; }
-    .flight-tri-pad.is-roll { flex-direction: row; width: 202px; }
-    .flight-tri {
-      position: relative; width: 74px; height: 63px; border: 0; padding: 0; flex: 0 0 auto;
-      pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer;
-      color: #172015; background: linear-gradient(145deg, rgba(255,255,255,.97), rgba(190,205,214,.92));
-      font-family: var(--mono); font-size: 14px; font-weight: 800; letter-spacing: .08em;
-      filter: drop-shadow(0 10px 20px rgba(0,0,0,.35));
+    /* Heavy cockpit rocker clusters: machined dark housings, smoked-glass
+       paddles and an octagonal status hub. The class names remain the
+       stable W/S/A/D input hooks, but the bare white triangles are gone. */
+    .flight-tri-pad {
+      position: relative; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 10px; pointer-events: none; isolation: isolate; box-sizing: border-box;
+      border: 1px solid rgba(214,255,222,.28);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.035) 34%, rgba(0,0,0,.28) 78%),
+        linear-gradient(160deg, rgba(20,32,28,.88), rgba(4,9,8,.92));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -14px 26px rgba(0,0,0,.46), 0 18px 38px rgba(0,0,0,.38);
+      backdrop-filter: blur(10px) saturate(1.25); -webkit-backdrop-filter: blur(10px) saturate(1.25);
+      clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
     }
-    .flight-tri span { position: absolute; line-height: 1; pointer-events: none; }
-    .flight-tri.is-w { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
-    .flight-tri.is-w span { left: 50%; bottom: 9px; transform: translateX(-50%); }
-    .flight-tri.is-s { clip-path: polygon(0 0, 100% 0, 50% 100%); }
-    .flight-tri.is-s span { left: 50%; top: 9px; transform: translateX(-50%); }
-    .flight-tri.is-a, .flight-tri.is-d { width: 63px; height: 74px; }
-    .flight-tri.is-a { clip-path: polygon(0 50%, 100% 0, 100% 100%); }
-    .flight-tri.is-a span { right: 9px; top: 50%; transform: translateY(-50%); }
-    .flight-tri.is-d { clip-path: polygon(0 0, 100% 50%, 0 100%); }
-    .flight-tri.is-d span { left: 9px; top: 50%; transform: translateY(-50%); }
-    .flight-tri:active, .flight-tri.is-active { background: linear-gradient(145deg, #eaffb0, #a3e635); color: #162006; }
-    .flight-tri-centre { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-width: 58px; color: #eef5e8; text-shadow: 0 1px 3px rgba(0,0,0,.9); }
-    .flight-tri-centre label { font-size: 6.5px; font-weight: 700; letter-spacing: .12em; white-space: nowrap; }
-    .flight-tri-centre small { font-size: 6px; letter-spacing: .07em; opacity: .82; white-space: nowrap; }
+    .flight-tri-pad::before {
+      content: ""; position: absolute; inset: 5px; z-index: 0; pointer-events: none;
+      border: 1px solid rgba(255,255,255,.13);
+      clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px), 0 12px);
+    }
+    .flight-tri-pad::after {
+      content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: .62;
+      background:
+        radial-gradient(circle at 10px 10px, rgba(255,255,255,.85) 0 1.5px, rgba(0,0,0,.6) 2.5px, transparent 3.6px),
+        radial-gradient(circle at calc(100% - 10px) 10px, rgba(255,255,255,.85) 0 1.5px, rgba(0,0,0,.6) 2.5px, transparent 3.6px),
+        radial-gradient(circle at 10px calc(100% - 10px), rgba(255,255,255,.85) 0 1.5px, rgba(0,0,0,.6) 2.5px, transparent 3.6px),
+        radial-gradient(circle at calc(100% - 10px) calc(100% - 10px), rgba(255,255,255,.85) 0 1.5px, rgba(0,0,0,.6) 2.5px, transparent 3.6px);
+    }
+    .flight-tri-pad.is-pitch { flex-direction: column; width: 104px; margin-bottom: 10px; }
+    .flight-tri-pad.is-roll { flex-direction: row; width: 244px; }
+    .flight-tri {
+      position: relative; z-index: 1; width: 80px; height: 58px; border: 0; padding: 0; flex: 0 0 auto;
+      pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; cursor: pointer;
+      color: #edf7ea;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.42), rgba(255,255,255,.07) 38%, rgba(0,0,0,.24) 74%),
+        linear-gradient(160deg, rgba(66,84,78,.96), rgba(12,20,17,.98));
+      font-family: var(--mono); font-size: 14px; font-weight: 800; letter-spacing: .08em;
+      text-shadow: 0 1px 3px rgba(0,0,0,.9);
+      filter: drop-shadow(0 8px 12px rgba(0,0,0,.42));
+      transition: transform 70ms ease, filter 110ms ease, background 110ms ease, color 110ms ease;
+    }
+    .flight-tri::before { position: absolute; z-index: 1; color: #d9ff7a; font-size: 17px; line-height: 1; text-shadow: 0 0 8px rgba(163,230,53,.55), 0 1px 3px rgba(0,0,0,.9); pointer-events: none; }
+    .flight-tri::after {
+      content: ""; position: absolute; inset: 6px; z-index: 0; pointer-events: none;
+      border: 1px solid rgba(255,255,255,.14);
+      background: linear-gradient(180deg, rgba(255,255,255,.17), transparent 52%);
+    }
+    .flight-tri span { position: absolute; z-index: 2; line-height: 1; pointer-events: none; }
+    .flight-tri.is-w { clip-path: polygon(20% 0, 80% 0, 100% 26%, 100% 100%, 0 100%, 0 26%); }
+    .flight-tri.is-w::before { content: "▲"; left: 50%; top: 7px; transform: translateX(-50%); }
+    .flight-tri.is-w span { left: 50%; bottom: 8px; transform: translateX(-50%); }
+    .flight-tri.is-s { clip-path: polygon(0 0, 100% 0, 100% 74%, 80% 100%, 20% 100%, 0 74%); }
+    .flight-tri.is-s::before { content: "▼"; left: 50%; bottom: 7px; transform: translateX(-50%); }
+    .flight-tri.is-s span { left: 50%; top: 8px; transform: translateX(-50%); }
+    .flight-tri.is-a, .flight-tri.is-d { width: 68px; height: 78px; }
+    .flight-tri.is-a { clip-path: polygon(26% 0, 100% 0, 100% 100%, 26% 100%, 0 80%, 0 20%); }
+    .flight-tri.is-a::before { content: "◀"; left: 8px; top: 50%; transform: translateY(-50%); }
+    .flight-tri.is-a span { right: 10px; top: 50%; transform: translateY(-50%); }
+    .flight-tri.is-d { clip-path: polygon(0 0, 74% 0, 100% 20%, 100% 80%, 74% 100%, 0 100%); }
+    .flight-tri.is-d::before { content: "▶"; right: 8px; top: 50%; transform: translateY(-50%); }
+    .flight-tri.is-d span { left: 10px; top: 50%; transform: translateY(-50%); }
+    .flight-tri:active, .flight-tri.is-active {
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.62), rgba(255,255,255,.12) 40%, rgba(55,92,10,.18) 78%),
+        linear-gradient(150deg, #eaffb0, #84cc16);
+      color: #162006; text-shadow: none; transform: translateY(1px) scale(.975);
+      filter: drop-shadow(0 4px 8px rgba(0,0,0,.45));
+    }
+    .flight-tri:active::before, .flight-tri.is-active::before { color: #20320a; text-shadow: none; }
+    .flight-tri-centre {
+      position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+      min-width: 66px; min-height: 44px; padding: 5px 7px; box-sizing: border-box;
+      color: #eef5e8; text-shadow: 0 1px 3px rgba(0,0,0,.9);
+      background:
+        radial-gradient(circle at 35% 22%, rgba(255,255,255,.34), transparent 38%),
+        linear-gradient(150deg, rgba(76,96,87,.96), rgba(8,14,12,.98));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.25), inset 0 -8px 14px rgba(0,0,0,.42);
+      clip-path: polygon(24% 0, 76% 0, 100% 24%, 100% 76%, 76% 100%, 24% 100%, 0 76%, 0 24%);
+    }
+    .flight-tri-pad.is-roll .flight-tri-centre { min-width: 78px; }
+    .flight-tri-centre label { color: #d9ff7a; font-size: 6.5px; font-weight: 700; letter-spacing: .12em; white-space: nowrap; }
+    .flight-tri-centre small { font-size: 5.8px; letter-spacing: .07em; opacity: .84; white-space: nowrap; }
     .aircraft-bottom-console { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 7px; }
     .flight-throttle {
-      position: relative; width: 58px; height: 150px; flex: 0 0 auto; pointer-events: auto; touch-action: none;
+      position: relative; width: 68px; height: 160px; flex: 0 0 auto; pointer-events: auto; touch-action: none;
       user-select: none; -webkit-user-select: none; cursor: ns-resize; display: flex; flex-direction: column; align-items: center;
+      padding: 10px 7px 7px; box-sizing: border-box;
+      border: 1px solid rgba(214,255,222,.28);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.035) 36%, rgba(0,0,0,.28) 80%),
+        linear-gradient(165deg, rgba(24,38,33,.9), rgba(5,10,8,.94));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -12px 22px rgba(0,0,0,.44), 0 16px 34px rgba(0,0,0,.36);
+      backdrop-filter: blur(10px) saturate(1.25); -webkit-backdrop-filter: blur(10px) saturate(1.25);
+      clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% calc(100% - 12px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 12px), 0 12px);
     }
     .flight-throttle-track {
-      position: relative; width: 18px; height: 112px; overflow: hidden; display: block;
-      border: 1px solid rgba(238,247,228,.55); border-radius: 999px; background: rgba(5,9,7,.58);
+      position: relative; width: 27px; height: 104px; overflow: visible; display: block;
+      border: 1px solid rgba(238,247,228,.48); border-radius: 8px 8px 12px 12px;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.18), transparent 34%, rgba(0,0,0,.3) 78%),
+        repeating-linear-gradient(to top, rgba(3,7,5,.94) 0 6px, rgba(255,255,255,.13) 6px 7px, rgba(10,17,13,.94) 7px 13px);
+      box-shadow: inset 0 0 12px rgba(0,0,0,.66);
     }
-    .flight-throttle-track i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; display: block; background: linear-gradient(#d9ff7a, #65a30d); }
-    .flight-throttle label { margin-top: 5px; color: #eef5e8; font-size: 8px; font-weight: 700; letter-spacing: .13em; }
+    .flight-throttle-track::before { content: ""; position: absolute; inset: 3px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; pointer-events: none; }
+    .flight-throttle-track i {
+      position: absolute; left: 3px; right: 3px; bottom: 0; height: 0; display: block; border-radius: 6px;
+      background: linear-gradient(#f4ffb8, #a3e635 45%, #4d7c0f); box-shadow: 0 0 12px rgba(163,230,53,.38); opacity: .9;
+    }
+    .flight-throttle-track em {
+      position: absolute; left: -8px; right: -8px; bottom: 0; z-index: 2; height: 14px; display: block;
+      transform: translateY(50%); border: 1px solid rgba(255,255,255,.62);
+      background: linear-gradient(180deg, #f1f5f2, #7b887f 48%, #202925);
+      box-shadow: 0 5px 11px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.8);
+      clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 9px 100%, 0 50%);
+      pointer-events: none;
+    }
+    .flight-throttle-track em::after { content: ""; position: absolute; left: 9px; right: 9px; top: 6px; height: 2px; background: #d9ff7a; box-shadow: 0 0 7px rgba(217,255,122,.8); }
+    .flight-throttle label { margin-top: 6px; color: #eef5e8; font-size: 8px; font-weight: 700; letter-spacing: .13em; }
     .flight-throttle b { color: #d9ff7a; font-size: 9px; line-height: 1.15; }
-    .flight-throttle small { color: rgba(238,247,228,.68); font-size: 6px; letter-spacing: .12em; }
+    .flight-throttle small { color: rgba(238,247,228,.68); font-size: 5.4px; letter-spacing: .1em; white-space: nowrap; }
     body.aircraft-seated .touch-controls { display: none !important; }
     /* While flying, the aircraft console owns the lower screen; on-foot gun
        furniture would only collide with the stick, throttle and EXIT. */
@@ -2108,17 +2195,42 @@
     body.aircraft-seated .crosshair,
     body.aircraft-seated .hud-hints { display: none !important; }
     .jet-telemetry {
-      max-width: 100%; padding: 7px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      border: 1px solid rgba(238,247,228,.3); background: rgba(5,9,7,.66); color: #eef5e8;
+      max-width: 100%; padding: 7px 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      border: 1px solid rgba(214,255,222,.3); color: #eef5e8;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.16), rgba(255,255,255,.03) 42%, rgba(0,0,0,.22)),
+        linear-gradient(160deg, rgba(15,27,22,.82), rgba(4,9,7,.9));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 10px 24px rgba(0,0,0,.3);
+      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
+      clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
       font-size: 8px; letter-spacing: .1em; text-shadow: 0 1px 3px rgba(0,0,0,.85);
     }
     .jet-flight.is-stall .jet-telemetry { border-color: rgba(248,113,113,.9); color: #fecaca; }
-    .jet-flight-buttons { display: flex; gap: 7px; }
+    .jet-flight-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; }
     .jet-flight-buttons button {
-      min-width: 68px; min-height: 48px; padding: 8px 11px;
-      border: 1px solid rgba(255,255,255,.72); border-radius: 13px;
-      background: rgba(244,247,249,.9); color: #171d21; pointer-events: auto; touch-action: none; cursor: pointer;
+      min-width: 64px; min-height: 47px; padding: 7px 10px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+      border: 1px solid rgba(214,255,222,.36); border-radius: 4px;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.24), rgba(255,255,255,.045) 40%, rgba(0,0,0,.22) 78%),
+        linear-gradient(160deg, rgba(48,66,59,.94), rgba(9,16,13,.97));
+      color: #edf7ea; pointer-events: auto; touch-action: none; cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -9px 16px rgba(0,0,0,.38), 0 10px 22px rgba(0,0,0,.32);
+      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
+      clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
       font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .08em;
+      text-shadow: 0 1px 3px rgba(0,0,0,.9);
+      transition: transform 70ms ease, background 110ms ease, color 110ms ease;
+    }
+    .jet-flight-buttons button:active { transform: translateY(1px) scale(.98); }
+    .jet-flight-buttons button strong { font-size: 8.5px; line-height: 1; }
+    .jet-flight-buttons button small { font-size: 5.6px; line-height: 1; opacity: .78; }
+    .jet-flight-buttons button.is-assist { min-width: 78px; }
+    .jet-flight-buttons button.is-assist.is-on {
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.58), rgba(255,255,255,.1) 42%, rgba(55,92,10,.16) 78%),
+        linear-gradient(150deg, #eaffb0, #84cc16);
+      color: #162006; text-shadow: none;
     }
     .jet-flight-hint { color: rgba(238,247,228,.72); font-size: 6.5px; letter-spacing: .1em; text-align: center; text-shadow: 0 1px 3px rgba(0,0,0,.9); }
 
@@ -2152,7 +2264,7 @@
     .aircraft-damage-diagram {
       /* Bottom-left field position: immediately right of the W/S pitch
          triangles, above the seated pilot's lower console. */
-      position: absolute; left: calc(112px + var(--safe-left)); bottom: calc(78px + var(--safe-bottom)); z-index: 3;
+      position: absolute; left: calc(126px + var(--safe-left)); bottom: calc(78px + var(--safe-bottom)); z-index: 3;
       width: 92px; padding: 6px 7px 5px; pointer-events: none;
       border: 1px solid rgba(238,247,228,.34); background: rgba(4,10,7,.68); color: #eef5e8;
       font-family: var(--mono); clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
@@ -2170,16 +2282,28 @@
     .jet-weapon-buttons button {
       min-width: 76px; min-height: 42px; padding: 6px 9px;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
-      border: 1px solid rgba(255,255,255,.72); border-radius: 4px;
-      background: rgba(244,247,249,.9); color: #171d21; pointer-events: auto; touch-action: none; cursor: pointer;
-      font-family: var(--mono); letter-spacing: .08em;
-      clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
+      border: 1px solid rgba(214,255,222,.36); border-radius: 4px;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.24), rgba(255,255,255,.045) 40%, rgba(0,0,0,.22) 78%),
+        linear-gradient(160deg, rgba(48,66,59,.94), rgba(9,16,13,.97));
+      color: #edf7ea; pointer-events: auto; touch-action: none; cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -9px 16px rgba(0,0,0,.38), 0 10px 22px rgba(0,0,0,.32);
+      backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
+      font-family: var(--mono); letter-spacing: .08em; text-shadow: 0 1px 3px rgba(0,0,0,.9);
+      clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
+      transition: transform 70ms ease, background 110ms ease, color 110ms ease;
     }
+    .jet-weapon-buttons button:active { transform: translateY(1px) scale(.98); }
     .jet-weapon-buttons button strong { font-size: 9px; line-height: 1; }
-    .jet-weapon-buttons button small { font-size: 6px; opacity: .72; }
-    .jet-weapon-buttons button.is-firing { background: #eaffb0; }
+    .jet-weapon-buttons button small { font-size: 6px; opacity: .76; }
+    .jet-weapon-buttons button.is-firing { background: linear-gradient(150deg, #eaffb0, #84cc16); color: #162006; text-shadow: none; }
     .jet-weapon-buttons button.is-offline { opacity: .48; }
-    .jet-weapon-buttons button.is-eject { border-color: rgba(254,202,202,.9); background: rgba(127,29,29,.92); color: #fff1f2; }
+    .jet-weapon-buttons button.is-eject {
+      border-color: rgba(254,202,202,.9); color: #fff1f2;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.28), rgba(255,255,255,.05) 42%, rgba(0,0,0,.24) 80%),
+        linear-gradient(160deg, rgba(185,28,28,.96), rgba(69,10,10,.98));
+    }
     .death-overlay {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 200;
       width: min(440px, calc(100vw - 32px)); padding: 26px 28px 22px;
@@ -2201,15 +2325,23 @@
       .aircraft-hud { top: calc(54px + var(--safe-top)); width: min(560px, calc(100vw - 282px)); height: 178px; }
       .aircraft-attitude { width: 210px; height: 124px; }
       .aircraft-touch-controls { bottom: calc(58px + var(--safe-bottom)); }
-      .flight-tri { width: 62px; height: 54px; }
-      .flight-tri.is-a, .flight-tri.is-d { width: 54px; height: 62px; }
-      .flight-tri-pad.is-pitch { width: 72px; }
-      .flight-tri-pad.is-roll { width: 184px; }
-      .flight-throttle { height: 124px; }
+      .flight-tri-pad { padding: 8px; gap: 6px; }
+      .flight-tri { width: 68px; height: 48px; }
+      .flight-tri.is-a, .flight-tri.is-d { width: 58px; height: 66px; }
+      .flight-tri-pad.is-pitch { width: 86px; }
+      .flight-tri-pad.is-roll { width: 216px; }
+      .flight-tri-centre { min-width: 58px; min-height: 38px; }
+      .flight-tri-pad.is-roll .flight-tri-centre { min-width: 64px; }
+      .flight-throttle { width: 62px; height: 138px; padding-top: 8px; }
       .flight-throttle-track { height: 88px; }
+      .jet-flight-buttons { align-self: flex-end; flex-wrap: nowrap; gap: 5px; }
+      .jet-flight-buttons button { flex: 0 0 50px; min-width: 50px; min-height: 42px; padding: 6px 4px; font-size: 8px; line-height: 1.05; text-align: center; }
+      .jet-flight-buttons button.is-assist { flex-basis: 62px; min-width: 62px; }
+      .jet-flight-buttons button:last-child { flex-basis: 70px; min-width: 70px; }
+      .jet-flight-hint { align-self: flex-end; width: min(326px, 100%); text-align: left; }
       .aircraft-camera-toggle { top: calc(58px + var(--safe-top)); width: 112px; min-height: 46px; }
       .aircraft-advisory { top: 154px; }
-      .aircraft-damage-diagram { left: calc(88px + var(--safe-left)); bottom: calc(62px + var(--safe-bottom)); width: 78px; }
+      .aircraft-damage-diagram { left: calc(106px + var(--safe-left)); bottom: calc(62px + var(--safe-bottom)); width: 78px; }
       .aircraft-damage-diagram svg { height: 72px; }
       .jet-weapon-buttons button { min-width: 64px; min-height: 38px; padding: 5px 7px; }
     }

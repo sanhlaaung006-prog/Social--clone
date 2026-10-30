@@ -66,6 +66,7 @@ export const inputState = {
   flightRollInput: 0, // A/D triangle steering/aileron (-1..1, default D/+ is right)
   flightInvertPitch: false, // Settings > Controls: reverse W/S
   flightInvertRoll: false, // Settings > Controls: reverse A/D
+  flightAssist: true, // AI copilot: attitude-command balance, taxi/landing help (L or cockpit AI button)
   flightThrottleTarget: null, // absolute 0..1 target from the manual thrust slider
   aircraftCameraMode: "cockpit", // "cockpit" first-person or "chase" third-person
   aircraftGunHeld: false, // held forward-gun trigger for aircraft that have one
@@ -2106,8 +2107,64 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     jetGroup.add(warthogModel);
     const gearPart = warthogAssembly.parts.get("gear");
     const gear = gearPart ? gearPart.group : new THREE.Group();
-    const jetBlob = new THREE.Mesh(blobShadowGeometry, blobShadowMaterial);
-    jetBlob.scale.set(9.6, 1, 9.6); jetBlob.position.y = 0.05; jetBlob.renderOrder = 1; jetGroup.add(jetBlob);
+    // No dark disc rides under the airframe. The aircraft shadow is a
+    // separate, soft A-10 planform projected onto the terrain along the
+    // live sun/moon direction each frame (see updateAircraftGroundShadow):
+    // it stays on the ground, offsets with the light, conforms to the local
+    // slope, spreads and fades with altitude, and costs exactly one quad.
+    const aircraftShadowTexture = (() => {
+      const size = 256;
+      const shape = document.createElement("canvas");
+      shape.width = shape.height = size;
+      const g = shape.getContext("2d");
+      g.fillStyle = "rgba(0,0,0,0.94)";
+      const ellipse = (x, y, rx, ry) => { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); };
+      const bar = (cx, cy, w, h, r) => {
+        g.beginPath();
+        if (g.roundRect) g.roundRect(cx - w / 2, cy - h / 2, w, h, r); else g.rect(cx - w / 2, cy - h / 2, w, h);
+        g.fill();
+      };
+      bar(128, 124, 224, 28, 13);          // straight main wing
+      bar(128, 207, 144, 20, 9);           // tailplane
+      ellipse(93, 151, 14, 36);            // engine pods
+      ellipse(163, 151, 14, 36);
+      ellipse(72, 205, 8, 18);             // twin fins in planform
+      ellipse(184, 205, 8, 18);
+      g.beginPath();                       // tapered fuselage, nose at texture top (-Z after the ground-plane rotation)
+      g.moveTo(128, 13);
+      g.bezierCurveTo(142, 35, 147, 86, 146, 145);
+      g.bezierCurveTo(145, 190, 143, 218, 139, 232);
+      g.quadraticCurveTo(128, 240, 117, 232);
+      g.bezierCurveTo(113, 218, 111, 190, 110, 145);
+      g.bezierCurveTo(109, 86, 114, 35, 128, 13);
+      g.fill();
+      const out = document.createElement("canvas");
+      out.width = out.height = size;
+      const o = out.getContext("2d");
+      try { o.filter = "blur(7px)"; } catch (_) {}
+      o.globalAlpha = 0.72; o.drawImage(shape, 0, 0);
+      try { o.filter = "blur(2px)"; } catch (_) {}
+      o.globalAlpha = 0.56; o.drawImage(shape, 0, 0);
+      o.globalAlpha = 1;
+      try { o.filter = "none"; } catch (_) {}
+      const texture = new THREE.CanvasTexture(out);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+      return texture;
+    })();
+    const aircraftShadowMaterial = new THREE.MeshBasicMaterial({
+      map: aircraftShadowTexture, color: 0x000000, transparent: true, opacity: 0,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    });
+    const aircraftGroundShadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), aircraftShadowMaterial
+    );
+    aircraftGroundShadow.name = "aircraft-terrain-projected-shadow";
+    aircraftGroundShadow.scale.set(19.6, 1, 18.4);
+    aircraftGroundShadow.renderOrder = 2;
+    aircraftGroundShadow.frustumCulled = false;
+    aircraftGroundShadow.raycast = () => {};
+    scene.add(aircraftGroundShadow);
     const warthogModelStats = warthogAssembly.getStats();
     debugStats.warthogModelParts = warthogModelStats.parts;
     debugStats.warthogModelMeshes = warthogModelStats.meshes;
@@ -2194,6 +2251,9 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       performance: initialPerformance,
       detached: new Set(), debris: [], hitMeshes: aircraftHitMeshes, hitMeshSet: aircraftHitMeshSet,
       engineGlows, fireMesh: aircraftFireMesh,
+      groundShadow: aircraftGroundShadow, groundShadowMaterial: aircraftShadowMaterial,
+      assistPitchTarget: 0, assistRollTarget: 0, assistMode: "AI TAXI",
+      assistPitchCmd: 0, assistRollCmd: 0, assistKeyWasDown: false,
       pitchRateVel: 0, rollRateVel: 0,
       gunAmmo: aircraftConfig.weapons.gun ? aircraftConfig.weapons.gun.ammo : 0,
       missilesLeft: aircraftConfig.weapons.missiles ? aircraftConfig.weapons.missiles.count : 0,
@@ -3247,6 +3307,65 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       terrainSurfaceHeight(x, z + 3.5), terrainSurfaceHeight(x, z - 3.5)
     ) + 0.05 + (warthog && warthog.performance && warthog.performance.gearFactor <= 0 ? -1.12 : 0);
   }
+  const _aircraftShadowDir = new THREE.Vector3();
+  const _aircraftShadowX = new THREE.Vector3(), _aircraftShadowY = new THREE.Vector3(), _aircraftShadowZ = new THREE.Vector3();
+  const _aircraftShadowMatrix = new THREE.Matrix4();
+  function updateAircraftGroundShadow() {
+    if (!warthog || !warthog.groundShadow) return;
+    const j = warthog, shadow = j.groundShadow, pos = j.group.position;
+    let lightStrength = 1;
+    _aircraftShadowDir.copy(skyUniforms.uSunDir.value);
+    if (_aircraftShadowDir.y < 0.08) {
+      _aircraftShadowDir.copy(skyUniforms.uMoonDir.value);
+      lightStrength = 0.3; // moonlight: same projection, much fainter contact
+    }
+    if (_aircraftShadowDir.y < 0.08) {
+      shadow.visible = false;
+      debugStats.aircraftShadowOpacity = 0;
+      return;
+    }
+    // Project the aircraft centre down the light ray, re-sampling terrain
+    // at the landing point so slopes do not leave the shadow under a hill.
+    const aircraftCenterY = pos.y + 2.35;
+    let groundY = terrainSurfaceHeight(pos.x, pos.z);
+    let sx = pos.x, sz = pos.z;
+    for (let i = 0; i < 3; i++) {
+      const h = Math.max(0, aircraftCenterY - groundY);
+      sx = pos.x - (_aircraftShadowDir.x / _aircraftShadowDir.y) * h;
+      sz = pos.z - (_aircraftShadowDir.z / _aircraftShadowDir.y) * h;
+      groundY = terrainSurfaceHeight(sx, sz);
+    }
+    const altitude = Math.max(0, aircraftCenterY - groundY);
+    const altitudeFade = Math.pow(clamp(1 - altitude / 88, 0, 1), 1.3);
+    const lowLightFade = clamp((_aircraftShadowDir.y - 0.04) / 0.42, 0.12, 1);
+    const opacity = clamp((climateNow?.blobOpacity ?? 0.32) * 1.08 * altitudeFade * lowLightFade * lightStrength, 0, 0.4);
+    shadow.visible = opacity > 0.014;
+    debugStats.aircraftShadowOpacity = Math.round(opacity * 1000) / 1000;
+    debugStats.aircraftShadowAltitudeM = Math.round(altitude * 10) / 10;
+    if (!shadow.visible) return;
+    // Lay the planform on the local terrain plane (right / tail axes), not
+    // on an imaginary flat disc under the fuselage.
+    const fx = -Math.sin(j.yaw), fz = -Math.cos(j.yaw);
+    const rx = Math.cos(j.yaw), rz = -Math.sin(j.yaw);
+    const hR = terrainSurfaceHeight(sx + rx * 6, sz + rz * 6);
+    const hL = terrainSurfaceHeight(sx - rx * 6, sz - rz * 6);
+    const hF = terrainSurfaceHeight(sx + fx * 6, sz + fz * 6);
+    const hB = terrainSurfaceHeight(sx - fx * 6, sz - fz * 6);
+    _aircraftShadowX.set(rx * 12, hR - hL, rz * 12).normalize();
+    _aircraftShadowZ.set(-fx * 12, hB - hF, -fz * 12).normalize(); // geometry +Z is toward the tail
+    _aircraftShadowY.crossVectors(_aircraftShadowZ, _aircraftShadowX).normalize();
+    _aircraftShadowZ.crossVectors(_aircraftShadowX, _aircraftShadowY).normalize();
+    _aircraftShadowMatrix.makeBasis(_aircraftShadowX, _aircraftShadowY, _aircraftShadowZ);
+    shadow.quaternion.setFromRotationMatrix(_aircraftShadowMatrix);
+    const slopeLift = clamp(Math.max(Math.abs(hR - hL), Math.abs(hF - hB)) * 0.22, 0, 0.28);
+    shadow.position.set(sx, groundY + 0.13 + slopeLift, sz);
+    const spread = 1 + Math.min(altitude * 0.006, 0.46) + (1 - _aircraftShadowDir.y) * 0.1;
+    const widthFactor = clamp(Math.abs(Math.cos(j.roll)), 0.45, 1);
+    const lengthFactor = clamp(Math.abs(Math.cos(j.pitch)), 0.5, 1);
+    shadow.scale.set(19.6 * spread * widthFactor, 1, 18.4 * spread * lengthFactor);
+    j.groundShadowMaterial.opacity = opacity;
+  }
+
   function animateWarthogCanopy(j, dt) {
     const step = Math.max(0, dt) / 0.85;
     const delta = clamp(j.canopyTarget - j.canopyOpen, -step, step);
@@ -3331,6 +3450,11 @@ export function createWorld(canvas, hooks = {}, options = {}) {
       chaseCameraReady = false;
     }
     j.cameraKeyWasDown = cameraKey;
+    const assistKey = inputState.keys.has("KeyL");
+    if (assistKey && !j.assistKeyWasDown && j.occupied) inputState.flightAssist = !inputState.flightAssist;
+    j.assistKeyWasDown = assistKey;
+    debugStats.aircraftAssist = inputState.flightAssist ? 1 : 0;
+    debugStats.aircraftAssistMode = inputState.flightAssist ? (j.assistMode || "AI BALANCE") : "MANUAL";
     debugStats.jetOccupied = j.occupied ? 1 : 0;
     debugStats.aircraftCameraMode = inputState.aircraftCameraMode;
     // A stopped wreck is scenery/debris, not a perpetual flight-model job:
@@ -3417,11 +3541,102 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     j.controlRoll += (shapeStick(rawRollInput) - j.controlRoll) * stickBlend;
     if (Math.abs(rawPitchInput) < 0.02 && Math.abs(j.controlPitch) < 0.012) j.controlPitch = 0;
     if (Math.abs(rawRollInput) < 0.02 && Math.abs(j.controlRoll) < 0.012) j.controlRoll = 0;
-    let pitchInput = j.controlPitch;
-    let rollInput = j.controlRoll;
+    const pilotPitchInput = j.controlPitch;
+    const pilotRollInput = j.controlRoll;
+    let pitchInput = pilotPitchInput;
+    let rollInput = pilotRollInput;
     const braking = !!j.occupied && !!(inputState.jetBrake || k.has("Space"));
     const perf = j.performance || deriveAircraftPerformance(j.components);
     const weightN = j.massKg * 9.81;
+    // ---- AI copilot / stability augmentation ---------------------------
+    // This is an attitude-command outer loop around the existing rate
+    // solver, not a second physics model. With ASSIST on (default), the
+    // pilot's rocker pads request a safe pitch/bank and the AI moves to and
+    // holds it: wings level on release, vertical-speed hold in cruise,
+    // a stabilized flare near the ground, stall/terrain recovery and
+    // automatic compensation for asymmetric wing/engine damage. It never
+    // starts the engines or rotates by itself: thrust stays manual and W
+    // is still required for takeoff. ASSIST off returns the original free
+    // continuous pitch/roll handling for aerobatics.
+    const assistEnabled = !!inputState.flightAssist && j.occupied && !j.crashed && !j.exploded;
+    j.assistPitchCmd = pitchInput;
+    j.assistRollCmd = rollInput;
+    if (assistEnabled) {
+      const assistSpeed = j.velocity.length();
+      if (!j.airborne) {
+        j.assistMode = assistSpeed > 38 ? "AI ROTATE" : "AI TAXI";
+        j.assistPitchTarget = pilotPitchInput > 0.22 && assistSpeed > 38 ? 0.21 : 0;
+        j.assistRollTarget = 0;
+        // Taxi-game ground feel: steering stays direct at parking speed and
+        // is progressively calmed as the roll builds, while a held W gets a
+        // positive, repeatable rotation instead of a twitchy nose spike.
+        rollInput = clamp(pilotRollInput * (1 - clamp(Math.abs(j.signedSpeed) / 70, 0, 1) * 0.35), -1, 1);
+        if (pilotPitchInput > 0.22 && assistSpeed > 38) pitchInput = Math.max(pitchInput, 0.72);
+      } else {
+        let assistMode = "AI BALANCE";
+        const maxBank = (j.altitudeAgl < 18 ? 0.48 : 0.92) * clamp(perf.rollAuthority, 0.35, 1);
+        let desiredRollTarget = Math.abs(pilotRollInput) > 0.05 ? pilotRollInput * maxBank : 0;
+        let desiredPitchTarget = j.assistPitchTarget || 0;
+        if (Math.abs(pilotPitchInput) > 0.05) {
+          desiredPitchTarget = pilotPitchInput > 0 ? pilotPitchInput * 0.31 : pilotPitchInput * 0.26;
+          assistMode = pilotPitchInput > 0 ? "AI CLIMB" : "AI DESCEND";
+        } else {
+          let desiredVs = 0;
+          if (j.altitudeAgl < 28 && assistSpeed < 76 && j.throttle < 0.72) {
+            desiredVs = j.altitudeAgl < 6 ? -1.0 : j.altitudeAgl < 14 ? -2.0 : -3.2;
+            assistMode = "AI LAND";
+            desiredRollTarget = clamp(desiredRollTarget, -0.3, 0.3);
+          } else if (j.altitudeAgl < 35) {
+            // Initial climb needs real obstacle clearance, not a timid
+            // 2-3 m/s float into the tree line at the end of the strip.
+            desiredVs = assistSpeed > 55 ? 8.0 : 4.0;
+            assistMode = "AI CLIMB";
+            const climbPitchCap = assistSpeed < 48 ? 0.08 : assistSpeed < 62 ? 0.19 : 0.26;
+            desiredPitchTarget = clamp(Math.max(desiredPitchTarget, 0.2), -0.16, climbPitchCap);
+          }
+          desiredPitchTarget = clamp(
+            desiredPitchTarget + clamp((desiredVs - j.verticalSpeed) * dt * 0.34, -dt * 0.6, dt * 0.6),
+            -0.16, 0.27
+          );
+        }
+        if (j.stall || (j.aoaDeg || 0) > 13) {
+          desiredPitchTarget = -0.14;
+          desiredRollTarget *= 0.35;
+          assistMode = "AI RECOVER";
+        } else if (j.altitudeAgl < 16 && j.verticalSpeed < -4) {
+          desiredPitchTarget = Math.max(desiredPitchTarget, 0.17);
+          desiredRollTarget *= 0.45;
+          assistMode = "AI PULL-UP";
+        }
+        if (assistSpeed < 48) desiredPitchTarget = Math.min(desiredPitchTarget, 0.08);
+        desiredPitchTarget = clamp(desiredPitchTarget, -0.3, 0.34);
+        j.assistPitchTarget = clamp(
+          (j.assistPitchTarget || 0) + clamp(desiredPitchTarget - (j.assistPitchTarget || 0), -dt * 0.65, dt * 0.65),
+          -0.3, 0.34
+        );
+        j.assistRollTarget = clamp(
+          (j.assistRollTarget || 0) + clamp(desiredRollTarget - (j.assistRollTarget || 0), -dt * 1.7, dt * 1.7),
+          -1.0, 1.0
+        );
+        const pitchError = wrapJetAngle(j.assistPitchTarget - j.pitch);
+        const rollError = wrapJetAngle(j.assistRollTarget - j.roll);
+        pitchInput = clamp(pitchError * 2.55 - j.pitchRateVel * 0.36, -1, 1);
+        rollInput = clamp(rollError * 1.75 - j.rollRateVel * 0.26, -1, 1);
+        j.assistMode = assistMode;
+      }
+      j.assistPitchCmd = pitchInput;
+      j.assistRollCmd = rollInput;
+    } else {
+      j.assistMode = "MANUAL";
+      j.assistPitchTarget = clamp(j.pitch, -0.3, 0.34);
+      j.assistRollTarget = clamp(wrapJetAngle(j.roll), -1.0, 1.0);
+    }
+    debugStats.aircraftAssist = assistEnabled ? 1 : 0;
+    debugStats.aircraftAssistMode = assistEnabled ? j.assistMode : "MANUAL";
+    debugStats.aircraftAssistPitchDeg = Math.round((j.assistPitchTarget || 0) * 180 / Math.PI * 10) / 10;
+    debugStats.aircraftAssistRollDeg = Math.round((j.assistRollTarget || 0) * 180 / Math.PI * 10) / 10;
+    debugStats.aircraftAssistPitchCmd = Math.round((j.assistPitchCmd || 0) * 100) / 100;
+    debugStats.aircraftAssistRollCmd = Math.round((j.assistRollCmd || 0) * 100) / 100;
     const substeps = clamp(Math.ceil(dt / (1 / 120)), 1, 6), sdt = dt / substeps;
     let liftN = 0, aoa = 0;
     for (let si = 0; si < substeps; si++) {
@@ -3734,7 +3949,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     debugStats.aircraftAdvisoryLevel = advisory.level;
     debugStats.jetMessage = j.exploded ? "AIRCRAFT DESTROYED" : advisory.level === "warning" ? advisory.text : j.crashed ? "AIRFRAME DAMAGED // STOPPED EXIT ONLY"
       : j.stall ? "STALL // S = NOSE DOWN"
-      : j.airborne ? (braking ? "AIRBORNE // AIRBRAKE" : "AIRBORNE // FREE PITCH + ROLL")
+      : j.airborne ? (braking ? "AIRBORNE // AIRBRAKE" : assistEnabled ? `AIRBORNE // ${j.assistMode}` : "AIRBORNE // MANUAL FREE PITCH + ROLL")
       : j.signedSpeed < -0.3 ? "REVERSE TAXI // VERY SLOW"
       : j.speed > 38 ? (pitchInput > 0.22 ? "ROTATE // W HELD" : "HOLD W ▲ TO TAKE OFF")
       : j.speed > 1 ? "TAXI // A-D STEER · S BRAKE/REVERSE"
@@ -5162,6 +5377,7 @@ export function createWorld(canvas, hooks = {}, options = {}) {
     safetySweep(dt);
     updateFx(dt);
     updateSky(dt);
+    updateAircraftGroundShadow();
     pushHud();
     scatterCullAcc += dt;
     if (scatterCullAcc >= 0.2) {
